@@ -2,7 +2,7 @@ use super::colour::{PROXY, file_local_look};
 use super::mono::{fit_tone_only_with, monochrome};
 use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, search_ordered};
 use super::proxy::{CLIP_TOLERANCE, LensGeometry, MIN_PREVIEW_FRACTION, proxies, structure_agrees};
-use super::tone::{HighlightCheck, highlights};
+use super::tone::{HighlightCheck, clipped_highlights, highlights};
 use super::{CameraLook, CameraTone, CameraTransform, HsvTable, Mat3, RawImage, Rgb32f, ToneMap, luminance_2020};
 
 /// The look fitted to the file's camera JPEG, and whether that JPEG is black and white ([`monochrome`]).
@@ -25,7 +25,12 @@ pub(crate) fn fit_preview(raw: &RawImage, bytes: &[u8], transform: &CameraTransf
         // (`monochrome_look` does it without a profile).
         None if colour.is_some() && black_and_white => {
             let unclipped = without_clipped(&sensor, &clipped);
-            let bright = HighlightCheck { pairs: highlights(&sensor, &reference), dro, grey: true };
+            let bright = HighlightCheck {
+                pairs: highlights(&sensor, &reference),
+                clipped: clipped_highlights(&sensor, &reference, &clipped),
+                dro,
+                grey: true,
+            };
             let Some(look) = fit_tone_only_with(unclipped.as_ref().unwrap_or(&sensor), &reference, colour, &bright) else { return (None, true) };
             look
         }
@@ -82,7 +87,7 @@ pub(super) fn fit_look_with(
 ) -> Option<CameraLook> {
     let unclipped = without_clipped(sensor, clipped);
     // from the proxies as they are: the retries' filters (clipped pixels, edges) don't remove them
-    let bright = HighlightCheck { pairs: highlights(sensor, reference), dro, grey: false };
+    let bright = HighlightCheck { pairs: highlights(sensor, reference), clipped: clipped_highlights(sensor, reference, clipped), dro, grey: false };
     let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright) else {
         return unclipped
             .as_ref()
@@ -224,7 +229,12 @@ pub(super) fn fit_dng_tone(
     let unclipped = without_clipped(&sensor, &clipped);
     let fit_on = unclipped.as_ref().unwrap_or(&sensor);
     let colour = Some((Mat3::IDENTITY, None));
-    let bright = HighlightCheck { pairs: highlights(&sensor, &reference), dro: false, grey: false };
+    let bright = HighlightCheck {
+        pairs: highlights(&sensor, &reference),
+        clipped: clipped_highlights(&sensor, &reference, &clipped),
+        dro: false,
+        grey: false,
+    };
     let look = TONE_FITS.iter().find_map(|&tone| {
         [false, true].into_iter().find_map(|away_from_edges| {
             fit_attempt(fit_on, &reference, &colour, Attempt { tone, profile: true, away_from_edges, dark: true }, &bright)

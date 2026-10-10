@@ -44,7 +44,7 @@ use mono::{fit_dark_tone, fit_tone_only, monochrome, monochrome_look, to_prophot
 #[cfg(test)]
 use pairs::{
     Attempt, Pairs, TONE_FITS, collect_pairs, colour_pair, displayed, fit_attempt, fit_pairs, fit_pairs_ordered, fit_pairs_with, fit_partial,
-    fit_tone_with_shadows, luma, rank_correlation_ties, search_ordered,
+    fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, rank_correlation_ties, search_ordered,
 };
 #[cfg(test)]
 pub(crate) use proxy::LensGeometry;
@@ -79,7 +79,8 @@ use tone::{HighlightCheck, ToneFit, fit_tone, fit_tone_conditional, highlights};
 /// a tone-only fallback for near-black scenes with too few colour pairs (#1587); DNG tone fitting uses a
 /// lens-corrected proxy when the file carries lens opcodes; validated A7CR distortion, including the lens data
 /// stored with each smart preview.
-pub const LOOK_VERSION: u32 = 12;
+/// 13: the partial look's second attempt with the bright pairs (#631's bird).
+pub const LOOK_VERSION: u32 = 13;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {
