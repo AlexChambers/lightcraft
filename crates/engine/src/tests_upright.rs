@@ -386,10 +386,14 @@ fn write_png(path: &Path) {
 
 /// A 40 × 24 JPEG stored on its side: EXIF orientation 6 shows it 24 × 40.
 fn write_turned_jpeg(path: &Path) {
-    let (w, h) = (40usize, 24usize);
+    write_jpeg(path, 40, 24, 6);
+}
+
+/// A `w × h` JPEG (stored size) with EXIF orientation `exif`.
+fn write_jpeg(path: &Path, w: usize, h: usize, exif: u16) {
     let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 6) as u8, (i / w * 9) as u8, 30, 255]).collect();
     let img = lightcraft_raster::Rgba8 { width: w, height: h, data };
-    let exif = lightcraft_codecs::exif::minimal_exif(6);
+    let exif = lightcraft_codecs::exif::minimal_exif(exif);
     let meta = lightcraft_codecs::EncodeMeta { exif: Some(&exif), ..Default::default() };
     let bytes =
         lightcraft_codecs::encode_jpeg(&lightcraft_codecs::EncodeImage::rgba8(&img), 90, lightcraft_codecs::ChromaSubsampling::S444, &meta).unwrap();
@@ -493,5 +497,173 @@ fn imported_upright_round_trips_through_lightcraft_sidecars() {
     let r = again.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
     assert!(upright_warnings(&r).is_empty(), "{r}");
     assert_eq!(geometry(&again), first);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Lightroom's matrix placed in the frame the file's orientation gives, then turned with the
+/// photo's own Rotate Left / Right, is the matrix placed in the composed frame: for every pair.
+/// Not turning it would leave DSC_1457's correction tens of pixels off after a Rotate Right.
+#[test]
+fn a_kept_upright_turns_with_the_photo_orientation() {
+    let saved = SavedUpright { mode: Upright::Auto, matrix: matrix(SLOTS[1]) };
+    let (sw, sh) = (4800.0, 3200.0);
+    for file in ORIENTATIONS {
+        for user in ORIENTATIONS {
+            let turned = lightcraft_pipeline::upright::turned(&upright_in_frame(&saved, file, sw, sh).unwrap(), user);
+            let direct = upright_in_frame(&saved, file.then(user), sw, sh).unwrap();
+            assert!(turned.0.iter().zip(direct.0).all(|(a, b)| (a - b).abs() < 1e-12), "{file:?} then {user:?}");
+        }
+    }
+    // the unturned matrix after Rotate Right, in pixels of the 3200 × 4800 frame
+    let (right, stale) =
+        (upright_in_frame(&saved, Orientation::Rotate90, sw, sh).unwrap(), upright_in_frame(&saved, Orientation::Normal, sw, sh).unwrap());
+    let worst = (0..=8)
+        .flat_map(|i| (0..=8).map(move |j| Point::new(i as f64 / 8.0 * 2.0 / 3.0 * 2.0 - 2.0 / 3.0, j as f64 / 8.0 * 2.0 - 1.0)))
+        .map(|c| right.apply(c).dist(stale.apply(c)) * 2400.0)
+        .fold(0.0, f64::max);
+    assert!(worst > 15.0, "{worst:.1} px");
+}
+
+/// Rotate Right, then Read Metadata from File; and Read Metadata, then Rotate Right: the same
+/// correction, in the turned frame. Two more turns bring it back.
+#[test]
+fn rotating_and_rereading_keep_lightroom_upright_in_the_photo_frame() {
+    let src = temp_dir("upright-rotate");
+    let photo = src.join("arch.png");
+    write_png(&photo);
+    std::fs::write(src.join("arch.xmp"), lightroom(1)).unwrap();
+    let want = placed(1, Orientation::Rotate90, 40.0, 24.0);
+    let close = |a: Option<Homography>, b: Homography| a.is_some_and(|a| a.0.iter().zip(b.0).all(|(x, y)| (x - y).abs() < 1e-12));
+    for read_first in [false, true] {
+        let mut s = Session::new().with_fs();
+        s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
+        let id = s.catalog.photos().next().unwrap().id;
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        if read_first {
+            s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+            s.execute("photo.rotateRight", &json!({})).unwrap();
+        } else {
+            s.execute("photo.rotateRight", &json!({})).unwrap();
+            let r = s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+            assert!(upright_warnings(&r).is_empty(), "{r}");
+        }
+        let g = geometry(&s);
+        assert!(close(g.upright_transform, want), "read first: {read_first}: {g:?}");
+        s.execute("photo.rotateLeft", &json!({})).unwrap();
+        assert!(close(geometry(&s).upright_transform, placed(1, Orientation::Normal, 40.0, 24.0)), "back");
+        s.execute("photo.flipHorizontal", &json!({})).unwrap();
+        assert!(close(geometry(&s).upright_transform, placed(1, Orientation::Normal, 40.0, 24.0)), "a flip of the output leaves it");
+    }
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+fn crop_packet(fields: &str) -> String {
+    format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+      <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:HasCrop="True" {fields}/>
+    </rdf:RDF></x:xmpmeta>"#
+    )
+}
+
+fn crop_of(s: &Session) -> lightcraft_geom::CropGeometry {
+    s.catalog.photos().next().unwrap().develop.crop.geometry
+}
+
+/// DSC_1486.NEF (zjqc/photographing-art) is stored 3:2 and shown in portrait (EXIF 8); its
+/// Lightroom crop cuts the stored image's left 20.7 %, which is the bottom of the portrait, and
+/// Lightroom exports 3200 × 3808. The sidecar crop used to cut the portrait's left instead.
+#[test]
+fn a_sidecar_crop_on_a_turned_photo_lands_where_lightroom_puts_it() {
+    let src = temp_dir("crop-portrait");
+    let photo = src.join("portrait.jpg");
+    write_jpeg(&photo, 60, 40, 8);
+    let sidecar = src.join("portrait.xmp");
+    std::fs::write(&sidecar, crop_packet(r#"crs:CropLeft="0.206655" crs:CropTop="0" crs:CropRight="1" crs:CropBottom="1" crs:CropAngle="0""#))
+        .unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
+    let check = |s: &Session, what: &str| {
+        let g = crop_of(s);
+        let r = [g.rect.x0, g.rect.y0, g.rect.x1, g.rect.y1].map(|v| (v * 1e6).round() / 1e6);
+        assert_eq!(r, [0.0, 0.0, 1.0, 0.793345], "{what}");
+        let (w, h) = s.catalog.photos().next().unwrap().shown_size();
+        assert!((w / h - 3200.0 / 3808.0).abs() < 1e-3, "{what}: {w} × {h}");
+    };
+    check(&s, "import");
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+    check(&s, "read metadata");
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Straightened crops from a real Lightroom Classic catalog (stored 9504 × 6336, the sizes of the
+/// JPEGs Lightroom exported from it, the same numbers as the catalog import's test): the same
+/// fields in a sidecar give the same frame, upright and on its side.
+#[test]
+fn a_straightened_sidecar_crop_matches_lightroom_exports() {
+    for (fields, exif, export) in [
+        (
+            r#"crs:CropAngle="-9.34444" crs:CropBottom="0.802034" crs:CropLeft="0.05499" crs:CropRight="0.94501" crs:CropTop="0.197966""#,
+            1,
+            (7725.0, 5150.0),
+        ),
+        (
+            r#"crs:CropAngle="-1.48964" crs:CropBottom="0.962457" crs:CropLeft="0.010429" crs:CropRight="0.989571" crs:CropTop="0.037543""#,
+            6,
+            (6100.0, 9150.0),
+        ),
+    ] {
+        let src = temp_dir(&format!("crop-straightened-{exif}"));
+        let photo = src.join("hall.jpg");
+        write_jpeg(&photo, 48, 32, exif);
+        std::fs::write(src.join("hall.xmp"), crop_packet(fields)).unwrap();
+        let mut s = Session::new().with_fs();
+        s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
+        let r = crop_of(&s).rect;
+        let (ow, oh) = if exif == 6 { (6336.0, 9504.0) } else { (9504.0, 6336.0) };
+        let (w, h) = (r.width() * ow, r.height() * oh);
+        assert!((w - export.0).abs() <= 3.0 && (h - export.1).abs() <= 3.0, "EXIF {exif}: {w:.1} × {h:.1}, Lightroom exported {export:?}");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
+/// A straightened crop on top of a saved Upright isn't measured yet: the mode is solved again
+/// and the warning says so.
+#[test]
+fn a_straightened_crop_on_a_saved_upright_is_solved_again_with_the_warning() {
+    let src = temp_dir("upright-straightened");
+    let photo = src.join("bridge.png");
+    write_png(&photo);
+    let xmp = lightroom(1).replace(r#"crs:UprightFourSegmentsCount="0""#, r#"crs:UprightFourSegmentsCount="0" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropTop="0.1" crs:CropRight="0.9" crs:CropBottom="0.9" crs:CropAngle="2.5""#);
+    std::fs::write(src.join("bridge.xmp"), xmp).unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
+    assert_eq!(upright_warnings(&r).first().map(|w| w["mode"].clone()), Some(json!("auto")), "{r}");
+    assert_eq!((geometry(&s).upright, geometry(&s).upright_transform), (Upright::Auto, None));
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Guided Upright's guides aren't read: a packet with guides and no automatic matrices still says
+/// so; without guides or matrices nothing is lost.
+#[test]
+fn guided_upright_guides_that_are_not_read_are_reported() {
+    let src = temp_dir("upright-guides");
+    let photo = src.join("tower.png");
+    write_png(&photo);
+    let guides = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+      <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+0.30"
+        crs:PerspectiveUpright="5" crs:UprightFourSegmentsCount="2"
+        crs:UprightFourSegments_0="0.21, 0.12, 0.23, 0.88" crs:UprightFourSegments_1="0.78, 0.10, 0.76, 0.90"/>
+    </rdf:RDF></x:xmpmeta>"#;
+    std::fs::write(src.join("tower.xmp"), guides).unwrap();
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
+    assert_eq!(upright_warnings(&r).first().map(|w| w["mode"].clone()), Some(json!("guided")), "{r}");
+    let none = props(
+        &guides
+            .replace(r#"crs:UprightFourSegmentsCount="2""#, r#"crs:UprightFourSegmentsCount="0""#)
+            .replace(r#"crs:UprightFourSegments_0="0.21, 0.12, 0.23, 0.88" crs:UprightFourSegments_1="0.78, 0.10, 0.76, 0.90""#, ""),
+    );
+    assert_eq!(crate::crs::upright_at_risk(&none), None);
     let _ = std::fs::remove_dir_all(&src);
 }

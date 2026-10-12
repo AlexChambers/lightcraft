@@ -10,7 +10,7 @@ use std::sync::{
 
 use crate::lightroom_sqlite::{Database, LiveTable, Value as SqlValue};
 use lightcraft_catalog::{Album, Flag, Op, Photo, PhotoId, Source};
-use lightcraft_geom::{Affine, Orientation, Point, Rect};
+use lightcraft_geom::Orientation;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -538,16 +538,12 @@ fn mapped_settings(
         props.insert("crs:HasCrop".into(), vec!["True".into()]);
     }
     let (mut partial, mut unknown) = crate::crs::to_partial_report(&props, Some(&values), target, aspect);
-    catalog_crop(&mut partial, orientation, stored_aspect);
-    // Lightroom's saved Upright correction, in the stored image's frame like the crop
-    match crate::crs::saved_upright(&props).and_then(|saved| crate::crs::upright_in_frame(&saved, orientation, stored_aspect, 1.0)) {
-        Some(transform) => crate::crs::put_upright_transform(&mut partial, transform),
-        None if crate::crs::has_saved_upright_transform(&props)
-            && crate::crs::selected_upright(&props).is_some_and(|m| m != lightcraft_develop::Upright::Off) =>
-        {
-            unknown.push("Upright (Lightroom's saved geometry not kept)".into());
-        }
-        None => {}
+    crate::crs::crop_in_frame(&mut partial, orientation, stored_aspect);
+    // Lightroom's saved Upright isn't kept from catalogs yet: how a catalog encodes it, and whether
+    // its orientation agrees with the decoded file, haven't been checked on a real catalog (issue
+    // #205). The mode is solved again, and the report says what was lost.
+    if crate::crs::upright_at_risk(&props).is_some() {
+        unknown.push("Upright (Lightroom's saved geometry, solved again: not read from catalogs yet)".into());
     }
     if deferred > 0 {
         unknown.push("Deferred Lightroom adjustments (-999999)".into());
@@ -576,36 +572,6 @@ fn lightroom_orientation(code: &str) -> Option<Orientation> {
         _ => 'D',
     };
     ALL.into_iter().find(|&o| code.chars().eq([corner(o, 0.0, 0.0), corner(o, 1.0, 0.0)]))
-}
-
-/// Lightroom's crop in LightCraft's frame. `crs` gives the crop's top-left (`CropLeft`, `CropTop`)
-/// and bottom-right (`CropRight`, `CropBottom`) corners on the stored image (before orientation and
-/// straightening), normalized to its size, plus a straighten angle that turns the other way to
-/// LightCraft's. LightCraft's crop is a rectangle in the oriented image rotated by `angle` about its
-/// centre, normalized to the oriented image's size, so the corners go through the orientation and
-/// then the rotation; `stored_aspect` (width / height of the stored image) matters once the
-/// rectangle turns. On a real catalog this reproduced the frame aspect of all 223 straightened crops
-/// in Lightroom's exports within 1%.
-fn catalog_crop(partial: &mut Value, orientation: Orientation, stored_aspect: f64) {
-    let Some(geometry) = partial.pointer_mut("/crop/geometry").and_then(Value::as_object_mut) else { return };
-    let edge = |k: &str| geometry.get("rect").and_then(|r| r.get(k)).and_then(Value::as_f64);
-    let (Some(x0), Some(y0), Some(x1), Some(y1)) = (edge("x0"), edge("y0"), edge("x1"), edge("y1")) else { return };
-    let lightroom_angle = geometry.get("angle").and_then(Value::as_f64).unwrap_or(0.0);
-    if orientation == Orientation::Normal && lightroom_angle == 0.0 {
-        return;
-    }
-    let w = if stored_aspect.is_finite() && stored_aspect > 0.0 { stored_aspect } else { 1.0 };
-    let (ow, oh) = if orientation.swaps_axes() { (1.0, w) } else { (w, 1.0) };
-    // a mirror turns the straighten the other way too
-    let angle = if orientation.to_parts().0 { lightroom_angle } else { -lightroom_angle };
-    let to_rotated = Affine::rotate_about(angle.to_radians(), Point::new(ow / 2.0, oh / 2.0));
-    let corner = |x: f64, y: f64| {
-        let (u, v) = orientation.map(x * w, y, w, 1.0);
-        to_rotated.apply(Point::new(u, v))
-    };
-    let r = Rect::from_points(corner(x0, y0), corner(x1, y1));
-    geometry.insert("rect".into(), json!({"x0": r.x0 / ow, "y0": r.y0 / oh, "x1": r.x1 / ow, "y1": r.y1 / oh}));
-    geometry.insert("angle".into(), json!(angle));
 }
 
 fn strip_lua_sentinels(value: &mut crate::preset_import::Lua) -> usize {
@@ -786,9 +752,6 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, data: CatalogImport, contex
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
                     }
-                    // the stored image's frame, as for the crop (`catalog_crop`)
-                    let stored = (number(&src.image, "fileWidth") as f64, number(&src.image, "fileHeight") as f64);
-                    sc.place_upright(lightroom_orientation(text(&src.image, "orientation")).map(|o| (o, stored.0, stored.1)));
                     crate::sidecar::merge_into(&mut p, &sc, &now);
                 }
                 Err(e) => warnings.push(format!("image {} XMP: {e}", src.source_id)),
@@ -938,7 +901,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, data: CatalogImport, contex
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lightcraft_geom::CropGeometry;
+    use lightcraft_geom::{Affine, CropGeometry, Point, Rect};
     fn row(v: Value) -> Row {
         serde_json::from_value(v).unwrap()
     }
@@ -1254,28 +1217,26 @@ mod tests {
         assert_eq!(r, [0.1, 0.1, 0.8, 0.6]);
     }
 
-    /// Lightroom's saved Upright is in the stored image's frame, like the crop: it turns with the
-    /// catalog orientation; one that can't be kept is reported.
+    /// Lightroom's saved Upright isn't read from catalogs until a real catalog verifies how it is
+    /// stored there (issue #205): whatever form the fields take, the mode is solved again (no
+    /// transform is kept) and the report names what was lost. Upright Off loses nothing.
     #[test]
-    fn catalog_upright_is_kept_in_the_stored_frame() {
+    fn catalog_upright_falls_back_to_solving_and_is_reported() {
         let auto = "1.010477639,-0.008540717,-0.006124940,0.014938050,1.011645918,-0.015359712,-0.007190889,-0.003396748,1.000000000";
-        let settings = |version: &str| {
-            format!(r#"s = {{ PerspectiveUpright = 1, UprightVersion = {version}, UprightTransformCount = 6, UprightTransform_1 = "{auto}" }}"#)
-        };
-        let saved = crate::crs::SavedUpright {
-            mode: lightcraft_develop::Upright::Auto,
-            matrix: auto.split(',').map(|v| v.parse::<f64>().unwrap()).collect::<Vec<_>>().try_into().unwrap(),
-        };
-        for o in [Orientation::Normal, Orientation::Rotate90, Orientation::Rotate270] {
-            let (partial, unknown) = mapped_settings(&settings("151388160"), crate::crs::Target::RawAbsolute, 1.5, o, 1.5).unwrap();
-            let want = crate::crs::upright_in_frame(&saved, o, 1.5, 1.0).unwrap();
-            assert_eq!(partial["geometry"]["upright"], "auto");
-            assert_eq!(partial["geometry"]["upright_transform"], json!(want), "{o:?}");
-            assert!(unknown.iter().all(|u| !u.starts_with("Upright")), "{unknown:?}");
+        for settings in [
+            format!(r#"s = {{ PerspectiveUpright = 1, UprightVersion = 151388160, UprightTransformCount = 6, UprightTransform_1 = "{auto}" }}"#),
+            "s = { PerspectiveUpright = 3, UprightVersion = 151388160, UprightTransform_3 = { 1, 0, 0, 0, 1, 0, 0, 0, 1 } }".to_string(),
+            r#"s = { PerspectiveUpright = 5, UprightFourSegmentsCount = 2, UprightFourSegments_0 = "0.2, 0.1, 0.25, 0.9" }"#.to_string(),
+        ] {
+            for o in [Orientation::Normal, Orientation::Rotate90] {
+                let (partial, unknown) = mapped_settings(&settings, crate::crs::Target::RawAbsolute, 1.5, o, 1.5).unwrap();
+                assert!(partial["geometry"]["upright_transform"].is_null(), "{settings}: {partial}");
+                assert_eq!(unknown.iter().filter(|u| u.starts_with("Upright")).count(), 1, "{settings}: {unknown:?}");
+            }
         }
-        let (partial, unknown) = mapped_settings(&settings("1"), crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
-        assert!(partial["geometry"]["upright_transform"].is_null(), "{partial}");
-        assert!(unknown.iter().any(|u| u.starts_with("Upright")), "{unknown:?}");
+        let off = format!(r#"s = {{ PerspectiveUpright = 0, UprightVersion = 151388160, UprightTransform_1 = "{auto}" }}"#);
+        let (_, unknown) = mapped_settings(&off, crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
+        assert!(unknown.iter().all(|u| !u.starts_with("Upright")), "{unknown:?}");
     }
 
     #[test]

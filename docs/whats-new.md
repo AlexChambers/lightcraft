@@ -378,8 +378,12 @@
 ### Lightroom Upright comes across
 - Photos edited in Lightroom with Upright Auto, Full, Level or Vertical now open framed as they are in Lightroom
   (issue #205). LightCraft keeps the correction Lightroom saved with the edit instead of analysing the photo again.
-  This works for XMP sidecars, DNG files with the edit inside and Lightroom Classic catalogs. Photos imported
-  earlier get it with Photo ▸ Read Metadata from File.
+  This works for XMP sidecars and DNG files with the edit inside; photos imported earlier get it with Photo ▸ Read
+  Metadata from File. Lightroom Classic catalogs still have it worked out again for now, and the import says so.
+- Rotate Left and Rotate Right turn an Upright correction with the photo. It used to stay as it was, so the photo
+  came out skewed after a turn.
+- A crop read from an XMP sidecar now lands where Lightroom put it on photos shown on their side (portrait raws),
+  and straightened crops keep Lightroom's frame. A portrait crop used to cut the wrong side of the photo.
 - Lightroom's Upright values 2, 3 and 4 now read as Full, Level and Vertical. They used to come in as Level,
   Vertical and Full.
 - Guided Upright doesn't come across yet (Lightroom's guides aren't read), and the import report says so. The

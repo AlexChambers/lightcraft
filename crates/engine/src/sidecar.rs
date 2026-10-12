@@ -122,8 +122,23 @@ pub struct SidecarData {
     /// These are surfaced in the photo import report and never persisted in the catalog.
     pub warnings: Vec<crate::import::ImportWarning>,
     /// Lightroom's saved Upright correction for the selected mode, waiting for the photo's frame
-    /// ([`SidecarData::place_upright`]); `None` when the packet has none LightCraft can apply.
+    /// ([`SidecarData::set_frame`]); `None` when the packet has none LightCraft can apply.
     pub upright: Option<crate::crs::SavedUpright>,
+    /// The stored image the packet's crop and saved Upright refer to, when the caller knows it.
+    pub frame: Option<StoredFrame>,
+    /// [`SidecarData::upright`] in the frame the file's orientation gives (before the photo's own
+    /// Rotate Left / Right, which [`merge_into`] adds): set by [`SidecarData::set_frame`].
+    pub placed_upright: Option<lightcraft_geom::Homography>,
+}
+
+/// A file's stored image: its size before orientation, and the orientation that turns it into the
+/// image LightCraft shows before the photo's own Rotate Left / Right (the file's EXIF orientation,
+/// as the decoder applies it). Lightroom's crop edges and saved Upright matrices refer to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoredFrame {
+    pub orientation: lightcraft_geom::Orientation,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -200,31 +215,19 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
                     fields: Vec::new(),
                 });
             }
-            // Saved Upright matrices: Lightroom's geometry is kept when the photo's frame is known
-            // ([`SidecarData::place_upright`]); until then, and whenever it can't be, the selected
-            // mode will be solved again and the warning says so. With Upright Off nothing is lost.
-            if crate::crs::has_saved_upright_transform(&d.properties) {
-                use crate::import::ImportUprightMode as M;
-                let mode = match crate::crs::selected_upright(&d.properties) {
-                    Some(lightcraft_develop::Upright::Off) => M::Off,
-                    Some(lightcraft_develop::Upright::Auto) => M::Auto,
-                    Some(lightcraft_develop::Upright::Full) => M::Full,
-                    Some(lightcraft_develop::Upright::Level) => M::Level,
-                    Some(lightcraft_develop::Upright::Vertical) => M::Vertical,
-                    Some(lightcraft_develop::Upright::Guided) => M::Guided,
-                    None => M::Unknown,
-                };
-                if mode != M::Off {
-                    out.warnings.push(crate::import::ImportWarning {
-                        path: String::new(),
-                        code: crate::import::ImportWarningCode::UprightGeometry,
-                        profile: None,
-                        mode: Some(mode),
-                        fields: Vec::new(),
-                    });
-                }
-                out.upright = crate::crs::saved_upright(&d.properties);
+            // Lightroom's Upright: its saved matrix is kept when the photo's frame is known
+            // ([`SidecarData::set_frame`]); until then, and whenever it can't be (Guided's guides
+            // aren't read), the mode is solved again and the warning says so. Off loses nothing.
+            if let Some(mode) = crate::crs::upright_at_risk(&d.properties) {
+                out.warnings.push(crate::import::ImportWarning {
+                    path: String::new(),
+                    code: crate::import::ImportWarningCode::UprightGeometry,
+                    profile: None,
+                    mode: Some(mode),
+                    fields: Vec::new(),
+                });
             }
+            out.upright = crate::crs::saved_upright(&d.properties);
             let other: Vec<&str> =
                 unmapped.iter().map(String::as_str).filter(|name| *name != "CameraProfile" && !name.starts_with("Upright")).collect();
             if !other.is_empty() {
@@ -290,6 +293,15 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         Some(DevelopPatch::Full(s)) => (**s).clone(),
         Some(DevelopPatch::Partial(v)) => {
             let mut v = v.clone();
+            if let Some(f) = sc.frame {
+                // the crop and Lightroom's saved Upright are on the stored image: into the frame the
+                // file's orientation and then the photo's own Rotate Left / Right give
+                let user = p.develop.orientation;
+                crate::crs::crop_in_frame(&mut v, f.orientation.then(user), f.width / f.height);
+                if let Some(h) = sc.placed_upright {
+                    crate::crs::put_upright_transform(&mut v, lightcraft_pipeline::upright::turned(&h, user));
+                }
+            }
             if p.width > 0 && p.height > 0 {
                 crate::crs_masks::refit_radials(&mut v, crate::crs_masks::DEFAULT_ASPECT, p.width as f64 / p.height as f64);
             }
@@ -306,19 +318,25 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
 }
 
 impl SidecarData {
-    /// Keep Lightroom's saved Upright correction ([`SidecarData::upright`]) for a photo whose stored
-    /// image (`stored_w × stored_h`, before its orientation) is turned onto LightCraft's frame by
-    /// `orientation`: the correction goes into the develop patch and the `uprightGeometry` warning
-    /// is dropped. Without a frame (or with a degenerate one) nothing changes: the mode is solved
-    /// again and the warning stays. Returns whether the correction was placed.
-    pub fn place_upright(&mut self, frame: Option<(lightcraft_geom::Orientation, f64, f64)>) -> bool {
-        let (Some(saved), Some((orientation, w, h)), Some(DevelopPatch::Partial(partial))) = (self.upright, frame, self.develop.as_mut()) else {
+    /// The photo's stored image (`None`: not known). With it, [`merge_into`] puts the packet's crop
+    /// into LightCraft's frame (as the Lightroom catalog import does) and keeps Lightroom's saved
+    /// Upright correction, so the `uprightGeometry` warning is dropped. Without it, or for a
+    /// straightened crop on top of a saved Upright (not measured yet), the mode is solved again and
+    /// the warning stays. Returns whether the saved Upright will be kept.
+    pub fn set_frame(&mut self, frame: Option<StoredFrame>) -> bool {
+        self.frame = frame.filter(|f| f.width.is_finite() && f.height.is_finite() && f.width > 0.0 && f.height > 0.0);
+        self.placed_upright = None;
+        let (Some(saved), Some(f), Some(DevelopPatch::Partial(partial))) = (self.upright, self.frame, self.develop.as_ref()) else {
             return false;
         };
-        let Some(transform) = crate::crs::upright_in_frame(&saved, orientation, w, h) else { return false };
-        crate::crs::put_upright_transform(partial, transform);
-        self.warnings.retain(|w| w.code != crate::import::ImportWarningCode::UprightGeometry);
-        true
+        if partial.pointer("/crop/geometry/angle").and_then(Value::as_f64).is_some_and(|a| a != 0.0) {
+            return false;
+        }
+        self.placed_upright = crate::crs::upright_in_frame(&saved, f.orientation, f.width, f.height);
+        if self.placed_upright.is_some() {
+            self.warnings.retain(|w| w.code != crate::import::ImportWarningCode::UprightGeometry);
+        }
+        self.placed_upright.is_some()
     }
 
     /// Read the label through the catalog's label names: other editors write the label's name
@@ -686,10 +704,11 @@ impl Session {
         let Some(orig) = file_path(p) else { return Ok(None) };
         let Some((packet, from)) = read_packet(orig, p.kind, self.sidecar_naming(id)) else { return Ok(None) };
         let mut sc = parse_sidecar(&packet, crate::crs::Target::for_photo(p)).map_err(|e| EngineError::Other(format!("{}: {e}", from.display())))?;
-        if sc.upright.is_some() {
-            // Lightroom's matrix is in the stored image's frame: the file says how it is oriented
+        let cropped = matches!(&sc.develop, Some(DevelopPatch::Partial(v)) if v.pointer("/crop/geometry").is_some());
+        if sc.upright.is_some() || cropped {
+            // Lightroom's crop and saved Upright are on the stored image: the file says how it is oriented
             let probed = crate::import::probe_paths(self, &[orig.to_string()]).into_iter().next().and_then(std::result::Result::ok);
-            sc.place_upright(probed.and_then(|info| info.stored_frame()));
+            sc.set_frame(probed.and_then(|info| info.stored_frame()));
         }
         let mut warnings = sc.warnings.clone();
         for warning in &mut warnings {

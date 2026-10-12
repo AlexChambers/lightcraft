@@ -1069,8 +1069,8 @@ impl ImportJob {
             let target = crate::crs::Target::for_file(info.kind, &info.format, info.preview_only.is_some(), &info.meta.camera);
             let sidecar = packet.and_then(|x| match crate::sidecar::parse_sidecar(&x, target) {
                 Ok(mut sc) => {
-                    // Lightroom's saved Upright, in the frame the file's own orientation gives
-                    sc.place_upright(info.stored_frame());
+                    // Lightroom's crop and saved Upright refer to the file's stored image
+                    sc.set_frame(info.stored_frame());
                     Some(sc)
                 }
                 Err(e) => {

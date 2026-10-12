@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use lightcraft_develop::{MIXER_BANDS, Preset, Upright};
-use lightcraft_geom::{Homography, Orientation, Point};
+use lightcraft_geom::{Affine, Homography, Orientation, Point, Rect};
 use serde_json::{Map, Value, json};
 
 /// Properties keyed `prefix:name` (as produced by [`lightcraft_meta::parse_xmp`]).
@@ -426,7 +426,7 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
         put(o, "geometry.upright", json!(upright_mode(u).unwrap_or(Upright::Off)));
         // a stated mode never keeps a transform solved for another one: it is solved again for this
         // photo, unless the photo's frame is known and Lightroom's own saved matrix is placed
-        // ([`saved_upright`], [`crate::sidecar::SidecarData::place_upright`])
+        // ([`saved_upright`], [`crate::sidecar::SidecarData::set_frame`])
         put(o, "geometry.upright_transform", Value::Null);
     }
 
@@ -545,6 +545,34 @@ pub fn selected_upright(props: &Props) -> Option<Upright> {
     num(props, "crs:PerspectiveUpright").and_then(upright_mode)
 }
 
+/// Whether a packet has Guided Upright guides (`crs:UprightFourSegments_<n>`, or a positive
+/// `crs:UprightFourSegmentsCount`). LightCraft doesn't read them.
+pub fn has_upright_guides(props: &Props) -> bool {
+    let stated = |values: &Vec<String>| values.iter().any(|v| !v.trim().is_empty());
+    props.iter().any(|(key, values)| {
+        key.strip_prefix("crs:UprightFourSegments_").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) && stated(values)
+    }) || num(props, "crs:UprightFourSegmentsCount").is_some_and(|n| n > 0.0)
+}
+
+/// The Upright geometry an import loses unless Lightroom's saved matrix is kept, by the mode the
+/// packet selects: saved matrices for any mode but Off (an unreadable mode value is `Unknown`), and
+/// Guided Upright's guides. `None`: nothing would be lost (Upright Off, or no Upright record).
+pub fn upright_at_risk(props: &Props) -> Option<crate::import::ImportUprightMode> {
+    use crate::import::ImportUprightMode as M;
+    let (matrices, guides) = (has_saved_upright_transform(props), has_upright_guides(props));
+    let stated = props.get("crs:PerspectiveUpright").is_some_and(|v| v.iter().any(|s| !s.trim().is_empty()));
+    match selected_upright(props) {
+        Some(Upright::Off) => None,
+        None if !stated => None,
+        None => (matrices || guides).then_some(M::Unknown),
+        Some(Upright::Guided) => (matrices || guides).then_some(M::Guided),
+        Some(Upright::Auto) => matrices.then_some(M::Auto),
+        Some(Upright::Full) => matrices.then_some(M::Full),
+        Some(Upright::Level) => matrices.then_some(M::Level),
+        Some(Upright::Vertical) => matrices.then_some(M::Vertical),
+    }
+}
+
 /// The `crs:UprightVersion` whose saved matrices were measured against Lightroom's exports (the
 /// only one seen, in packets written by Camera Raw 15.0 to 17.2: Lightroom Classic 12 to 14 and
 /// the Lightroom desktop app). Matrices of any other version are not read: their convention is
@@ -661,6 +689,37 @@ pub fn upright_in_frame(saved: &SavedUpright, orientation: Orientation, stored_w
 /// Put a placed Upright correction ([`upright_in_frame`]) into a partial settings object.
 pub fn put_upright_transform(partial: &mut Value, h: Homography) {
     put(partial, "geometry.upright_transform", json!(h));
+}
+
+/// Lightroom's crop in LightCraft's frame (Lightroom catalogs and, given the photo's frame, XMP
+/// sidecars: [`crate::sidecar::SidecarData::set_frame`]). `crs` gives the crop's top-left (`CropLeft`, `CropTop`)
+/// and bottom-right (`CropRight`, `CropBottom`) corners on the stored image (before orientation and
+/// straightening), normalized to its size, plus a straighten angle that turns the other way to
+/// LightCraft's. LightCraft's crop is a rectangle in the oriented image rotated by `angle` about its
+/// centre, normalized to the oriented image's size, so the corners go through the orientation and
+/// then the rotation; `stored_aspect` (width / height of the stored image) matters once the
+/// rectangle turns. On a real catalog this reproduced the frame aspect of all 223 straightened crops
+/// in Lightroom's exports within 1%.
+pub fn crop_in_frame(partial: &mut Value, orientation: Orientation, stored_aspect: f64) {
+    let Some(geometry) = partial.pointer_mut("/crop/geometry").and_then(Value::as_object_mut) else { return };
+    let edge = |k: &str| geometry.get("rect").and_then(|r| r.get(k)).and_then(Value::as_f64);
+    let (Some(x0), Some(y0), Some(x1), Some(y1)) = (edge("x0"), edge("y0"), edge("x1"), edge("y1")) else { return };
+    let lightroom_angle = geometry.get("angle").and_then(Value::as_f64).unwrap_or(0.0);
+    if orientation == Orientation::Normal && lightroom_angle == 0.0 {
+        return;
+    }
+    let w = if stored_aspect.is_finite() && stored_aspect > 0.0 { stored_aspect } else { 1.0 };
+    let (ow, oh) = if orientation.swaps_axes() { (1.0, w) } else { (w, 1.0) };
+    // a mirror turns the straighten the other way too
+    let angle = if orientation.to_parts().0 { lightroom_angle } else { -lightroom_angle };
+    let to_rotated = Affine::rotate_about(angle.to_radians(), Point::new(ow / 2.0, oh / 2.0));
+    let corner = |x: f64, y: f64| {
+        let (u, v) = orientation.map(x * w, y, w, 1.0);
+        to_rotated.apply(Point::new(u, v))
+    };
+    let r = Rect::from_points(corner(x0, y0), corner(x1, y1));
+    geometry.insert("rect".into(), json!({"x0": r.x0 / ow, "y0": r.y0 / oh, "x1": r.x1 / ow, "y1": r.y1 / oh}));
+    geometry.insert("angle".into(), json!(angle));
 }
 
 /// Read an XMP preset (`crs:` fields + `crs:Name` / `crs:Group`) into one of our presets.
