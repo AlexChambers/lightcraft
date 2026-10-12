@@ -234,6 +234,8 @@ impl ImportDialog {
 /// UI thread between frames, so a slow drive never stalls the window.
 #[derive(Debug, Default)]
 pub struct ImportTask {
+    /// Photo IDs, import options and prepared batches belong to this library opening.
+    library: u64,
     /// Files and folders to import (handed to the worker when the task starts).
     queue: Vec<String>,
     pub total: usize,
@@ -276,8 +278,8 @@ pub struct ImportTask {
 
 impl ImportTask {
     /// An import of `paths` (files or folders) with `library.import` params (without `paths`).
-    pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool) -> Self {
-        ImportTask { total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
+    pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool, session: &lightcraft_engine::Session) -> Self {
+        ImportTask { library: session.library_generation(), total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
     }
 
     /// An Auto Import (see [`ImportTask::auto`]).
@@ -468,6 +470,35 @@ pub(crate) fn cards_seen(app: &mut LightcraftApp, now: Vec<lightcraft_engine::de
     }
 }
 
+/// Startup recovery has not chosen a usable library or Continue Without Saving yet.
+pub fn waiting_for_library(app: &LightcraftApp) -> bool {
+    app.session.library.is_none()
+        && app.pending_document_library.is_none()
+        && app.import.is_none()
+        && app.library_problem.as_ref().is_some_and(|p| !p.dismissed)
+}
+
+/// Include the native file/folder picker, before its scan opens the Import Photos review.
+pub fn dialog_open(app: &LightcraftApp) -> bool {
+    matches!(app.ui.dialog, Some(crate::state::Dialog::Import { .. }))
+        || app.pending_picks.iter().any(|p| matches!(p.command.as_str(), "file.addPhotos" | "file.addFolder" | "file.importLightroom"))
+}
+
+/// Keep queued documents and running imports in the library where they were requested.
+/// Recovery is allowed to choose a library before any native request has been bound to one.
+pub(crate) fn check_library_switch(app: &mut LightcraftApp) -> Result<(), String> {
+    if app.import.is_some() || app.scan.is_some() || dialog_open(app) || (app.pending_document_opens != 0 && !waiting_for_library(app)) {
+        let error = crate::i18n::tr(
+            "Finish or cancel the import and close Import Photos before switching libraries. Queued photos will open in this library.",
+        )
+        .to_string();
+        let ctx = app.tasks.repaint.clone().unwrap_or_default();
+        app.toast_error(&ctx, error.clone());
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Scan `paths` in the background, then open the review dialog (see [`poll_scan`]).
 pub fn open(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Value, String> {
     if app.scan.is_some() {
@@ -560,6 +591,11 @@ pub fn browse(app: &mut LightcraftApp, path: &str, subfolders: Option<bool>) -> 
 pub fn poll_scan(app: &mut LightcraftApp, ctx: &egui::Context) {
     let Some(task) = app.scan.as_ref() else { return };
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    // A drop or Auto Import can start while a Local scan is finishing. Keep its result until
+    // that import finishes instead of replacing the active worker with the browse import.
+    if task.browse && app.import.is_some() {
+        return;
+    }
     let out = match task.rx.try_recv() {
         Ok(o) => o,
         Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -599,7 +635,7 @@ pub fn poll_scan(app: &mut LightcraftApp, ctx: &egui::Context) {
             let undo0 = app.session.undo.len();
             let total = queue.len();
             let _ = total;
-            app.import = Some(ImportTask::new(queue, json!({"mode": "add", "local": true}), undo0, true));
+            app.import = Some(ImportTask::new(queue, json!({"mode": "add", "local": true}), undo0, true, &app.session));
         }
         return;
     }
@@ -635,6 +671,9 @@ impl ScanTask {
 /// Start importing the dialog's checked files (the dialog's OK / `ui.dialog.confirm`).
 pub fn start(app: &mut LightcraftApp, d: &ImportDialog) -> Result<Value, String> {
     busy_synchronizing(app)?;
+    if app.import.is_some() || app.scan.is_some() {
+        return Err(crate::i18n::tr("An import is already running. Wait for it to finish, then click Import again.").to_string());
+    }
     let queue = d.selected_paths();
     if queue.is_empty() {
         return Err("no photos selected".into());
@@ -679,7 +718,7 @@ pub fn start(app: &mut LightcraftApp, d: &ImportDialog) -> Result<Value, String>
         }
     }
     let total = queue.len();
-    app.import = Some(ImportTask::new(queue, params, undo0, false));
+    app.import = Some(ImportTask::new(queue, params, undo0, false, &app.session));
     app.renderer.forget_imports();
     Ok(json!({"importing": total}))
 }
@@ -687,12 +726,12 @@ pub fn start(app: &mut LightcraftApp, d: &ImportDialog) -> Result<Value, String>
 /// Start importing `paths` (files or folders) in the background, e.g. dropped on the window.
 pub fn start_paths(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Value, String> {
     busy_synchronizing(app)?;
-    if app.import.is_some() || app.scan.as_ref().is_some_and(|t| !t.browse) {
+    if app.import.is_some() || app.scan.is_some() {
         return Err("an import is running".into());
     }
     let undo0 = app.session.undo.len();
     let total = paths.len();
-    app.import = Some(ImportTask::new(paths, json!({"mode": "add"}), undo0, false));
+    app.import = Some(ImportTask::new(paths, json!({"mode": "add"}), undo0, false, &app.session));
     Ok(json!({"importing": total}))
 }
 
@@ -711,6 +750,12 @@ pub fn start_documents(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Va
 /// has readied to the catalog.
 pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
     let Some(mut task) = app.import.take() else { return };
+    // Check before both starting work and accepting prepared batches. The UI blocks library
+    // switches, but a host replacing its session must not commit old photo IDs into a new one.
+    if task.library != app.session.library_generation() {
+        app.notices.push(crate::i18n::tr("Import stopped because its library changed. Import the photos again in the intended library.").to_string());
+        return;
+    }
     if task.run.is_none() {
         let mut p = task.params.clone();
         p["paths"] = json!(task.queue);

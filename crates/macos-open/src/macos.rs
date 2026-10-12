@@ -197,3 +197,23 @@ mod tests {
         assert!(document_paths(&NSAppleEventDescriptor::new())[0].is_err());
     }
 }
+
+#[cfg(test)]
+mod review_file_references {
+    use super::*;
+    use objc2_foundation::NSURL;
+
+    #[test]
+    fn review_file_reference_url_resolves_to_an_owned_path() {
+        let path = std::env::temp_dir().join(format!("lc-open-reference-{}.png", std::process::id()));
+        std::fs::write(&path, b"file reference test").unwrap();
+        let original = std::fs::canonicalize(&path).unwrap();
+        let url = NSURL::from_file_path(&original).unwrap();
+        let reference = url.fileReferenceURL().unwrap();
+        assert!(reference.isFileReferenceURL());
+        let descriptor = NSAppleEventDescriptor::descriptorWithFileURL(&reference);
+        let actual = descriptor.fileURLValue().and_then(|u| u.to_file_path()).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(actual, original);
+    }
+}

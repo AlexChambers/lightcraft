@@ -1076,6 +1076,7 @@ pub(crate) fn can_switch_library(app: &LightcraftApp) -> Result<(), String> {
 /// and a dialog offers Import Lightroom Catalog… instead; returns `{opened: false,
 /// lightroomCatalog: <.lrcat path or null>, path}`.
 pub fn open_library(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
+    crate::import::check_library_switch(app)?;
     can_switch_library(app)?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(x) => x.to_string(),
@@ -1167,6 +1168,7 @@ pub fn open_library_name(app: &LightcraftApp) -> Option<String> {
 /// `path` itself, or a new folder named after the default library. The folder must not hold a
 /// library already, nor anything else.
 pub fn new_library(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
+    crate::import::check_library_switch(app)?;
     can_switch_library(app)?;
     let name = match p.get("name") {
         None | Some(Value::Null) => None,

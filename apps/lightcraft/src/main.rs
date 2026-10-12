@@ -69,6 +69,16 @@ struct App(
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Bind native requests before processing a menu action that could switch libraries.
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(events) = &self.3 {
+                for paths in events.take() {
+                    self.4.enqueue(paths, &mut self.0);
+                }
+            }
+            self.4.tick(&mut self.0);
+        }
         #[cfg(target_os = "macos")]
         if let Some(m) = self.2.as_mut()
             && m.update(&mut self.0, ctx)
@@ -79,15 +89,6 @@ impl eframe::App for App {
             // process instead of closing the viewport while AppKit is terminating (PR #444).
             eframe::App::on_exit(self, None);
             std::process::exit(0);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(events) = &self.3 {
-                for paths in events.take() {
-                    self.4.enqueue(paths, &mut self.0.notices);
-                }
-            }
-            self.4.tick(&mut self.0);
         }
         self.0.logic(ctx);
         self.1.tick(&mut self.0, ctx);

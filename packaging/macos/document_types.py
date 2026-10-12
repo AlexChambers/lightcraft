@@ -10,8 +10,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-# Use the system's identifiers where macOS defines them. Imported declarations supply
-# filename tags on older releases; they never export ownership of another vendor's type.
+# Use the system's identifiers where macOS defines them.
 TYPES = {
     "jpg": "public.jpeg", "jpeg": "public.jpeg", "png": "public.png",
     "tif": "public.tiff", "tiff": "public.tiff", "webp": "org.webmproject.webp",
@@ -30,6 +29,21 @@ TYPES = {
     "fff": "com.hasselblad.fff-raw-image",
 }
 RASTER = {"jpg", "jpeg", "png", "tif", "tiff", "webp", "psd", "jxl", "gif", "bmp", "heic", "heif", "avif"}
+# CoreTypes and its RawCameraTypes bundle supply these on the macOS 11 deployment
+# baseline. Reference them in LSItemContentTypes without redeclaring their tags.
+# JPEG XL and AVIF need compatibility declarations on older supported macOS versions.
+# X3F and KDC use our fallback identifiers because the baseline supplies neither.
+SYSTEM_TYPES = {
+    "public.jpeg", "public.png", "public.tiff", "org.webmproject.webp",
+    "com.adobe.raw-image", "com.canon.cr2-raw-image", "com.canon.cr3-raw-image",
+    "com.nikon.raw-image", "com.nikon.nrw-raw-image", "com.sony.arw-raw-image",
+    "com.fuji.raw-image", "com.olympus.raw-image", "com.panasonic.rw2-raw-image",
+    "com.leica.rwl-raw-image", "com.panasonic.raw-image", "com.pentax.raw-image",
+    "com.samsung.raw-image", "com.adobe.photoshop-image", "com.compuserve.gif",
+    "com.microsoft.bmp", "public.heic", "public.heif", "com.phaseone.raw-image",
+    "com.canon.crw-raw-image", "com.konicaminolta.raw-image", "com.leafamerica.raw-image",
+    "com.epson.raw-image", "com.hasselblad.3fr-raw-image", "com.hasselblad.fff-raw-image",
+}
 
 
 def declarations():
@@ -57,7 +71,7 @@ def declarations():
         "UTTypeDescription": f"{exts[0].upper()} image",
         "UTTypeConformsTo": ["public.data", "public.image" if exts[0] in RASTER else "public.camera-raw-image"],
         "UTTypeTagSpecification": {"public.filename-extension": exts},
-    } for uti, exts in grouped.items()]
+    } for uti, exts in grouped.items() if uti not in SYSTEM_TYPES]
     return documents, imported
 
 
