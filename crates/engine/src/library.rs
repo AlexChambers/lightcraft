@@ -692,12 +692,16 @@ impl Session {
     /// can hold thumbnails of the proxies it replaced. The library then takes a new thumbnail
     /// namespace before its cache is attached. Returns the markers, removed by
     /// [`Self::forget_interrupted_runs`] once the namespace is saved.
+    ///
+    /// The namespace moves on by one per marker. Until a save succeeds the markers stay, and
+    /// every run interrupted since adds one, so an opening after a session that could not save
+    /// its namespace, and that was interrupted again, does not take that session's namespace.
     #[cfg(not(target_arch = "wasm32"))]
     fn new_namespace_after_interrupted_runs(&mut self, thumbs: &std::path::Path) -> Vec<PathBuf> {
         let markers = crate::media::interrupted_runs(thumbs);
         if !markers.is_empty() {
-            log::info!("thumbnail cache: a smart preview build did not finish; using new thumbnail keys");
-            match self.smart_previews_cache_generation.checked_add(1) {
+            log::info!("thumbnail cache: {} smart preview run(s) did not finish; using new thumbnail keys", markers.len());
+            match u64::try_from(markers.len()).ok().and_then(|n| self.smart_previews_cache_generation.checked_add(n)) {
                 Some(next) => self.smart_previews_cache_generation = next,
                 // no new namespace left: remove the cached thumbnails instead
                 None => lightcraft_preview::DiskCache::new(thumbs, 0).clear(),
@@ -707,7 +711,7 @@ impl Session {
     }
 
     /// Save the namespace [`Self::new_namespace_after_interrupted_runs`] took, then remove the
-    /// markers. Until the save succeeds they stay, and each opening takes a new namespace.
+    /// markers. If the save fails they stay and count again at the next opening.
     #[cfg(not(target_arch = "wasm32"))]
     fn forget_interrupted_runs(&mut self, markers: Vec<PathBuf>) {
         if markers.is_empty() {

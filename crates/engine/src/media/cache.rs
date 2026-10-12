@@ -80,6 +80,20 @@ impl Default for MediaCache {
     }
 }
 
+/// The thumbnail folder `dir`, spelled one way however its library was reached (a symlink, `..`
+/// or a relative path), so that the caches, proxy workers' invalidation and markers of one
+/// library meet. A folder that does not exist yet resolves through its parent; one that cannot
+/// be resolved stays as given.
+pub(crate) fn thumbnail_folder(dir: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(dir) {
+        return resolved;
+    }
+    match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent).map_or_else(|_| dir.to_path_buf(), |parent| parent.join(name)),
+        _ => dir.to_path_buf(),
+    }
+}
+
 /// Memory for rendered previews out of the cache share.
 fn rendered_budget(share: usize) -> usize {
     RENDERED_MEM_BYTES.min(share / 4)
@@ -103,8 +117,10 @@ impl MediaCache {
     }
 
     /// Folder switches and reopening use the namespace saved with the library preferences.
-    /// This replaces memory state only; cache files are read or pruned by render workers.
+    /// This resolves the folder's path ([`thumbnail_folder`]) and replaces memory state; it reads
+    /// or deletes no cache file (render workers read and prune them).
     pub(crate) fn attach_disk_cache_namespace(&mut self, dir: &std::path::Path, disk_bytes: u64, namespace: u64) {
+        let dir = &thumbnail_folder(dir);
         // A different namespace isolates late disk writes without waiting for their I/O.
         // Session::accept and the UI also compare cache identity before accepting results.
         if !self.rendered.disk().is_some_and(|disk| disk.dir() == dir && disk.namespace() != namespace) {
@@ -123,6 +139,7 @@ impl MediaCache {
     /// object keeps its generation. Nothing is attached here: a library attaches its cache when
     /// it opens or changes its smart preview folder, in the namespace saved with it.
     pub fn set_disk_cache_bytes(&mut self, dir: &std::path::Path, disk_bytes: u64) {
+        let dir = thumbnail_folder(dir);
         if let Some(d) = self.rendered.disk().filter(|d| d.dir() == dir) {
             d.set_budget(disk_bytes);
         }
