@@ -375,6 +375,16 @@
   JPEG get faster too.
 ## 2026-10-12
 
+### Lightroom Upright comes across
+- Photos edited in Lightroom with Upright Auto, Full, Level or Vertical now open framed as they are in Lightroom
+  (issue #205). LightCraft keeps the correction Lightroom saved with the edit instead of analysing the photo again.
+  This works for XMP sidecars, DNG files with the edit inside and Lightroom Classic catalogs. Photos imported
+  earlier get it with Photo ▸ Read Metadata from File.
+- Lightroom's Upright values 2, 3 and 4 now read as Full, Level and Vertical. They used to come in as Level,
+  Vertical and Full.
+- Guided Upright doesn't come across yet (Lightroom's guides aren't read), and the import report says so. The
+  report no longer lists Lightroom's Upright analysis fields as adjustments that weren't imported.
+
 ### Canon CR2 highlights
 - Blown highlights in CR2 files from the Canon EOS 50D, 60D, 450D (Rebel XSi), 500D (Rebel T1i), 550D (Rebel T2i),
   1200D (Rebel T5) and 100D (Rebel SL1) now count as clipped (issue #1272). They used to stop at 81–98% of white, so

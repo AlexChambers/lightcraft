@@ -38,8 +38,8 @@ used — on import (it then also files a copied photo in its date folder) and by
 `lc:settings` when present (exact); otherwise from the `crs:` fields below (approximate).
 
 When foreign `crs:` settings are only partly transferable, `library.import` includes per-photo `warnings` in its
-report. Warnings identify unsupported profile names, saved Upright geometry that will be recalculated, and other
-unmapped adjustments; they do not change the source packet or become catalog edits.
+report. Warnings identify unsupported profile names, saved Upright geometry that can't be kept and will be recalculated,
+and other unmapped adjustments; they do not change the source packet or become catalog edits.
 
 ## Saving into an existing sidecar
 
@@ -140,12 +140,41 @@ application's renderer and is ignored: the photo keeps LightCraft's own process,
 | `DefringePurple/GreenAmount/HueLo/HueHi` | `optics.defringe_*` | |
 | `ShadowTint`, `RedHue/Saturation`, `GreenHue/Saturation`, `BlueHue/Saturation` | `calibration.shadows_tint`, `calibration.red_hue/red_sat`, … | Calibration panel, 1:1 |
 | `PerspectiveVertical/Horizontal/Rotate/Scale/Aspect/X/Y` | `geometry.vertical/horizontal/rotate/scale/aspect/offset_x/offset_y` | |
-| `PerspectiveUpright` | `geometry.upright` | 0 off, 1 auto, 2 level, 3 vertical, 4 full, 5 guided; saved `UprightTransform_*` matrices are not imported, so photo import reports that Lightroom geometry was not preserved and the selected mode will be recalculated |
+| `PerspectiveUpright` | `geometry.upright`, `geometry.upright_transform` | 0 off, 1 auto, 2 full, 3 level, 4 vertical, 5 guided; Lightroom's saved correction for the selected mode is kept as it is when it can be (see *Saved Upright geometry*), otherwise LightCraft works the mode out itself (Guided needs guides drawn in LightCraft: Lightroom's aren't read) and photo import says so |
 | `HasCrop`, `CropLeft/Top/Right/Bottom`, `CropAngle` | `crop.geometry` | normalized edges → rect; angle in degrees; `HasCrop="False"` → no crop |
 
 Values pass through our control specs, so anything outside our slider ranges gets clamped.
 
 `crs:CameraProfile` is kept as the selected name in the photo's import warning and the active profile is left as it is: the name carries no rendering data and never selects an Adobe profile. Import reports such a profile as not applied (colours may differ from Lightroom), except Lightroom's default profiles (`Adobe Standard`, `Adobe Color`), which every sidecar names and which LightCraft's own starting look stands in for.
+
+### Saved Upright geometry
+
+Lightroom saves its Upright analysis with the edit: `UprightVersion`, `UprightTransformCount` (6) and one 3 × 3
+matrix per mode, `UprightTransform_0` to `_5`, numbered like `PerspectiveUpright` (0 Off and 5 Guided hold the
+identity: Guided is solved from the guides when they are drawn). LightCraft keeps the selected mode's matrix, so the
+photo is framed as in Lightroom instead of being analysed again, when
+
+- the mode is Auto, Full, Level or Vertical;
+- `UprightVersion` is `151388160` (the only version seen so far; any other is solved again);
+- `UprightTransformCount` includes the mode's matrix, and the matrix is nine finite numbers that make a sensible
+  correction (no part of the photo at or beyond the horizon, no mirror, no collapse);
+- the file's orientation is known: on import, Read Metadata from File and Lightroom catalog import (Synchronize
+  Folder solves the mode again).
+
+The matrix's convention was measured on Lightroom's exports, not assumed (issue #205): a forward homography (photo
+before correction to photo after it, column vectors) in coordinates normalised to the stored image (x / width,
+y / height, origin top left, y down, before the EXIF orientation), applied before the crop, with Lightroom's scale
+to fill the frame already in it. LightCraft turns it with the file's orientation into its own frame
+(`geometry.upright_transform`, centred coordinates of the oriented image) and applies the crop on top, as
+Lightroom does. On three public NEF raws exported by Lightroom Classic 12 with Upright Auto (one shown in portrait,
+one cropped with Constrain Crop on), LightCraft's geometry with the kept matrix matches the exports to about half a
+pixel on average and under a pixel at worst, at full size; without it, the frames differ by 22 to 36 px on average.
+
+Not measured yet: the Transform sliders (Vertical, Horizontal, Rotate, Aspect, Scale, X / Y Offset) together with a
+saved Upright (LightCraft applies its own slider mapping on top, as with its own Upright), Level, Vertical and Full
+exports (their matrices have those modes' shapes, but no export of them with its raw was available), photos with
+Lightroom lens profile corrections, and an angled crop on top of Upright. Guided Upright's guides
+(`UprightFourSegments_*`) aren't read.
 
 **Profiles named by presets (`Look`, issue #1001).** A preset keeps the profile it names (`crs:Look`: `Name`, `Group`,
 `UUID`, `Amount`; in `.lrtemplate` files the `Look` table) as `profile.look` in its settings. When the user has imported
