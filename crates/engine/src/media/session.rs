@@ -75,6 +75,7 @@ impl crate::Session {
         Some(RenderJob {
             request_id: 0,
             cache_generation,
+            cache_owner: Arc::downgrade(&self.media.rendered),
             source_key: Some(source_key),
             photo: id,
             level,
@@ -140,6 +141,7 @@ impl crate::Session {
         Some(RenderJob {
             request_id: 0,
             cache_generation,
+            cache_owner: Arc::downgrade(&self.media.rendered),
             source_key: Some(Hasher128::new().str(&content_key(&p)).finish()),
             photo: id,
             level,
@@ -201,6 +203,7 @@ impl crate::Session {
         Some(RenderJob {
             request_id: 0,
             cache_generation,
+            cache_owner: Arc::downgrade(&self.media.rendered),
             source_key: Some(Hasher128::new().str(&content_key(&p)).finish()),
             photo: id,
             level,
@@ -392,7 +395,8 @@ impl crate::Session {
     /// Accept a finished job's loaded source into the cache. What the decode learnt about the file that the catalog
     /// has wrong is corrected too ([`Self::learn_as_shot_wb`]).
     pub fn accept(&mut self, r: &RenderResult) {
-        if r.cache_generation == self.media.rendered.generation()
+        if r.cache_owner.upgrade().is_some_and(|cache| Arc::ptr_eq(&cache, &self.media.rendered))
+            && r.cache_generation == self.media.rendered.generation()
             && let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == key))
         {

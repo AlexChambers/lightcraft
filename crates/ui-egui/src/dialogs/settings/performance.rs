@@ -97,6 +97,7 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     if loc.is_null() {
         return;
     }
+    let migrating = app.session.activity.list().iter().any(|task| task.kind == "smartMigration");
     heading(ui, t, crate::i18n::tr("Smart previews"));
     let mut format = app.session.smart_previews_format;
     row(ui, t, crate::i18n::tr("Format for new builds"), |ui| {
@@ -121,7 +122,7 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         ui.add_space(LABEL_W);
         let running = app.session.preview_build.as_ref().is_some_and(|b| !b.finished.load(std::sync::atomic::Ordering::Relaxed));
-        let r = ui.add_enabled(!running, egui::Button::new(crate::i18n::tr("Build for All Photos")));
+        let r = ui.add_enabled(!running && !migrating, egui::Button::new(crate::i18n::tr("Build for All Photos")));
         register(ui.ctx(), "button:settingsSmartBuild", r.rect);
         if r.clicked() {
             let ids: Vec<_> = app.session.catalog.photos().map(|p| p.id.0).collect();
@@ -183,35 +184,24 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         ui.add_space(LABEL_W);
         if app.services.pick_folder.is_some() {
-            let r = ui.button(crate::i18n::tr("Choose Folder…"));
+            let r = ui.add_enabled(!migrating, egui::Button::new(crate::i18n::tr("Choose Folder…")));
             register(ui, "button:settingsSmartChoose", r.rect);
             if r.clicked()
                 && let Some(dir) = app.services.pick_folder.as_mut().and_then(|f| f())
             {
-                result = Some(app.run("library.smartPreviewsLocation", json!({"path": dir, "existing": existing})));
+                result = Some(app.run("library.smartPreviewsLocation", json!({"path": dir, "existing": existing, "background": true})));
             }
         }
-        let r = ui.add_enabled(custom, egui::Button::new(crate::i18n::tr("Use Library Folder")));
+        let r = ui.add_enabled(custom && !migrating, egui::Button::new(crate::i18n::tr("Use Library Folder")));
         register(ui, "button:settingsSmartReset", r.rect);
         if r.clicked() {
-            result = Some(app.run("library.smartPreviewsLocation", json!({"reset": true, "existing": existing})));
+            result = Some(app.run("library.smartPreviewsLocation", json!({"reset": true, "existing": existing, "background": true})));
         }
     });
     if let Some(r) = result {
         ui.data_mut(|d| d.remove::<(f64, Value)>(cache));
-        match r {
-            Ok(v) => {
-                let failed = v["failed"].as_array().map_or(0, Vec::len);
-                let msg = match (existing, v["handled"].as_u64().unwrap_or(0)) {
-                    (_, 0) => "Smart previews folder changed".to_string(),
-                    ("move", n) => format!("Smart previews folder changed; moved {n}"),
-                    ("discard", n) => format!("Smart previews folder changed; deleted {n}"),
-                    _ => "Smart previews folder changed".to_string(),
-                };
-                app.toast(ui.ctx(), if failed > 0 { crate::i18n::tr_format!("{msg} ({failed} failed)", failed = failed, msg = msg) } else { msg });
-            }
-            Err(e) => app.toast(ui.ctx(), e),
-        }
+        if let Err(e) = r { app.toast(ui.ctx(), e); }
     }
+    hint(ui, t, crate::i18n::tr("The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes."));
     hint(ui, t, crate::i18n::tr("Keep smart previews on a drive with enough free space. The thumbnail cache stays in the library."));
 }

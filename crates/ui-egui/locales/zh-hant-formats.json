@@ -310,5 +310,7 @@
   "Could not read {name}: {e}": "無法讀取 {name}：{e}",
   "Added {n} photo{}": "已加入 {n} 張照片{:.0}",
   "Where should the Lightroom catalog “{catalog}” go?": "Lightroom 目錄「{catalog}」要匯入到哪裡？",
-  "Merge into the open library “{library}” ({count} photo{})": "合併到目前開啟的照片庫「{library}」（{count} 張照片）{:.0}"
+  "Merge into the open library “{library}” ({count} photo{})": "合併到目前開啟的照片庫「{library}」（{count} 張照片）{:.0}",
+  "Smart preview folder changed. {count} source files could not be removed.": "已變更智慧預覽資料夾。無法刪除 {count} 個來源檔案。",
+  "Smart preview folder change failed: {error}": "變更智慧預覽資料夾失敗：{error}"
 }

@@ -3440,5 +3440,11 @@
   "Import dropped files without review": "Abgelegte Dateien ohne Prüfung importieren",
   "An import is running": "Ein Import läuft",
   "An import is running. Drop photos when it has finished": "Ein Import läuft. Lege die Fotos ab, wenn er fertig ist",
-  "Finish Lightroom catalog import before adding photos": "Schließe den Import des Lightroom-Katalogs ab, bevor du Fotos hinzufügst"
+  "Finish Lightroom catalog import before adding photos": "Schließe den Import des Lightroom-Katalogs ab, bevor du Fotos hinzufügst",
+  "Changing smart preview folder": "Ordner für Smart-Vorschauen wird geändert",
+  "Refreshing smart previews": "Smart-Vorschauen werden aktualisiert",
+  "Smart preview folder changed. One source file could not be removed.": "Ordner für Smart-Vorschauen geändert. Eine Quelldatei konnte nicht entfernt werden.",
+  "Smart preview folder changed.": "Ordner für Smart-Vorschauen geändert.",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "Der bisherige Ordner bleibt bis zum Ende des Kopierens in Gebrauch. Abbrechen behält den bisherigen Ordner bei. Nach dem Ordnerwechsel kann das Löschen der Quelldateien nicht abgebrochen werden.",
+  "Smart preview folder change cancelled. The old folder is still in use.": "Ordnerwechsel für Smart-Vorschauen abgebrochen. Der bisherige Ordner bleibt in Gebrauch."
 }

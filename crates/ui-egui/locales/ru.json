@@ -2349,5 +2349,11 @@
   "Import dropped files without review": "Импортировать перетащенные файлы без проверки",
   "An import is running": "Импорт уже выполняется",
   "An import is running. Drop photos when it has finished": "Импорт уже выполняется. Перетащите фото, когда он закончится",
-  "Finish Lightroom catalog import before adding photos": "Завершите импорт каталога Lightroom, прежде чем добавлять фото"
+  "Finish Lightroom catalog import before adding photos": "Завершите импорт каталога Lightroom, прежде чем добавлять фото",
+  "Changing smart preview folder": "Изменение папки смарт-превью",
+  "Refreshing smart previews": "Обновление смарт-превью",
+  "Smart preview folder changed. One source file could not be removed.": "Папка смарт-превью изменена. Не удалось удалить один исходный файл.",
+  "Smart preview folder changed.": "Папка смарт-превью изменена.",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "Старая папка используется до завершения копирования. Отмена сохраняет старую папку. После смены папки удаление исходных файлов отменить нельзя.",
+  "Smart preview folder change cancelled. The old folder is still in use.": "Смена папки смарт-превью отменена. Старая папка по-прежнему используется."
 }

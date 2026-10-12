@@ -2200,5 +2200,11 @@
   "Import dropped files without review": "不经检查直接导入拖入的文件",
   "An import is running": "正在导入",
   "An import is running. Drop photos when it has finished": "正在导入。导入完成后再拖放照片",
-  "Finish Lightroom catalog import before adding photos": "添加照片前，请先完成 Lightroom 目录的导入"
+  "Finish Lightroom catalog import before adding photos": "添加照片前，请先完成 Lightroom 目录的导入",
+  "Changing smart preview folder": "正在更改智能预览文件夹",
+  "Smart preview folder changed. One source file could not be removed.": "已更改智能预览文件夹。无法删除一个源文件。",
+  "Smart preview folder changed.": "已更改智能预览文件夹。",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "复制完成前仍使用原文件夹。取消会保留原文件夹。更改文件夹后，无法取消源文件清理。",
+  "Refreshing smart previews": "正在更新智能预览",
+  "Smart preview folder change cancelled. The old folder is still in use.": "已取消更改智能预览文件夹。仍在使用原文件夹。"
 }

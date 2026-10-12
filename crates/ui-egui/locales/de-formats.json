@@ -310,5 +310,7 @@
   "Could not read {name}: {e}": "{name} konnte nicht gelesen werden: {e}",
   "Added {n} photo{}": "{n} Foto{} hinzugefügt",
   "Where should the Lightroom catalog “{catalog}” go?": "Wohin soll der Lightroom-Katalog „{catalog}“?",
-  "Merge into the open library “{library}” ({count} photo{})": "Mit der geöffneten Bibliothek „{library}“ zusammenführen ({count} Foto{})"
+  "Merge into the open library “{library}” ({count} photo{})": "Mit der geöffneten Bibliothek „{library}“ zusammenführen ({count} Foto{})",
+  "Smart preview folder changed. {count} source files could not be removed.": "Ordner für Smart-Vorschauen geändert. {count} Quelldateien konnten nicht entfernt werden.",
+  "Smart preview folder change failed: {error}": "Ordnerwechsel für Smart-Vorschauen fehlgeschlagen: {error}"
 }

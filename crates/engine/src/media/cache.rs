@@ -51,6 +51,7 @@ impl DenoiseIndex {
 impl Default for MediaCache {
     fn default() -> Self {
         let budget = crate::memory::cache_share(crate::memory::budget());
+        let rendered = Arc::new(PreviewCache::memory(rendered_budget(budget)));
         MediaCache {
             settings_hashes: SettingsHashes::default(),
             thumbs: Lru::new(THUMB_SOURCE_BYTES.min(budget)),
@@ -71,7 +72,8 @@ impl Default for MediaCache {
             clear_after_source: false,
             availability: Default::default(),
             scenes: Vec::new(),
-            rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
+            invalidation: Invalidation::new(rendered.clone()),
+            rendered,
             denoise: DenoiseIndex::default(),
         }
     }
@@ -83,12 +85,19 @@ fn rendered_budget(share: usize) -> usize {
 }
 
 impl MediaCache {
+    /// Captured by proxy workers, follows cache replacement for this library only.
+    pub(crate) fn invalidation(&self) -> Invalidation {
+        self.invalidation.clone()
+    }
+
     /// Keep rendered thumbnails on disk in `dir` as well. The cache this replaces is retired
     /// (its files stay): render jobs still holding it can't write through it any more, even
     /// into a directory a later clear emptied (`dir` may be the same one).
     pub fn attach_disk_cache(&mut self, dir: &std::path::Path, disk_bytes: u64) {
         self.rendered.retire();
         self.rendered = Arc::new(PreviewCache::with_disk(rendered_budget(self.budget), dir, disk_bytes));
+        self.invalidation = Invalidation::for_disk(dir, self.rendered.clone());
+        self.clear_sources();
     }
 
     /// Change the disk budget of the cache in `dir`: in place when that cache is attached (its

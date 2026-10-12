@@ -22,6 +22,9 @@ use std::sync::{Arc, Weak};
 use lightcraft_catalog::{MediaKind, Op, Photo, PhotoId, Source};
 use lightcraft_develop::DevelopSettings;
 use lightcraft_pipeline::{Quality, RenderRequest, Rendered, SourceInfo, StageCache};
+mod invalidation;
+pub(crate) use invalidation::Invalidation;
+
 use lightcraft_preview::{Hash128, Hasher128, Lru, PreviewCache};
 use lightcraft_raster::{Histogram, Rgb32f, Rgba8};
 use serde::{Deserialize, Serialize};
@@ -80,6 +83,7 @@ pub struct MediaCache {
     scenes: Vec<lightcraft_scenes::Scene>,
     /// Rendered thumbnails (memory, plus disk once a library is attached).
     pub rendered: Arc<PreviewCache>,
+    invalidation: Invalidation,
     /// Which photos have a cached denoised picture, and how to read it.
     pub denoise: DenoiseIndex,
 }

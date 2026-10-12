@@ -310,5 +310,7 @@
   "Could not read {name}: {e}": "Не удалось прочитать {name}: {e}",
   "Added {n} photo{}": "Добавлено фото: {n}{:.0}",
   "Where should the Lightroom catalog “{catalog}” go?": "Куда импортировать каталог Lightroom «{catalog}»?",
-  "Merge into the open library “{library}” ({count} photo{})": "Объединить с открытой библиотекой «{library}» (фото: {count}){:.0}"
+  "Merge into the open library “{library}” ({count} photo{})": "Объединить с открытой библиотекой «{library}» (фото: {count}){:.0}",
+  "Smart preview folder changed. {count} source files could not be removed.": "Папка смарт-превью изменена. Количество исходных файлов, которые не удалось удалить: {count}.",
+  "Smart preview folder change failed: {error}": "Не удалось изменить папку смарт-превью: {error}"
 }

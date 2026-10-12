@@ -310,5 +310,7 @@
   "Could not read {name}: {e}": "Impossible de lire {name} : {e}",
   "Added {n} photo{}": "{n} photo{} ajoutée(s)",
   "Where should the Lightroom catalog “{catalog}” go?": "Où importer le catalogue Lightroom « {catalog} » ?",
-  "Merge into the open library “{library}” ({count} photo{})": "Fusionner avec la bibliothèque ouverte « {library} » ({count} photo{})"
+  "Merge into the open library “{library}” ({count} photo{})": "Fusionner avec la bibliothèque ouverte « {library} » ({count} photo{})",
+  "Smart preview folder changed. {count} source files could not be removed.": "Dossier des aperçus dynamiques modifié. {count} fichiers sources n'ont pas pu être supprimés.",
+  "Smart preview folder change failed: {error}": "Échec du changement du dossier des aperçus dynamiques : {error}"
 }

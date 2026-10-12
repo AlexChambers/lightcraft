@@ -292,6 +292,7 @@ impl Workers {
             if let Some(b) = w.busy.take() {
                 let r = RenderResult {
                     cache_generation: u64::MAX,
+                    cache_owner: Default::default(),
                     request_id: b.request_id,
                     source_key: None,
                     photo: b.photo,
@@ -384,6 +385,7 @@ impl Workers {
             b.slot,
             RenderResult {
                 cache_generation: u64::MAX,
+                cache_owner: Default::default(),
                 request_id: b.request_id,
                 source_key: None,
                 photo: b.photo,
@@ -439,6 +441,7 @@ impl RenderOffload for Workers {
             let histogram = Histogram::of_srgb8(&image);
             let r = RenderResult {
                 cache_generation: job.cache_generation,
+                cache_owner: job.cache_owner.clone(),
                 request_id: job.request_id,
                 source_key: job.source_key,
                 photo: job.photo,

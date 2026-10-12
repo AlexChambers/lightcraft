@@ -36,6 +36,7 @@ impl QuickJob {
         let (request_id, photo, key) = (self.request_id, self.photo, self.key);
         crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult {
             cache_generation: u64::MAX,
+            cache_owner: Weak::new(),
             request_id,
             source_key: None,
             photo,
@@ -54,6 +55,7 @@ impl QuickJob {
         let request_id = self.request_id;
         let done = |rendered: Result<Rendered, String>, quick| RenderResult {
             cache_generation: u64::MAX,
+            cache_owner: Weak::new(),
             request_id,
             source_key: None,
             photo,

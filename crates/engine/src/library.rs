@@ -454,6 +454,11 @@ impl Session {
 
     /// Open `stores`; the new library takes `lock` once nothing can fail any more.
     fn open_stores(&mut self, stores: LibraryStores, seed_demo: bool, lock: &mut Option<LibraryLock>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.smart_migration = None;
+            self.smart_migration_result = None;
+        }
         let LibraryStores { dir, catalog, mut files, on_disk } = stores;
         self.media.smart_dir = on_disk.then(|| crate::smart::dir(&dir));
         // the current library may be these same files: let its background snapshot land first
@@ -679,6 +684,8 @@ impl Session {
     /// Persist if commands left ops pending (cheap; frontends call it once per frame for state
     /// changed outside [`Session::execute`]).
     pub fn persist_if_dirty(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::cmd::previews::location::poll(self);
         let backing_off = self.library.as_ref().and_then(|l| l.retry_at).is_some_and(|t| web_time::Instant::now() < t);
         let presets_unsaved = self.library.as_ref().is_some_and(|l| l.presets_error.is_some());
         if self.library.is_some() && (!self.pending_log.is_empty() || presets_unsaved) && !backing_off {
