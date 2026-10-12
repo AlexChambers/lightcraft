@@ -71,8 +71,9 @@ fn corrections_become_masks() {
 fn masks_render() {
     let (s, _) = settings();
     let img = lightcraft_scenes::demo_library()[0].render(96, 64);
-    let render =
-        |d: &DevelopSettings| lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).image.data;
+    let render = |d: &DevelopSettings| {
+        lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).unwrap().image.data
+    };
     assert_ne!(render(&DevelopSettings { light: s.light, ..Default::default() }), render(&s), "the masks change the picture");
 }
 
@@ -323,7 +324,8 @@ fn spots_render() {
     let (partial, _) = crate::crs::to_partial_report(&d.properties, Some(&d.values), crate::crs::Target::Any, 1.5);
     let s = DevelopSettings::default().merged(&partial).unwrap();
     let img = lightcraft_scenes::demo_library()[0].render(96, 64);
-    let render =
-        |d: &DevelopSettings| lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).image.data;
+    let render = |d: &DevelopSettings| {
+        lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).unwrap().image.data
+    };
     assert_ne!(render(&DevelopSettings { light: s.light, ..Default::default() }), render(&s), "the spots change the picture");
 }

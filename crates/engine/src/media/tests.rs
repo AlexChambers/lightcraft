@@ -96,7 +96,7 @@ fn decoder_info_survives_render_jobs_cache_and_eviction() {
     job.settings = Arc::new(DevelopSettings::default());
     let r = job.clone().run();
     assert_eq!(r.loaded.as_ref().unwrap().info.as_ref(), Some(&info));
-    let expected = lightcraft_pipeline::render(&r.loaded.as_ref().unwrap().image, &info, &job.settings, &job.request);
+    let expected = lightcraft_pipeline::render(&r.loaded.as_ref().unwrap().image, &info, &job.settings, &job.request).unwrap();
     assert_eq!(r.rendered.as_ref().unwrap().image.data, expected.image.data);
     s.accept(&r);
     job.source = s.media.source_ref(s.catalog.photo(id).unwrap(), job.level);
@@ -154,9 +154,12 @@ fn old_relative_white_balance_on_a_kelvin_camera_keeps_its_look_and_learns_the_a
     let new = r.rendered.as_ref().unwrap().image.data.clone();
     // the old pipeline: the same settings against the relative-scale source facts of an older build
     let old_info = SourceInfo { raw: true, relative_wb: true, as_shot_temp: 6500.0, as_shot_tint: 0.0, ..Default::default() };
-    let old = lightcraft_pipeline::render(&pixels, &old_info, &d, &request).image.data;
+    let old = lightcraft_pipeline::render(&pixels, &old_info, &d, &request).unwrap().image.data;
     assert_eq!(new, old, "the look of an existing edit changed");
-    assert_ne!(new, lightcraft_pipeline::render(&pixels, &decoded, &lightcraft_develop::DevelopSettings::for_raw(4986.0, -2.0), &request).image.data);
+    assert_ne!(
+        new,
+        lightcraft_pipeline::render(&pixels, &decoded, &lightcraft_develop::DevelopSettings::for_raw(4986.0, -2.0), &request).unwrap().image.data
+    );
     // accepting the result records the as-shot white, journaled but not undoable, and the settings are untouched
     s.accept(&r);
     let p = s.catalog.photo(id).unwrap();
@@ -176,7 +179,7 @@ fn old_relative_white_balance_on_a_kelvin_camera_keeps_its_look_and_learns_the_a
     s.accept(&r);
     assert_eq!(s.pending_log.len(), log);
     // a catalog-only (proxy) render of the same settings before the decode gave the same pixels too
-    let proxy = lightcraft_pipeline::render(&pixels, &header, &d, &request).image.data;
+    let proxy = lightcraft_pipeline::render(&pixels, &header, &d, &request).unwrap().image.data;
     assert_eq!(proxy, old, "a smart preview of an existing edit changed");
 }
 

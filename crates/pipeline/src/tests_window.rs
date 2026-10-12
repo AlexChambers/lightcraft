@@ -18,12 +18,12 @@ fn scene() -> Rgb32f {
 }
 
 fn full(s: &DevelopSettings) -> Rgba8 {
-    render(&scene(), &SourceInfo::default(), s, &RenderRequest::fit(W, H)).image
+    render(&scene(), &SourceInfo::default(), s, &RenderRequest::fit(W, H)).unwrap().image
 }
 
 fn window(s: &DevelopSettings, win: PixelWindow) -> Rgba8 {
     let req = RenderRequest { window: Some(win), ..RenderRequest::fit(W, H) };
-    render(&scene(), &SourceInfo::default(), s, &req).image
+    render(&scene(), &SourceInfo::default(), s, &req).unwrap().image
 }
 
 /// Largest per-channel difference and mean absolute difference between `win` (rendered for
@@ -87,8 +87,8 @@ fn supplied_mattes_skip_heuristic_window_context() {
         });
         let p = crate::plan(&src, &info, &s, &req);
         assert_eq!((p.w, p.h), (MID.w, MID.h), "a supplied matte must not read heuristic context");
-        let f = render(&src, &info, &s, &RenderRequest { window: None, ..req }).image;
-        let w = render(&src, &info, &s, &req).image;
+        let f = render(&src, &info, &s, &RenderRequest { window: None, ..req }).unwrap().image;
+        let w = render(&src, &info, &s, &req).unwrap().image;
         assert_eq!(f.crop(MID.x, MID.y, MID.w, MID.h), w);
         s.masks[0].refine = 100.0;
         let refined = crate::plan(&src, &info, &s, &req);
@@ -164,8 +164,8 @@ fn defringe_window_includes_edge_neighbourhood() {
     let info = SourceInfo::default();
     let req = RenderRequest::fit(1200, 800);
     let at = PixelWindow { x: 500, y: 300, w: 160, h: 120 };
-    let f = render(&src, &info, &s, &req).image;
-    let w = render(&src, &info, &s, &RenderRequest { window: Some(at), ..req }).image;
+    let f = render(&src, &info, &s, &req).unwrap().image;
+    let w = render(&src, &info, &s, &RenderRequest { window: Some(at), ..req }).unwrap().image;
     let (max, mean) = compare_inset(&f, &w, at, 0);
     assert!(max <= 3 && mean <= 0.5, "Defringe at the window edge: max {max}, mean {mean}");
 }
@@ -278,7 +278,7 @@ fn spatial_adjustments_agree_inside_the_halo() {
 #[test]
 fn a_window_of_a_huge_frame_is_cheap() {
     let req = RenderRequest { window: Some(PixelWindow { x: 20_000, y: 12_000, w: 256, h: 192 }), ..RenderRequest::fit(48_000, 32_000) };
-    let r = render(&scene(), &SourceInfo::default(), &DevelopSettings::default(), &req);
+    let r = render(&scene(), &SourceInfo::default(), &DevelopSettings::default(), &req).unwrap();
     assert_eq!((r.image.width, r.image.height), (256, 192));
 }
 
@@ -312,8 +312,8 @@ fn noisy_scene() -> Rgb32f {
 
 fn check_noisy(name: &str, s: &DevelopSettings, win: PixelWindow, max_ok: u8, mean_ok: f64) {
     let src = noisy_scene();
-    let f = render(&src, &SourceInfo::default(), s, &RenderRequest::fit(W, H)).image;
-    let w = render(&src, &SourceInfo::default(), s, &RenderRequest { window: Some(win), ..RenderRequest::fit(W, H) }).image;
+    let f = render(&src, &SourceInfo::default(), s, &RenderRequest::fit(W, H)).unwrap().image;
+    let w = render(&src, &SourceInfo::default(), s, &RenderRequest { window: Some(win), ..RenderRequest::fit(W, H) }).unwrap().image;
     let (max, mean) = compare(&f, &w, win);
     assert!(max <= max_ok && mean <= mean_ok, "{name}: max {max} (≤ {max_ok}), mean {mean:.3} (≤ {mean_ok})");
 }
@@ -369,9 +369,10 @@ fn a_mask_overlay_window_matches_the_whole_render() {
         });
         for view in [MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] {
             let overlay = Overlay::Mask { id: 3, view, color: [255, 0, 0], opacity: 70 };
-            let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).image;
-            let w =
-                render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, window: Some(MID), ..RenderRequest::fit(W, H) }).image;
+            let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).unwrap().image;
+            let w = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, window: Some(MID), ..RenderRequest::fit(W, H) })
+                .unwrap()
+                .image;
             let (max, mean) = compare(&f, &w, MID);
             // (refine edges differs by a rounding step, as in `mask_edge_refinement_does_not_depend_on_the_window`)
             assert!(max <= 3 && mean <= 0.25, "{name} {view:?}: max {max} (≤ 3), mean {mean:.3} (≤ 0.25)");
@@ -430,9 +431,9 @@ const BIG_H: usize = 5120;
 /// The renderer must supply the context read by its wide spatial filters.
 fn check_big(name: &str, s: &DevelopSettings, max_ok: u8, mean_ok: f64) {
     let src = blocks();
-    let f = render(&src, &SourceInfo::default(), s, &RenderRequest::fit(BIG_W, BIG_H)).image;
+    let f = render(&src, &SourceInfo::default(), s, &RenderRequest::fit(BIG_W, BIG_H)).unwrap().image;
     let win = PixelWindow { x: 3000, y: 1800, w: 512, h: 384 };
-    let w = render(&src, &SourceInfo::default(), s, &RenderRequest { window: Some(win), ..RenderRequest::fit(BIG_W, BIG_H) }).image;
+    let w = render(&src, &SourceInfo::default(), s, &RenderRequest { window: Some(win), ..RenderRequest::fit(BIG_W, BIG_H) }).unwrap().image;
     let (max, mean) = compare(&f, &w, win);
     assert!(max <= max_ok && mean <= mean_ok, "{name}: max {max} (≤ {max_ok}), mean {mean:.3} (≤ {mean_ok})");
 }
@@ -596,11 +597,11 @@ fn dehaze_with_the_sweeps_small_margins_matches_full() {
     let mut s = DevelopSettings::default();
     s.effects.dehaze = 100.0;
     let req = RenderRequest::fit(2400, 1600);
-    let f = render(&src, &SourceInfo::default(), &s, &req).image;
+    let f = render(&src, &SourceInfo::default(), &s, &req).unwrap().image;
     let mut failures = Vec::new();
     for margin in [38, 77, 130] {
         let at = PixelWindow { x: 1000 - margin, y: 650 - margin, w: 400 + 2 * margin, h: 300 + 2 * margin };
-        let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).image;
+        let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).unwrap().image;
         let (max, mean) = compare_inset(&f, &w, at, margin);
         eprintln!("dehaze margin {margin}: max {max}, mean {mean:.6}");
         if max > 3 || mean > 0.5 {
@@ -619,10 +620,10 @@ fn check_tight_spatial_windows(id: &str, value: f64) {
         controls::set(&mut s, id, value);
         // Odd dimensions and unsnapped positions also exercise the guided filter's grid.
         let req = RenderRequest::fit(2397, 1598);
-        let f = render(&src, &SourceInfo::default(), &s, &req).image;
+        let f = render(&src, &SourceInfo::default(), &s, &req).unwrap().image;
         for (x, y) in [(999, 649), (388, 124), (0, 0), (1997, 0), (0, 1298), (1997, 1298)] {
             let at = PixelWindow { x, y, w: 400, h: 300 };
-            let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).image;
+            let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).unwrap().image;
             assert_eq!((w.width, w.height), (at.w, at.h));
             let (max, mean) = compare_inset(&f, &w, at, 0);
             eprintln!("{id} {process:?} ({x},{y}): max {max}, mean {mean:.6}");
@@ -680,8 +681,8 @@ fn deep_spatial_windows_keep_the_requested_extent() {
     let at = PixelWindow { x: 388, y: 0, w: 120, h: 90 };
     for depth in [OutputDepth::U16, OutputDepth::F32Linear, OutputDepth::F32Hdr] {
         let req = RenderRequest { depth, ..RenderRequest::fit(2400, 1600) };
-        let f = render(&src, &SourceInfo::default(), &s, &req);
-        let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req });
+        let f = render(&src, &SourceInfo::default(), &s, &req).unwrap();
+        let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).unwrap();
         let deep = w.deep.as_ref().unwrap();
         assert_eq!((deep.width, deep.height), (at.w, at.h));
         assert_eq!((w.image.width, w.image.height), (at.w, at.h));
@@ -716,10 +717,10 @@ fn combined_spatial_windows_and_mask_adjustments_match_full() {
     for process in [Process::V1, Process::V2] {
         s.process = process.version();
         let req = RenderRequest::fit(2400, 1600);
-        let f = render(&src, &SourceInfo::default(), &s, &req).image;
+        let f = render(&src, &SourceInfo::default(), &s, &req).unwrap().image;
         for (x, y) in [(1000, 650), (0, 0), (2000, 1300)] {
             let at = PixelWindow { x, y, w: 400, h: 300 };
-            let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).image;
+            let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).unwrap().image;
             let (max, mean) = compare_inset(&f, &w, at, 0);
             assert!(max <= 3 && mean <= 0.5, "{process:?} ({x},{y}): {max}, {mean}");
         }
@@ -740,10 +741,10 @@ fn tight_refined_mask_windows_match_full() {
             refine: 100.0,
             ..Default::default()
         }];
-        let f = render(&src, &SourceInfo::default(), &s, &req).image;
+        let f = render(&src, &SourceInfo::default(), &s, &req).unwrap().image;
         for (x, y) in [(301, 181), (0, 0), (560, 340)] {
             let at = PixelWindow { x, y, w: 400, h: 300 };
-            let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).image;
+            let w = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(at), ..req }).unwrap().image;
             let (max, mean) = compare_inset(&f, &w, at, 0);
             assert!(max <= 3 && mean <= 0.5, "{:?} ({x},{y}): {max}, {mean}", s.masks[0].components[0].shape);
         }
@@ -797,6 +798,7 @@ fn cache_bytes_include_chroma() {
     let src = Arc::new(Rgb32f::new(4, 3));
     let cache = crate::StageCache::default();
     cache.put(crate::CacheEntry {
+        full_airlight: None,
         src: src.clone(),
         geo: 0,
         sampled: Arc::new((*src).clone()),
@@ -815,8 +817,8 @@ fn native_frame_cache_shares_source_and_counts_only_owned_pixels() {
     let s = DevelopSettings::default();
     let cache = crate::StageCache::default();
     let req = RenderRequest { window: Some(PixelWindow { x: 0, y: 0, w: src.width, h: src.height }), ..RenderRequest::fit(src.width, src.height) };
-    let cached = crate::render_cached(&src, &info, &s, &req, &cache);
-    assert_eq!(cached.image, render(&src, &info, &s, &req).image);
+    let cached = crate::render_cached(&src, &info, &s, &req, &cache).unwrap();
+    assert_eq!(cached.image, render(&src, &info, &s, &req).unwrap().image);
     assert!(Arc::ptr_eq(&cache.lock()[0].sampled, &src));
     // The source belongs to the caller. Only the linear RGB and log-luminance plane are new.
     assert_eq!(cache.bytes(), src.data.len() * (12 + 4));

@@ -330,9 +330,17 @@ fn total_key_inv(k: i32) -> u32 {
 fn transpose(p: &Plane) -> Plane {
     let (w, h) = (p.width, p.height);
     let mut t = Plane::new(h, w);
-    for_rows(&mut t.data, h, |x, row| {
-        for (y, v) in row.iter_mut().enumerate() {
-            *v = p.data[y * w + x];
+    const BLOCK: usize = 32;
+    // Keep both source and destination tiles in cache instead of reading a
+    // whole strided column before visiting the next one. This only copies bits.
+    for_rows(&mut t.data, h * BLOCK, |band, out| {
+        let x0 = band * BLOCK;
+        for y0 in (0..h).step_by(BLOCK) {
+            for (x, row) in out.chunks_mut(h).enumerate() {
+                for (y, v) in row.iter_mut().enumerate().take((y0 + BLOCK).min(h)).skip(y0) {
+                    *v = p.data[y * w + x0 + x];
+                }
+            }
         }
     });
     t
@@ -880,5 +888,35 @@ mod nr_tests {
         let (v1, m1) = var(&img);
         assert!(v1 < v0 * 0.5, "{v0} -> {v1}");
         assert!((m1 - m0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod median_replacement_tests {
+    use super::*;
+    #[test]
+    fn running_median_matches_sorting_each_neighborhood() {
+        for n in [1, 2, 31, 1027] {
+            let src: Vec<_> = (0..n)
+                .map(|i| match i % 29 {
+                    0 => -0.0,
+                    1 => 0.0,
+                    2 => f32::INFINITY,
+                    3 => f32::NEG_INFINITY,
+                    4 => f32::from_bits(0x7fc00001),
+                    5 => f32::from_bits(0xffc00002),
+                    _ => ((i * 193 + i / 11 * 17) % 127) as f32 / 13.0 - 4.0,
+                })
+                .collect();
+            for radius in [1, 9, 24] {
+                let mut out = vec![0.0; n];
+                median_row(&src, &mut out, radius);
+                for (x, value) in out.iter().enumerate() {
+                    let mut taps: Vec<_> = (0..2 * radius + 1).map(|i| src[(x + i).saturating_sub(radius).min(n - 1)]).collect();
+                    taps.sort_unstable_by(f32::total_cmp);
+                    assert_eq!(value.to_bits(), taps[radius].to_bits(), "length={n} radius={radius} x={x}");
+                }
+            }
+        }
     }
 }

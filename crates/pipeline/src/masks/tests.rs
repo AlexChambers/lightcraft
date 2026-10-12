@@ -516,3 +516,22 @@ fn alpha_cache_is_tied_to_the_mattes() {
     assert_eq!(c.take(Some(&a)).len(), 1);
     assert!(c.is_empty());
 }
+}
+
+#[cfg(test)]
+mod refinement_regression {
+use super::*;
+#[test]
+fn packed_and_reused_refinement_is_bit_identical() {
+    for (w, h, sigma) in [(121, 83, 1.0), (399, 267, 11.7), (601, 403, 60.0)] {
+        let guide = Plane::from_fn(w, h, |x, y| ((x * 17 + y * 23) % 103) as f32 / 19.0 - 3.0);
+        let p = Plane::from_fn(w, h, |x, y| ((x * 7 + y * 11) % 97) as f32 / 97.0);
+        let expected = guided_cross_reference(&guide, &p, sigma, 0.02);
+        let mut cache = RefinementCache::default();
+        for (gkey, pkey) in [(1, 1), (1, 2), (2, 2), (2, 2)] {
+            let result = guided_cross_cached(&guide, &p, sigma, 0.02, &mut cache, gkey, Some(pkey));
+            assert_eq!(result, expected);
+            assert!(cache.bytes() <= REFINEMENT_BYTES);
+        }
+    }
+}

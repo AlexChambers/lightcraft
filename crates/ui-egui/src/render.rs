@@ -1279,7 +1279,7 @@ mod stage_budget_tests {
             let cache: Arc<StageCache> = Default::default();
             let mut s = lightcraft_engine::develop::DevelopSettings::default();
             s.effects.clarity = 50.0;
-            render_cached(&src, &SourceInfo::default(), &s, &RenderRequest::fit(320, 240), &cache);
+            render_cached(&src, &SourceInfo::default(), &s, &RenderRequest::fit(320, 240), &cache).unwrap();
             assert!(cache.bytes() > 0);
             r.stages.insert(slot, cache);
         }

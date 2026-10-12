@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 s.effects.texture = edit[2];
                 s.light.highlights = edit[3];
                 s.light.shadows = -edit[3];
-                let r = lightcraft_pipeline::render(&src, &info, &s, &RenderRequest::fit(2400, 1600));
+                let r = lightcraft_pipeline::render(&src, &info, &s, &RenderRequest::fit(2400, 1600)).unwrap();
                 let bytes: Vec<u8> = r.image.data.iter().flatten().copied().collect();
                 let path = format!("{}/{process:?}-{name}.rgba", std::env::var("FULL_PIXELS").unwrap_or_default());
                 std::fs::write(path, bytes)?;
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let r = if gpu {
                             lightcraft_gpu::render(&src, &info, &s, &req, Some(&gpu_cache)).ok_or("hardware GPU render failed")?
                         } else {
-                            lightcraft_pipeline::render_cached(&src, &info, &s, &req, &cpu_cache)
+                            lightcraft_pipeline::render_cached(&src, &info, &s, &req, &cpu_cache).unwrap()
                         };
                         std::hint::black_box(r);
                         let ms = start.elapsed().as_secs_f64() * 1000.;

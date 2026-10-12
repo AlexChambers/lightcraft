@@ -156,7 +156,8 @@ pub struct RenderRequest {
 }
 
 /// A window of the (virtual) full output, in its pixels: what a zoomed view needs, rendered
-/// without materializing the whole frame. The output frame is the one `max_w × max_h` fits, after
+/// with the filter context it needs. Dehaze can prepare the full frame within a memory
+/// budget; over-budget windows return an error. The frame is the one `max_w × max_h` fits, after
 /// crop, straighten and flips, as drawn. Out-of-range windows are clamped into it.
 /// The renderer supplies the context read by local filters and returns only this window.
 /// Floating-point filter sums can still round differently from a full render.
@@ -259,13 +260,20 @@ pub struct StageCache {
     entries: Mutex<Vec<CacheEntry>>,
     capacity: usize,
     airlight: airlight::AirlightCache,
+    airlight_frame: airlight::FrameCache<airlight::Full>,
     /// Another renderer's per-view state (the GPU renderer keeps its device-resident stages here).
     ext: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Default for StageCache {
     fn default() -> Self {
-        StageCache { entries: Mutex::new(Vec::new()), capacity: 2, airlight: airlight::AirlightCache::default(), ext: Mutex::new(None) }
+        StageCache {
+            entries: Mutex::new(Vec::new()),
+            capacity: 2,
+            airlight: airlight::AirlightCache::default(),
+            airlight_frame: airlight::FrameCache::default(),
+            ext: Mutex::new(None),
+        }
     }
 }
 
@@ -274,6 +282,7 @@ impl StageCache {
     pub fn clear(&self) {
         self.lock().clear();
         self.airlight.clear();
+        self.airlight_frame.clear();
         *self.ext.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -310,6 +319,11 @@ impl StageCache {
                 total += n;
             }
         };
+        if let Some(full) = self.airlight_frame.value() {
+            add(Arc::as_ptr(&full.sampled) as usize, size(&full.sampled));
+            add(Arc::as_ptr(&full.lin) as usize, size(&full.lin));
+            add(Arc::as_ptr(&full.dark) as usize, size(&full.dark));
+        }
         for e in self.lock().iter() {
             if !Arc::ptr_eq(&e.sampled, &e.src) {
                 add(Arc::as_ptr(&e.sampled) as usize, size(&e.sampled));
@@ -319,7 +333,12 @@ impl StageCache {
             }
             let pl = &e.planes;
             let planes = pl.log_l.iter().chain(pl.base.iter().map(|x| &x.1)).chain(pl.clarity.iter().map(|x| &x.1));
-            for p in planes.chain(pl.texture.iter().map(|x| &x.1)).chain(pl.dark.iter().map(|x| &x.1)).chain(e.masks.planes()) {
+            for p in planes
+                .chain(pl.texture.iter().map(|x| &x.1))
+                .chain(pl.dark.iter().map(|x| &x.1))
+                .chain(e.masks.planes())
+                .chain(e.masks.refinement_planes())
+            {
                 add(Arc::as_ptr(p) as usize, size(p));
             }
             if let Some((_, c)) = &pl.chroma {
@@ -362,6 +381,7 @@ struct CacheEntry {
     geo: u64,
     sampled: Arc<Rgb32f>,
     lin: Option<(u64, Arc<Rgb32f>)>,
+    full_airlight: Option<u64>,
     planes: local::Planes,
     /// Alphas of the last render's masks (kept across changes to the image: those of masks that
     /// don't read it stay valid).
@@ -496,6 +516,8 @@ pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
 /// The white-balanced, defringed, retouched image (before noise reduction): the CPU part of the
 /// scene-linear stage, in place.
 pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
+    #[cfg(test)]
+    airlight::tests::LINEAR_PASSES.with(|n| n.set(n.get() + 1));
     let s = &*p.settings;
     // (before the white balance: the gain's input is the as-shot development, as in the file)
     local_tone::apply(img, info, p);
@@ -542,19 +564,20 @@ pub fn hdr_histogram(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: 
         display: None,
         ..*req
     };
-    let deep = render(src, info, s, &hreq).deep?;
+    let deep = render(src, info, s, &hreq).ok()?.deep?;
     let DeepSamples::F32(v) = &deep.samples else { return None };
     Some(Histogram::of_hdr(v.as_chunks::<3>().0, lightcraft_develop::Hdr::MAX_EV_LIMIT as f32))
 }
 
-/// Render `src` with settings `s`.
-pub fn render(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> Rendered {
+/// Render `src` with settings `s`. Oversized windows return a memory-budget error
+/// before allocating their work image or full-frame Dehaze preparation.
+pub fn render(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> Result<Rendered, String> {
     render_impl(Src::Borrowed(src), info, s, req, None)
 }
 
 /// [`render`], reusing (and refreshing) the intermediate results in `cache`. The output is
 /// identical to [`render`]'s.
-pub fn render_cached(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: &StageCache) -> Rendered {
+pub fn render_cached(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: &StageCache) -> Result<Rendered, String> {
     render_impl(Src::Shared(src), info, s, req, Some(cache))
 }
 
@@ -563,7 +586,7 @@ enum Src<'a> {
     Shared(&'a Arc<Rgb32f>),
 }
 
-fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: Option<&StageCache>) -> Rendered {
+fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: Option<&StageCache>) -> Result<Rendered, String> {
     // sections switched off with their eye render as if at their defaults (issue #316)
     let effective = s.effective();
     let edit: &DevelopSettings = &effective;
@@ -582,26 +605,57 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Src::Shared(a) => a,
     };
     let plan = plan(src_img, info, s, req);
+    if req.window.is_some() {
+        airlight::check_pixels(plan.w, plan.h)?;
+    }
     let full = plan.needs_airlight.then(|| self::plan(src_img, info, s, &RenderRequest { window: None, ..*req }));
-    // Compute before allocating window stages; retain only the scalar across pans and edits.
-    let fixed_air = full.as_ref().filter(|full| full.lin_key != plan.lin_key).map(|full| {
-        let compute = || airlight::compute(src_img, info, full);
-        match (&src, cache) {
-            (Src::Shared(src), Some(cache)) => cache.airlight.get_or_compute(src, full.lin_key, compute),
-            _ => compute(),
-        }
-    });
-    let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, .. } = plan;
-    let s = &*plan.settings;
-
     let shared = match (&src, cache) {
         (Src::Shared(a), Some(c)) => Some((*a, c)),
         _ => None,
     };
-    let cached = shared.and_then(|(a, c)| c.get(a, geo));
-    let sampled = match &cached {
-        Some(e) => e.sampled.clone(),
-        None => {
+    let cached = shared.and_then(|(a, c)| c.get(a, plan.geo)).filter(|e| e.full_airlight.is_some() == plan.needs_airlight);
+    let mut prepared_work = None;
+    let fixed_air = if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
+        // A valid work entry already contains this full statistic and its work pixels.
+        let ready = cached
+            .as_ref()
+            .filter(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
+            .and_then(|_| shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)));
+        if let Some(air) = ready {
+            Some(air)
+        } else {
+            let saved = shared.and_then(|(a, c)| c.airlight_frame.get(a));
+            let prepared = match saved {
+                Some((key, value)) if key == full.lin_key => value,
+                other => {
+                    let sampled = other.filter(|(_, data)| data.geo == full.geo).map(|(_, data)| data.sampled.clone());
+                    if let Some((_, cache)) = shared {
+                        cache.airlight_frame.clear();
+                    }
+                    let data = Arc::new(airlight::prepare(src_img, info, full, Some(&plan), sampled)?);
+                    if let Some((src, cache)) = shared {
+                        cache.airlight_frame.put(src, full.lin_key, data.clone(), data.bytes());
+                    }
+                    data
+                }
+            };
+            let air = prepared.air;
+            prepared_work = Some(prepared.window(&plan));
+            if let Some((src, cache)) = shared {
+                cache.airlight.remember(src, full.lin_key, air);
+            }
+            Some(air)
+        }
+    } else {
+        None
+    };
+    let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, .. } = plan;
+    let s = &*plan.settings;
+
+    let sampled = match (&prepared_work, &cached) {
+        (Some(work), _) => work.sampled.clone(),
+        (_, Some(e)) => e.sampled.clone(),
+        _ => {
             let sampling = frame.sample_plan(src_img.width, src_img.height, w, h);
             match &src {
                 Src::Shared(a)
@@ -617,7 +671,11 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     };
     lap("sample", &mut t);
 
-    let lin = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == lin_key) {
+    let lin = match prepared_work
+        .as_ref()
+        .map(|work| (lin_key, work.lin.clone()))
+        .or_else(|| cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == lin_key))
+    {
         Some((_, img)) => img,
         None => {
             // Without a cache the resampled buffer is ours: work on it in place.
@@ -638,6 +696,10 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Some(p) if req.quality == Quality::Draft && p.pre_nr == plan.pre_nr_key => p.for_other_nr(),
         _ => local::Planes { key: lin_key, pre_nr: plan.pre_nr_key, ..Default::default() },
     };
+    if let Some(work) = prepared_work.take() {
+        let sigma = (0.02 * px_per_long as f32).max(1.0);
+        planes.dark = Some((sigma.to_bits(), work.dark, fixed_air.unwrap_or(1.0)));
+    }
     let keys = masks::AlphaKeys { geo, image: lin_key };
     let mut prep = local::prepare(lin.clone(), s, frame, px_per_long, req.quality, &mut planes, plan.mattes.as_ref(), (&mut alphas, keys));
     if let Some((src, cache)) = shared
@@ -652,14 +714,22 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     }
     lap("prepare", &mut t);
     if let Some((a, c)) = shared {
-        c.put(CacheEntry { src: a.clone(), geo, sampled, lin: Some((lin_key, lin)), planes, masks: alphas });
+        c.put(CacheEntry {
+            src: a.clone(),
+            geo,
+            sampled,
+            lin: Some((lin_key, lin)),
+            planes,
+            masks: alphas,
+            full_airlight: full.as_ref().map(|p| p.lin_key),
+        });
     }
     if req.depth != OutputDepth::U8 {
         let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof, plan.keep);
         let image = deep.to_rgba8();
         let histogram = Histogram::of_srgb8(&image);
         lap("finish (deep)", &mut t);
-        return Rendered { image, histogram, deep: Some(deep) };
+        return Ok(Rendered { image, histogram, deep: Some(deep) });
     }
     // Overlays may read neighbouring finished pixels; ordinary windows finish only their output.
     let finish_keep = plan.keep.filter(|_| req.overlay == Overlay::None);
@@ -683,12 +753,12 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     if req.overlay == Overlay::HdrRange && edit.hdr.enabled {
         // the HDR rendition of the same request says how far above SDR white each pixel goes
         let hreq = RenderRequest { depth: OutputDepth::F32Hdr, overlay: Overlay::None, proof: None, ..*req };
-        if let Some(hdr) = render(src_img, info, edit, &hreq).deep {
+        if let Some(hdr) = render(src_img, info, edit, &hreq)?.deep {
             visualize::hdr_range(&mut image, &hdr, req.space.luma());
         }
         lap("visualize hdr", &mut t);
     }
-    Rendered { image, histogram, deep: None }
+    Ok(Rendered { image, histogram, deep: None })
 }
 
 /// The colour a colour-range mask would sample at normalized image point `p` (OkLab of the

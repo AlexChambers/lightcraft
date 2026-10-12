@@ -85,3 +85,38 @@ pub fn check_edits(mut render: impl FnMut(&Arc<Rgb32f>, &SourceInfo, &DevelopSet
         assert!(max <= 2, "upstream step={step} max={max}");
     }
 }
+
+/// A work entry prepared while Dehaze was disabled must not substitute its
+/// window-local upstream pixels or an inactive mask's dark-channel statistic.
+pub fn check_enabling(mut render: impl FnMut(&Arc<Rgb32f>, &SourceInfo, &DevelopSettings, &RenderRequest, bool) -> Rgba8) {
+    use lightcraft_develop::{Mask, MaskComponent, MaskOp, MaskShape};
+    use lightcraft_geom::Point;
+    let src = Arc::new(Rgb32f::from_fn(301, 203, |x, y| {
+        let l = 0.02 + ((x / 7 * 17 + y / 11 * 23) % 103) as f32 / 103.0;
+        [l, l * 0.82, l * 1.15]
+    }));
+    let info = SourceInfo::default();
+    let req = RenderRequest { window: Some(PixelWindow { x: 211, y: 111, w: 121, h: 83 }), ..RenderRequest::fit(901, 607) };
+    let mut s = DevelopSettings::default();
+    s.detail.nr_luminance = 70.0;
+    s.effects.clarity = 100.0;
+    let mut hidden = Mask {
+        visible: false,
+        components: vec![MaskComponent {
+            name: None,
+            op: MaskOp::Add,
+            invert: false,
+            shape: MaskShape::Linear { start: Point::new(0.0, 0.0), end: Point::new(1.0, 1.0) },
+        }],
+        ..Default::default()
+    };
+    hidden.adjust.dehaze = 100.0;
+    s.masks.push(hidden);
+    render(&src, &info, &s, &req, true);
+    for amount in [15.0, 0.0] {
+        s.effects.dehaze = amount;
+        let cached = render(&src, &info, &s, &req, true);
+        let fresh = render(&src, &info, &s, &req, false);
+        assert!(cached == fresh, "stale planes after setting Dehaze to {amount}");
+    }
+}

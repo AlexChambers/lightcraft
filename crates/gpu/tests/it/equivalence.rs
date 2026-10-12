@@ -71,7 +71,7 @@ fn diff(a: &Rgba8, b: &Rgba8) -> (f64, u8, f64) {
 }
 
 fn check(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> (f64, u8) {
-    let cpu = render(src, info, s, req).image;
+    let cpu = render(src, info, s, req).unwrap().image;
     let gpu = lightcraft_gpu::render(src, info, s, req, None).expect("gpu render");
     let (mean, max, over) = diff(&cpu, &gpu.image);
     eprintln!("{name:<28} {}x{}  mean {mean:.4}  max {max}  >1: {:.4}%", cpu.width, cpu.height, over * 100.0);
@@ -485,7 +485,7 @@ fn clipped_highlights_stay_neutral_on_both() {
     (l.exposure, l.contrast, l.highlights, l.shadows, l.whites, l.blacks) = (-0.88, 5.0, -75.0, 52.0, 6.0, -37.0);
     for (name, s) in [("clipped highlights -100", h100), ("clipped highlights #523", issue)] {
         check(name, &src, &info, &s, &req);
-        let cpu = render(&src, &info, &s, &req).image;
+        let cpu = render(&src, &info, &s, &req).unwrap().image;
         let gpu = lightcraft_gpu::render(&src, &info, &s, &req, None).expect("gpu render").image;
         for (who, img) in [("CPU", &cpu), ("GPU", &gpu)] {
             let p = img.get(90, 120);
@@ -708,7 +708,7 @@ fn overlays_match() {
     let s = DevelopSettings::default();
     for t in [20u8, 50, 90] {
         let req = RenderRequest { overlay: lightcraft_pipeline::Overlay::Spots(t), ..RenderRequest::fit(640, 640) };
-        let cpu = render(&src, &raw, &s, &req).image;
+        let cpu = render(&src, &raw, &s, &req).unwrap().image;
         let gpu = lightcraft_gpu::render(&src, &raw, &s, &req, None).expect("gpu").image;
         let differ = cpu.data.iter().zip(&gpu.data).filter(|(a, b)| a != b).count() as f64 / cpu.data.len() as f64;
         let white = cpu.data.iter().filter(|p| p[0] == 255).count() as f64 / cpu.data.len() as f64;
@@ -1022,7 +1022,7 @@ fn tight_spatial_windows_match_full_and_cpu() {
             let mut s = DevelopSettings { process: process.version(), ..Default::default() };
             lightcraft_develop::controls::set(&mut s, id, if id == "light.highlights" { -100.0 } else { 100.0 });
             let req = RenderRequest::fit(2397, 1598);
-            let full = render(&src, &info, &s, &req).image;
+            let full = render(&src, &info, &s, &req).unwrap().image;
             for (x, y) in [(999, 649), (388, 124), (0, 0), (1997, 1298)] {
                 let at = PixelWindow { x, y, w: 400, h: 300 };
                 let req = RenderRequest { window: Some(at), ..req };
@@ -1057,7 +1057,7 @@ fn reviewed_window_context_and_requested_finish_match_cpu() {
     s.optics.defringe_purple_hue_lo = 0.0;
     s.optics.defringe_purple_hue_hi = 100.0;
     check("Defringe window", &src, &info, &s, &req);
-    let full = render(&src, &info, &s, &RenderRequest { window: None, ..req }).image;
+    let full = render(&src, &info, &s, &RenderRequest { window: None, ..req }).unwrap().image;
     let g = lightcraft_gpu::render(&src, &info, &s, &req, None).unwrap().image;
     let (mean, max, _) = diff(&full.crop(at.x, at.y, at.w, at.h), &g);
     assert!(mean < MEAN_LSB && max <= MAX_LSB, "Defringe: max {max}, mean {mean}");
@@ -1150,7 +1150,7 @@ fn subsampled_windows_keep_full_frame_grid_and_cpu_parity() {
     for stripes in [false, true] {
         subsampled::check_windows(
             |src, info, s, req| {
-                let cpu = render(src, info, s, req).image;
+                let cpu = render(src, info, s, req).unwrap().image;
                 let gpu = lightcraft_gpu::render(src, info, s, req, None).expect("hardware GPU render").image;
                 let (mean, max, _) = diff(&cpu, &gpu);
                 assert!(mean < MEAN_LSB && max <= MAX_LSB, "CPU/GPU: max {max}, mean {mean}");
@@ -1187,6 +1187,17 @@ fn dehaze_statistic_tracks_upstream_edits() {
     }
     let cache = StageCache::default();
     dehaze_airlight::check_edits(|src, info, s, req, cached| {
+        lightcraft_gpu::render(src, info, s, req, cached.then_some(&cache)).expect("GPU render").image
+    });
+}
+
+#[test]
+fn enabling_dehaze_replaces_a_window_local_preparation() {
+    if !lightcraft_gpu::available() {
+        return;
+    }
+    let cache = StageCache::default();
+    dehaze_airlight::check_enabling(|src, info, s, req, cached| {
         lightcraft_gpu::render(src, info, s, req, cached.then_some(&cache)).expect("GPU render").image
     });
 }

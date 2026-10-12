@@ -176,17 +176,18 @@ pub struct AlphaKeys {
 pub struct AlphaCache<P = Plane> {
     mattes: Option<Arc<Mattes>>,
     slots: Vec<(u64, Arc<P>)>,
+    refinement: RefinementCache,
 }
 
 impl<P> Clone for AlphaCache<P> {
     fn clone(&self) -> Self {
-        AlphaCache { mattes: self.mattes.clone(), slots: self.slots.clone() }
+        AlphaCache { mattes: self.mattes.clone(), slots: self.slots.clone(), refinement: self.refinement.clone() }
     }
 }
 
 impl<P> Default for AlphaCache<P> {
     fn default() -> Self {
-        AlphaCache { mattes: None, slots: Vec::new() }
+        AlphaCache { mattes: None, slots: Vec::new(), refinement: RefinementCache::default() }
     }
 }
 
@@ -200,7 +201,12 @@ impl<P> AlphaCache<P> {
             _ => false,
         };
         let slots = std::mem::take(&mut self.slots);
-        if same { slots } else { Vec::new() }
+        if same {
+            slots
+        } else {
+            self.refinement = RefinementCache::default();
+            Vec::new()
+        }
     }
 
     /// Hold `slots` (the alphas a render with `mattes` used), dropping everything else.
@@ -212,6 +218,11 @@ impl<P> AlphaCache<P> {
     /// The alphas held.
     pub fn planes(&self) -> impl Iterator<Item = &Arc<P>> {
         self.slots.iter().map(|(_, p)| p)
+    }
+
+    /// CPU refinement intermediates, included in the stage cache's byte count.
+    pub fn refinement_planes(&self) -> impl Iterator<Item = &Arc<Plane>> {
+        self.refinement.guide.iter().flat_map(|(_, _, a, b)| [a, b]).chain(self.refinement.means.iter().map(|(_, _, p)| p))
     }
 
     pub fn len(&self) -> usize {
@@ -288,6 +299,15 @@ pub fn evaluate_cached(
     cache: &mut AlphaCache,
 ) -> Vec<Evaluated> {
     let old = cache.take(mattes);
+    let mut refinement = std::mem::take(&mut cache.refinement);
+    // Means of geometric masks survive WB/NR edits; means of image-dependent
+    // shapes use the same dependency classifier as their unrefined alphas.
+    let mean_keys: Vec<_> =
+        masks.iter().filter(|m| m.visible && !m.components.is_empty() && m.refine > 0.0).map(|m| refinement_mean_key(m, keys, ev)).collect();
+    refinement.means.retain(|(k, _, _)| mean_keys.contains(k));
+    if mean_keys.is_empty() {
+        refinement.guide = None;
+    }
     let mut used = Vec::new();
     let out = masks
         .iter()
@@ -296,13 +316,14 @@ pub fn evaluate_cached(
             let key = alpha_key(m, keys, ev);
             let alpha = match old.iter().find(|(k, _)| *k == key) {
                 Some((_, a)) => a.clone(),
-                None => Arc::new(evaluate_one(m, frame, w, h, img, log_l, ev, mattes.map(|a| &**a))),
+                None => Arc::new(evaluate_one_with_refinement(m, frame, w, h, img, log_l, ev, mattes.map(|a| &**a), &mut refinement, keys)),
             };
             used.push((key, alpha.clone()));
             Evaluated { id: m.id, alpha, adjust: m.adjust }
         })
         .collect();
     cache.keep(mattes, used);
+    cache.refinement = refinement;
     out
 }
 
@@ -327,6 +348,22 @@ fn map_rows(p: &mut Plane, f: impl Fn(&mut f32) + Sync + Send) {
 /// scaled by its amount.
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Plane {
+    evaluate_one_with_refinement(m, frame, w, h, img, log_l, ev, mattes, &mut RefinementCache::default(), AlphaKeys { geo: 0, image: 0 })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_one_with_refinement(
+    m: &Mask,
+    frame: &Frame,
+    w: usize,
+    h: usize,
+    img: &Rgb32f,
+    log_l: &Plane,
+    ev: f32,
+    mattes: Option<&Mattes>,
+    refinement: &mut RefinementCache,
+    keys: AlphaKeys,
+) -> Plane {
     let mut alpha = Plane::new(w, h);
     let mut first = true;
     for comp in &m.components {
@@ -351,7 +388,15 @@ pub fn evaluate_one(m: &Mask, frame: &Frame, w: usize, h: usize, img: &Rgb32f, l
         // the width of a soft brush edge or gradient)
         let k = (m.refine / 100.0).clamp(0.0, 1.0) as f32;
         let sigma = (0.04 * frame.output_long(w, h) as f32 * k).max(1.0);
-        let refined = guided_cross(log_l, &alpha, sigma, 0.02);
+        let refined = guided_cross_cached(
+            log_l,
+            &alpha,
+            sigma,
+            0.02,
+            refinement,
+            crate::hash_of((keys.geo, keys.image)),
+            Some(refinement_mean_key(m, keys, ev)),
+        );
         let t = k.sqrt();
         zip_rows(&mut alpha, &refined, |a, r| *a += (r - *a) * t);
     }
@@ -848,6 +893,90 @@ pub fn auto_refine(r: f64) -> (f32, f32) {
 /// Guided filter of `p` steered by `guide` (He et al.), clamped to 0..1: `p`'s edges snap to the
 /// guide's.
 pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
+    guided_cross_cached(guide, p, sigma, eps, &mut RefinementCache::default(), 0, None)
+}
+
+/// At most 512 MiB per stage entry (two entries per view). No extra buffers
+/// survive eviction, hiding the masks, changing supplied mattes or clearing stages.
+const REFINEMENT_BYTES: usize = 512 * 1024 * 1024;
+
+#[derive(Clone, Default)]
+struct RefinementCache {
+    guide: Option<(u64, u32, Arc<Plane>, Arc<Plane>)>,
+    means: Vec<(u64, u32, Arc<Plane>)>,
+}
+
+impl RefinementCache {
+    fn bytes(&self) -> usize {
+        self.guide.as_ref().map_or(0, |(_, _, a, b)| (a.len() + b.len()) * 4) + self.means.iter().map(|(_, _, p)| p.len() * 4).sum::<usize>()
+    }
+    fn trim(&mut self) {
+        while self.bytes() > REFINEMENT_BYTES && !self.means.is_empty() {
+            self.means.remove(0);
+        }
+        if self.bytes() > REFINEMENT_BYTES {
+            self.guide = None;
+        }
+    }
+}
+
+fn refinement_mean_key(m: &Mask, keys: AlphaKeys, ev: f32) -> u64 {
+    let mut shape = m.clone();
+    shape.refine = 0.0;
+    alpha_key(&shape, keys, ev)
+}
+
+/// Independent channels share a blur traversal. Every channel retains the
+/// scalar filter's pass order, band origins and arithmetic. This makes the
+/// horizontal recurrence vectorizable without changing V1/V2 pixels.
+#[allow(clippy::too_many_arguments)]
+fn guided_cross_cached(guide: &Plane, p: &Plane, sigma: f32, eps: f32, cache: &mut RefinementCache, guide_key: u64, mean_key: Option<u64>) -> Plane {
+    use lightcraft_raster::blur::gaussian_owned;
+    let sig = sigma.to_bits();
+    let old_guide = cache.guide.as_ref().filter(|(k, s, _, _)| *k == guide_key && *s == sig).map(|(_, _, a, b)| (a.clone(), b.clone()));
+    let old_mean = mean_key.and_then(|key| cache.means.iter().find(|(k, s, _)| *k == key && *s == sig).map(|(_, _, p)| p.clone()));
+    let (mi, cii, mp, cip) = match (old_guide, old_mean) {
+        (None, None) => {
+            let stats = gaussian_owned(guide.zip_map(p, |i, p| [i, i * i, p, i * p]), sigma);
+            (Arc::new(stats.map(|v| v[0])), Arc::new(stats.map(|v| v[1])), Arc::new(stats.map(|v| v[2])), stats.map(|v| v[3]))
+        }
+        (None, Some(mp)) => {
+            let stats = gaussian_owned(guide.zip_map(p, |i, p| [i, i * i, i * p]), sigma);
+            (Arc::new(stats.map(|v| v[0])), Arc::new(stats.map(|v| v[1])), mp, stats.map(|v| v[2]))
+        }
+        (Some((mi, cii)), None) => {
+            let stats = gaussian_owned(guide.zip_map(p, |i, p| [p, i * p]), sigma);
+            (mi, cii, Arc::new(stats.map(|v| v[0])), stats.map(|v| v[1]))
+        }
+        (Some((mi, cii)), Some(mp)) => (mi, cii, mp, gaussian_owned(guide.zip_map(p, |i, p| i * p), sigma)),
+    };
+    cache.guide = Some((guide_key, sig, mi.clone(), cii.clone()));
+    if let Some(key) = mean_key {
+        cache.means.retain(|(k, _, _)| *k != key);
+        cache.means.push((key, sig, mp.clone()));
+    }
+    cache.trim();
+    let mut ab = Image::<[f32; 2]>::new(p.width, p.height);
+    for_rows(&mut ab.data, p.width, |y, row| {
+        let range = y * p.width..y * p.width + row.len();
+        let (Some(mi), Some(cii), Some(mp), Some(cip)) =
+            (mi.data.get(range.clone()), cii.data.get(range.clone()), mp.data.get(range.clone()), cip.data.get(range))
+        else {
+            return;
+        };
+        for (out, (((mi, cii), mp), cip)) in row.iter_mut().zip(mi.iter().zip(cii).zip(mp).zip(cip)) {
+            let var = (cii - mi * mi).max(0.0);
+            let a = (cip - mi * mp) / (var + eps);
+            *out = [a, mp - a * mi];
+        }
+    });
+    drop((mi, cii, mp, cip));
+    let ab = gaussian_owned(ab, sigma);
+    guide.zip_map(&ab, |i, v| (v[0] * i + v[1]).clamp(0.0, 1.0))
+}
+
+#[cfg(test)]
+fn guided_cross_reference(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
     use lightcraft_raster::blur::{gaussian, gaussian_owned};
     let mi = gaussian(guide, sigma);
     let mp = gaussian(p, sigma);
