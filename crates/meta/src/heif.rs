@@ -12,14 +12,18 @@
 //!   and avif-serialize write offset 0 and the TIFF stream.
 //! - XMP is an item of type `mime` with content type `application/rdf+xml`.
 //! - A `cdsc` ("content describes") reference ties a metadata item to the image it describes. The
-//!   primary image's items are read, else one tied to no image (it describes the file). An item
-//!   tied only to other images (a thumbnail, a depth map, another photo of a collection) is not
-//!   this photo's and is never read.
+//!   photo's items are those tied to the primary image or to an image it is made from (its `dimg`
+//!   inputs: a grid's tiles, the picture an `iden` turns, an `iovl` overlay's or a `tmap` tone
+//!   map's inputs), else those tied to no image (they describe the file). An item tied only to
+//!   other images (a thumbnail, a depth map, another photo of a collection) is not this photo's.
+//! - [`embeds_location`] looks at every EXIF and XMP item instead, for export's "remove location".
 //!
 //! The ICC profile is left to the decoder, which reads it for rendering; nothing here needs it.
 //! Every size and offset is checked against the buffer; the boxes read, the items considered and
-//! the bytes one item may gather are bounded.
+//! the bytes gathered are bounded, and `iloc` is walked once.
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::collections::{HashMap, HashSet};
 
 use crate::container::Embedded;
 use crate::cr3::{BoxRef, be16, be32, be64, boxes};
@@ -33,10 +37,14 @@ const OTHERS: [&[u8; 4]; 2] = [b"crx ", b"jxl "];
 const FTYP_MAX: usize = 4096;
 /// Boxes read in one file. An iPhone photo has about a hundred items, a large grid a few hundred.
 const MAX_BOXES: usize = 1 << 16;
-/// Metadata items considered (a real file has one or two).
+/// Metadata items considered for the photo's own EXIF and XMP (a real file has one or two).
 const MAX_CANDIDATES: usize = 64;
+/// Metadata items [`embeds_location`] reads; a file with more counts as having a location.
+const MAX_SCANNED: usize = 1024;
 /// The most bytes one metadata item may gather (EXIF and XMP are kilobytes).
 const MAX_ITEM: usize = 16 << 20;
+/// The most bytes [`embeds_location`] gathers over all items.
+const MAX_SCANNED_BYTES: usize = 64 << 20;
 
 /// Does the `ftyp` box name a HEIF or AVIF brand (and not CR3 or JPEG XL)?
 pub(crate) fn is_heif(bytes: &[u8]) -> bool {
@@ -59,37 +67,60 @@ pub(crate) fn is_heif(bytes: &[u8]) -> bool {
 
 /// The EXIF and XMP of a HEIF file's primary image; `None` when `bytes` is not HEIF.
 pub(crate) fn embedded(bytes: &[u8]) -> Option<Embedded> {
-    if !is_heif(bytes) {
-        return None;
-    }
-    let mut budget = MAX_BOXES;
-    let top = boxes(bytes, 0, bytes.len(), &mut budget);
-    let Some(meta) = top.iter().find(|b| &b.kind == b"meta") else { return Some(Embedded::default()) };
-    // `meta` is a full box: version and flags, then the boxes inside it
-    let inside = boxes(bytes, meta.body.saturating_add(4), meta.end, &mut budget);
-    let child = |kind: &[u8; 4]| inside.iter().find(|b| &b.kind == kind);
-    let payload = |kind: &[u8; 4]| child(kind).and_then(|b| bytes.get(b.body..b.end));
-    let primary = payload(b"pitm").and_then(primary_item);
-    let mut items = child(b"iinf").map(|b| metadata_items(bytes, b, &mut budget)).unwrap_or_default();
-    if let Some(iref) = child(b"iref") {
-        link(bytes, iref, primary, &mut items, &mut budget);
-    }
-    let (iloc, idat) = (payload(b"iloc"), payload(b"idat"));
-    // the primary image's items first, then those tied to no image; the first that reads well wins
+    let c = Container::read(bytes, MAX_CANDIDATES)?;
+    // the photo's own items first, then those tied to no image; the first that reads well wins
     let read = |kind: Kind| {
-        let mut order: Vec<(u8, u32)> = items.iter().filter(|c| c.kind == kind).filter_map(|c| Some((c.rank(primary)?, c.id))).collect();
+        let mut order: Vec<(u8, usize)> =
+            c.items.iter().enumerate().filter(|(_, it)| it.kind == kind).filter_map(|(i, it)| Some((it.rank(c.primary.is_some())?, i))).collect();
         order.sort_by_key(|&(rank, _)| rank);
-        order.into_iter().filter_map(move |(_, id)| item_bytes(bytes, iloc?, idat, id))
+        order.into_iter().filter_map(|(_, i)| match c.gather(i, MAX_ITEM) {
+            Gathered::Bytes(b) => Some(b),
+            _ => None,
+        })
     };
     let exif = read(Kind::Exif).find_map(|item| exif_tiff(&item).map(<[u8]>::to_vec));
     let xmp = read(Kind::Xmp).next().map(|item| String::from_utf8_lossy(&item).into_owned());
     Some(Embedded { exif, xmp, ..Default::default() })
 }
 
+/// Does a HEIF file hold a GPS position in any EXIF or XMP item, whichever image it describes?
+/// `None` when `bytes` is not HEIF. An item that is there but can't be read (compressed XMP, cut
+/// off by the end of the file, too large, built from other items or in another file, not a
+/// TIFF stream or an XMP packet) counts as one, and so do more items than [`MAX_SCANNED`].
+pub(crate) fn embeds_location(bytes: &[u8]) -> Option<bool> {
+    let c = Container::read(bytes, MAX_SCANNED)?;
+    if c.more {
+        return Some(true);
+    }
+    let mut budget = MAX_SCANNED_BYTES;
+    for (i, it) in c.items.iter().enumerate() {
+        let item = match c.gather(i, MAX_ITEM.min(budget)) {
+            Gathered::Bytes(b) => b,
+            Gathered::NotPlaced => continue,
+            Gathered::Unreadable | Gathered::TooLarge => return Some(true),
+        };
+        budget = budget.saturating_sub(item.len());
+        let located = match it.kind {
+            Kind::Exif => match exif_tiff(&item) {
+                Some(tiff) => crate::try_read_exif(tiff).map_or(true, |m| m.gps.is_some()),
+                None => !item.is_empty(),
+            },
+            Kind::Xmp => crate::parse_xmp(&String::from_utf8_lossy(&item)).map_or(true, |x| x.metadata.gps.is_some()),
+            Kind::EncodedXmp => true,
+        };
+        if located {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Exif,
     Xmp,
+    /// XMP with a content encoding (compressed): not read, but [`embeds_location`] counts it.
+    EncodedXmp,
 }
 
 /// A metadata item and the images it describes.
@@ -99,22 +130,94 @@ struct Candidate {
     kind: Kind,
     /// Tied to some image by a `cdsc` reference.
     describes: bool,
-    /// Tied to the primary image.
+    /// Tied to the primary image or an image it is made from.
     describes_primary: bool,
 }
 
 impl Candidate {
-    /// 0 for the primary image's, 1 for one tied to no image (or when there is no primary item);
-    /// `None` for one that describes other images only.
-    fn rank(&self, primary: Option<u32>) -> Option<u8> {
+    /// 0 for the photo's own, 1 for one tied to no image (or any, when the file names no primary
+    /// image that exists); `None` for one that describes other images only.
+    fn rank(&self, has_primary: bool) -> Option<u8> {
         if self.describes_primary {
             Some(0)
-        } else if !self.describes || primary.is_none() {
+        } else if !self.describes || !has_primary {
             Some(1)
         } else {
             None
         }
     }
+}
+
+/// What the `meta` box says about the metadata items, and where their bytes are.
+struct Container<'a> {
+    file: &'a [u8],
+    idat: Option<&'a [u8]>,
+    iloc: Option<Iloc<'a>>,
+    /// The primary image, when `pitm` names an item `iinf` lists.
+    primary: Option<u32>,
+    /// The EXIF and XMP items, in `iinf` order (the first `cap` of them).
+    items: Vec<Candidate>,
+    /// More metadata items than `cap`.
+    more: bool,
+    /// Where each of `items` is (from one walk of `iloc`).
+    places: Vec<Option<Place>>,
+}
+
+impl<'a> Container<'a> {
+    /// `None` when `bytes` is not HEIF; no items when there is no `meta` box.
+    fn read(bytes: &'a [u8], cap: usize) -> Option<Container<'a>> {
+        if !is_heif(bytes) {
+            return None;
+        }
+        let mut c = Container { file: bytes, idat: None, iloc: None, primary: None, items: Vec::new(), more: false, places: Vec::new() };
+        let mut budget = MAX_BOXES;
+        let top = boxes(bytes, 0, bytes.len(), &mut budget);
+        let Some(meta) = top.iter().find(|b| &b.kind == b"meta") else { return Some(c) };
+        // `meta` is a full box: version and flags, then the boxes inside it
+        let inside = boxes(bytes, meta.body.saturating_add(4), meta.end, &mut budget);
+        let child = |kind: &[u8; 4]| inside.iter().find(|b| &b.kind == kind);
+        let payload = |kind: &[u8; 4]| child(kind).and_then(|b| bytes.get(b.body..b.end));
+        let mut ids = Vec::new();
+        if let Some(iinf) = child(b"iinf") {
+            (ids, c.items, c.more) = item_infos(bytes, iinf, cap, &mut budget);
+        }
+        c.primary = payload(b"pitm").and_then(primary_item).filter(|p| ids.binary_search(p).is_ok());
+        if let Some(iref) = child(b"iref") {
+            link(bytes, iref, c.primary, &mut c.items, &mut budget);
+        }
+        c.idat = payload(b"idat");
+        c.iloc = payload(b"iloc").and_then(Iloc::parse);
+        c.places = match &c.iloc {
+            Some(iloc) => iloc.locate(&c.items),
+            None => Vec::new(),
+        };
+        Some(c)
+    }
+
+    /// The bytes of `items[i]`, at most `limit` of them.
+    fn gather(&self, i: usize, limit: usize) -> Gathered {
+        match (&self.iloc, self.places.get(i)) {
+            (Some(iloc), Some(Some(place))) => iloc.gather(self.file, self.idat, place, limit),
+            _ => Gathered::NotPlaced,
+        }
+    }
+}
+
+/// An item's bytes, or why there are none.
+#[derive(Debug)]
+enum Gathered {
+    Bytes(Vec<u8>),
+    /// `iloc` doesn't place the item.
+    NotPlaced,
+    /// Outside the data, in another file, or built from other items (construction method 2).
+    Unreadable,
+    /// More than the limit.
+    TooLarge,
+}
+
+/// A full box's version: the first byte of its own payload (`None` for an empty box).
+fn version(bytes: &[u8], b: &BoxRef) -> Option<u8> {
+    bytes.get(b.body..b.end)?.first().copied()
 }
 
 /// `pitm`: the primary item's id (16 bits in version 0, else 32).
@@ -125,22 +228,31 @@ fn primary_item(pitm: &[u8]) -> Option<u32> {
     }
 }
 
-/// The `Exif` and XMP items listed in `iinf` (the first [`MAX_CANDIDATES`]).
-fn metadata_items(bytes: &[u8], iinf: &BoxRef, budget: &mut usize) -> Vec<Candidate> {
+/// From `iinf`: every item's id (sorted), the `Exif` and XMP items (the first `cap`), and whether
+/// there were more.
+fn item_infos(bytes: &[u8], iinf: &BoxRef, cap: usize, budget: &mut usize) -> (Vec<u32>, Vec<Candidate>, bool) {
     // full box, then the entry count: 16 bits in version 0, else 32
-    let Some(&version) = bytes.get(iinf.body) else { return Vec::new() };
+    let Some(version) = version(bytes, iinf) else { return Default::default() };
     let first = iinf.body.saturating_add(if version == 0 { 6 } else { 8 });
-    boxes(bytes, first, iinf.end, budget)
-        .iter()
-        .filter(|b| &b.kind == b"infe")
-        .filter_map(|b| item_info(bytes.get(b.body..b.end)?))
-        .take(MAX_CANDIDATES)
-        .collect()
+    let (mut ids, mut items, mut more) = (Vec::new(), Vec::new(), false);
+    for b in boxes(bytes, first, iinf.end, budget).iter().filter(|b| &b.kind == b"infe") {
+        let Some(infe) = bytes.get(b.body..b.end) else { continue };
+        let Some((id, kind)) = item_info(infe) else { continue };
+        ids.push(id);
+        match kind {
+            Some(_) if items.len() >= cap => more = true,
+            Some(kind) => items.push(Candidate { id, kind, describes: false, describes_primary: false }),
+            None => {}
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    (ids, items, more)
 }
 
-/// An `infe` entry, when it is an unprotected `Exif` item or an uncompressed XMP item (`mime`,
+/// An `infe` entry's item id, and its kind when it is an unprotected `Exif` or XMP item (`mime`,
 /// `application/rdf+xml`).
-fn item_info(infe: &[u8]) -> Option<Candidate> {
+fn item_info(infe: &[u8]) -> Option<(u32, Option<Kind>)> {
     let version = *infe.first()?;
     // version and flags, the item id (32 bits in version 3), the protection index
     let (id, at) = match version {
@@ -149,25 +261,29 @@ fn item_info(infe: &[u8]) -> Option<Candidate> {
         _ => return None,
     };
     if be16(infe, at)? != 0 {
-        return None; // protected (encrypted)
+        return Some((id, None)); // protected (encrypted)
     }
     let at = at.checked_add(2)?;
     // versions 0 and 1 have no item type and describe MIME items; 2 and 3 name the type
-    let (kind, at) = if version >= 2 { (infe.get(at..at.checked_add(4)?)?, at.checked_add(4)?) } else { (b"mime".as_slice(), at) };
+    let Some((kind, at)) = (if version >= 2 { infe.get(at..at.checked_add(4)?).zip(at.checked_add(4)) } else { Some((b"mime".as_slice(), at)) })
+    else {
+        return Some((id, None));
+    };
     let kind = match kind {
-        b"Exif" => Kind::Exif,
+        b"Exif" => Some(Kind::Exif),
         b"mime" => {
             let (_name, at) = string(infe, at);
             let (content_type, at) = string(infe, at);
             let (encoding, _) = string(infe, at);
-            if !content_type.trim_ascii().eq_ignore_ascii_case(b"application/rdf+xml") || !encoding.trim_ascii().is_empty() {
-                return None;
+            match (content_type.trim_ascii().eq_ignore_ascii_case(b"application/rdf+xml"), encoding.trim_ascii().is_empty()) {
+                (true, true) => Some(Kind::Xmp),
+                (true, false) => Some(Kind::EncodedXmp),
+                (false, _) => None,
             }
-            Kind::Xmp
         }
-        _ => return None,
+        _ => None,
     };
-    Some(Candidate { id, kind, describes: false, describes_primary: false })
+    Some((id, kind))
 }
 
 /// The NUL-terminated string at `at` and where the next field starts. A missing terminator
@@ -180,28 +296,57 @@ fn string(b: &[u8], at: usize) -> (&[u8], usize) {
     }
 }
 
-/// Mark the candidates that `cdsc` references tie to an image, and those tied to the primary one.
+/// Mark the candidates that `cdsc` references tie to an image, and those tied to the primary image
+/// or one it is made from (`dimg`, followed to any depth; each image once, so loops end).
 fn link(bytes: &[u8], iref: &BoxRef, primary: Option<u32>, items: &mut [Candidate], budget: &mut usize) {
     // full box; item ids are 16 bits in version 0, 32 in version 1
-    let width = match bytes.get(iref.body) {
+    let width = match version(bytes, iref) {
         Some(0) => 2usize,
         Some(1) => 4,
         _ => return,
     };
+    let index: HashMap<u32, usize> = items.iter().enumerate().rev().map(|(i, c)| (c.id, i)).collect();
+    let mut inputs: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut described: Vec<(usize, Vec<u32>)> = Vec::new();
     for r in boxes(bytes, iref.body.saturating_add(4), iref.end, budget) {
-        if &r.kind != b"cdsc" {
-            continue;
-        }
+        let kind = match &r.kind {
+            b"cdsc" => b"cdsc",
+            b"dimg" => b"dimg",
+            _ => continue,
+        };
         let Some(body) = bytes.get(r.body..r.end) else { continue };
         let Some(from) = id_at(body, 0, width) else { continue };
-        let Some(item) = items.iter_mut().find(|c| c.id == from) else { continue };
+        let item = index.get(&from).copied();
+        if kind == b"cdsc" && item.is_none() {
+            continue;
+        }
         let count = be16(body, width).unwrap_or(0);
+        let mut to = Vec::new();
         let mut at = width.saturating_add(2);
         for _ in 0..count {
-            let Some(to) = id_at(body, at, width) else { break };
-            item.describes = true;
-            item.describes_primary |= Some(to) == primary;
+            let Some(id) = id_at(body, at, width) else { break };
+            to.push(id);
             at = at.saturating_add(width);
+        }
+        match item {
+            Some(i) if kind == b"cdsc" => described.push((i, to)),
+            _ => inputs.entry(from).or_default().extend(to),
+        }
+    }
+    // the primary image and every image it is made from
+    let mut photo = HashSet::new();
+    let mut todo: Vec<u32> = primary.into_iter().collect();
+    while let Some(id) = todo.pop() {
+        if photo.insert(id) {
+            todo.extend(inputs.get(&id).into_iter().flatten().filter(|i| !photo.contains(*i)));
+        }
+    }
+    for (i, to) in described {
+        if let Some(item) = items.get_mut(i)
+            && !to.is_empty()
+        {
+            item.describes = true;
+            item.describes_primary |= to.iter().any(|t| photo.contains(t));
         }
     }
 }
@@ -210,70 +355,148 @@ fn id_at(b: &[u8], at: usize, width: usize) -> Option<u32> {
     if width == 2 { be16(b, at).map(u32::from) } else { be32(b, at) }
 }
 
-/// Item `id`'s bytes as `iloc` places them: its extents in order, from the file (construction
-/// method 0) or from the `meta` box's `idat` (method 1). `None` when the item is not listed,
-/// lies outside the data, would gather more than [`MAX_ITEM`], is in another file or is built
-/// from other items (method 2).
-fn item_bytes(file: &[u8], iloc: &[u8], idat: Option<&[u8]>, id: u32) -> Option<Vec<u8>> {
-    let version = *iloc.first()?;
-    if version > 2 {
-        return None;
-    }
-    // version and flags, then four 4-bit field sizes: offset, length, base offset, extent index
-    let (sizes, more) = (*iloc.get(4)?, *iloc.get(5)?);
-    let (offset_size, length_size) = (usize::from(sizes / 16), usize::from(sizes % 16));
-    let base_size = usize::from(more / 16);
-    let index_size = if version == 0 { 0 } else { usize::from(more % 16) }; // reserved in version 0
-    if [offset_size, length_size, base_size, index_size].into_iter().any(|n| !matches!(n, 0 | 4 | 8)) {
-        return None;
-    }
-    let id_size = if version == 2 { 4 } else { 2 };
-    let (count, mut at) = if version == 2 { (be32(iloc, 6)?, 10usize) } else { (u32::from(be16(iloc, 6)?), 8usize) };
-    let extent_size = index_size.checked_add(offset_size)?.checked_add(length_size)?;
-    // (every entry takes at least six bytes, so a count larger than the box ends at its end)
-    for _ in 0..count {
-        let item = uint(iloc, at, id_size)?;
-        at = at.checked_add(id_size)?;
-        let method = if version == 0 {
-            0
-        } else {
-            let m = be16(iloc, at)? & 15;
-            at = at.checked_add(2)?;
-            m
-        };
-        let data_reference = be16(iloc, at)?;
-        let base = uint(iloc, at.checked_add(2)?, base_size)?;
-        at = at.checked_add(2)?.checked_add(base_size)?;
-        let extents = usize::from(be16(iloc, at)?);
-        at = at.checked_add(2)?;
-        if item != u64::from(id) {
-            at = at.checked_add(extents.checked_mul(extent_size)?)?;
-            continue;
+/// `iloc`: its field sizes, read once.
+struct Iloc<'a> {
+    data: &'a [u8],
+    version: u8,
+    offset_size: usize,
+    length_size: usize,
+    base_size: usize,
+    index_size: usize,
+}
+
+/// Where an item is: how it is built, and its extents in `iloc`.
+#[derive(Clone, Copy, Debug)]
+struct Place {
+    method: u16,
+    data_reference: u16,
+    base: u64,
+    /// Where its first extent starts in `iloc`.
+    extents_at: usize,
+    extents: usize,
+}
+
+impl<'a> Iloc<'a> {
+    fn parse(data: &'a [u8]) -> Option<Iloc<'a>> {
+        let version = *data.first()?;
+        if version > 2 {
+            return None;
         }
+        // version and flags, then four 4-bit field sizes: offset, length, base offset, extent index
+        let (sizes, more) = (*data.get(4)?, *data.get(5)?);
+        let (offset_size, length_size) = (usize::from(sizes / 16), usize::from(sizes % 16));
+        let base_size = usize::from(more / 16);
+        let index_size = if version == 0 { 0 } else { usize::from(more % 16) }; // reserved in version 0
+        if [offset_size, length_size, base_size, index_size].into_iter().any(|n| !matches!(n, 0 | 4 | 8)) {
+            return None;
+        }
+        Some(Iloc { data, version, offset_size, length_size, base_size, index_size })
+    }
+
+    /// One walk over the entries: where each of `items` is (the first entry for an id wins). It
+    /// stops once all are placed, or where the entries stop making sense.
+    fn locate(&self, items: &[Candidate]) -> Vec<Option<Place>> {
+        let mut places = vec![None; items.len()];
+        if items.is_empty() {
+            return places;
+        }
+        let wanted: HashMap<u32, usize> = items.iter().enumerate().rev().map(|(i, c)| (c.id, i)).collect();
+        let mut left = wanted.len();
+        let _ = self.walk(|id, place| {
+            if let Some(&i) = wanted.get(&id)
+                && let Some(slot @ None) = places.get_mut(i)
+            {
+                *slot = Some(place);
+                left = left.saturating_sub(1);
+            }
+            left > 0
+        });
+        places
+    }
+
+    /// Call `f` with each entry's item id and place until it returns `false`; `None` where an
+    /// entry runs past the box.
+    fn walk(&self, mut f: impl FnMut(u32, Place) -> bool) -> Option<()> {
+        let (version, data) = (self.version, self.data);
+        let id_size = if version == 2 { 4 } else { 2 };
+        let (count, mut at) = if version == 2 { (be32(data, 6)?, 10usize) } else { (u32::from(be16(data, 6)?), 8usize) };
+        let extent_size = self.index_size.checked_add(self.offset_size)?.checked_add(self.length_size)?;
+        // (every entry takes at least six bytes, so a count larger than the box ends at its end)
+        for _ in 0..count {
+            iloc_entry_visited();
+            let id = uint(data, at, id_size)?;
+            at = at.checked_add(id_size)?;
+            let method = if version == 0 {
+                0
+            } else {
+                let m = be16(data, at)? & 15;
+                at = at.checked_add(2)?;
+                m
+            };
+            let data_reference = be16(data, at)?;
+            let base = uint(data, at.checked_add(2)?, self.base_size)?;
+            at = at.checked_add(2)?.checked_add(self.base_size)?;
+            let extents = usize::from(be16(data, at)?);
+            at = at.checked_add(2)?;
+            let place = Place { method, data_reference, base, extents_at: at, extents };
+            at = at.checked_add(extents.checked_mul(extent_size)?)?;
+            if at > data.len() {
+                return None;
+            }
+            if let Ok(id) = u32::try_from(id)
+                && !f(id, place)
+            {
+                return Some(());
+            }
+        }
+        Some(())
+    }
+
+    /// An item's bytes, its extents in order from the file (construction method 0) or from the
+    /// `meta` box's `idat` (method 1), at most `limit` of them.
+    fn gather(&self, file: &[u8], idat: Option<&[u8]>, place: &Place, limit: usize) -> Gathered {
         // data reference 0 is this file
-        let source = match (data_reference, method) {
-            (0, 0) => file,
-            (0, 1) => idat?,
-            _ => return None,
+        let source = match (place.data_reference, place.method, idat) {
+            (0, 0, _) => file,
+            (0, 1, Some(idat)) => idat,
+            _ => return Gathered::Unreadable,
         };
         let mut out = Vec::new();
-        for _ in 0..extents {
-            at = at.checked_add(index_size)?;
-            let offset = uint(iloc, at, offset_size)?;
-            at = at.checked_add(offset_size)?;
-            let length = uint(iloc, at, length_size)?;
-            at = at.checked_add(length_size)?;
-            let rest = source.get(usize::try_from(base.checked_add(offset)?).ok()?..)?;
-            // a length of 0 runs to the end of the data
-            let piece = if length == 0 { rest } else { rest.get(..usize::try_from(length).ok()?)? };
-            if out.len().checked_add(piece.len())? > MAX_ITEM {
-                return None;
+        let mut at = place.extents_at;
+        for _ in 0..place.extents {
+            let Some((piece, next)) = self.extent(source, place.base, at) else { return Gathered::Unreadable };
+            at = next;
+            if out.len().saturating_add(piece.len()) > limit {
+                return Gathered::TooLarge;
             }
             out.extend_from_slice(piece);
         }
-        return Some(out);
+        Gathered::Bytes(out)
     }
-    None
+
+    /// The extent at `at`: its bytes in `source` (a length of 0 runs to the end) and where the
+    /// next extent starts.
+    fn extent<'s>(&self, source: &'s [u8], base: u64, at: usize) -> Option<(&'s [u8], usize)> {
+        let at = at.checked_add(self.index_size)?;
+        let offset = uint(self.data, at, self.offset_size)?;
+        let at = at.checked_add(self.offset_size)?;
+        let length = uint(self.data, at, self.length_size)?;
+        let at = at.checked_add(self.length_size)?;
+        let rest = source.get(usize::try_from(base.checked_add(offset)?).ok()?..)?;
+        let piece = if length == 0 { rest } else { rest.get(..usize::try_from(length).ok()?)? };
+        Some((piece, at))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `iloc` entries walked on this thread, for the tests that bound the work.
+    static ILOC_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn iloc_entry_visited() {
+    #[cfg(test)]
+    ILOC_ENTRIES.with(|n| n.set(n.get().saturating_add(1)));
 }
 
 /// A big-endian unsigned field of `size` bytes (0 reads as 0).
@@ -301,6 +524,22 @@ fn exif_tiff(item: &[u8]) -> Option<&[u8]> {
 #[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+
+    /// One item's bytes, as `embedded` gathers them: its place from `iloc`, then its extents.
+    fn item_bytes(file: &[u8], iloc: &[u8], idat: Option<&[u8]>, id: u32) -> Option<Vec<u8>> {
+        let iloc = Iloc::parse(iloc)?;
+        let mut place = None;
+        iloc.walk(|i, p| {
+            if i == id {
+                place = Some(p);
+            }
+            place.is_none()
+        })?;
+        match iloc.gather(file, idat, &place?, MAX_ITEM) {
+            Gathered::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
 
     /// The 100-byte EXIF of the issue sweep's `synthetic-metadata.heic` (#693): Make "Synthetic",
     /// Model "Issue sweep camera", DateTime 2026:10:12 12:34:56, big-endian.
@@ -365,7 +604,8 @@ mod tests {
         ftyp: Vec<u8>,
         primary: u32,
         items: Vec<Item>,
-        cdsc: Vec<(u32, Vec<u32>)>,
+        /// `iref` references: type, from, to.
+        refs: Vec<(&'static [u8; 4], u32, Vec<u32>)>,
         /// `iloc` version and its offset, length, base-offset and index field sizes.
         iloc: (u8, [u8; 4]),
         /// 32-bit item ids: `infe` version 3, `pitm` and `iref` version 1 (`iloc` must be version 2).
@@ -376,7 +616,7 @@ mod tests {
         /// A primary HEVC picture, item 1 (its bytes don't matter here).
         fn new() -> Heif {
             let picture = Item { id: 1, kind: b"hvc1", mime: ("", ""), data: b"coded picture".to_vec(), store: Store::File, extents: 1 };
-            Heif { ftyp: b"heic\0\0\0\0mif1heic".to_vec(), primary: 1, items: vec![picture], cdsc: Vec::new(), iloc: (1, [4, 4, 0, 0]), wide: false }
+            Heif { ftyp: b"heic\0\0\0\0mif1heic".to_vec(), primary: 1, items: vec![picture], refs: Vec::new(), iloc: (1, [4, 4, 0, 0]), wide: false }
         }
 
         fn item(mut self, id: u32, kind: &'static [u8; 4], data: Vec<u8>, store: Store, extents: usize) -> Heif {
@@ -389,8 +629,12 @@ mod tests {
             self
         }
 
-        fn cdsc(mut self, from: u32, to: &[u32]) -> Heif {
-            self.cdsc.push((from, to.to_vec()));
+        fn cdsc(self, from: u32, to: &[u32]) -> Heif {
+            self.iref(b"cdsc", from, to)
+        }
+
+        fn iref(mut self, kind: &'static [u8; 4], from: u32, to: &[u32]) -> Heif {
+            self.refs.push((kind, from, to.to_vec()));
             self
         }
 
@@ -418,12 +662,12 @@ mod tests {
                 iinf.extend(full(b"infe", if self.wide { 3 } else { 2 }, &e));
             }
             let mut iref = Vec::new();
-            for (from, to) in &self.cdsc {
+            for (kind, from, to) in &self.refs {
                 let mut r = Vec::new();
                 id(&mut r, *from);
                 put(&mut r, to.len() as u64, 2);
                 to.iter().for_each(|t| id(&mut r, *t));
-                iref.extend(bx(b"cdsc", &r));
+                iref.extend(bx(kind, &r));
             }
             let (version, [o, l, b, i]) = self.iloc;
             let mut iloc = vec![o << 4 | l, b << 4 | i];
@@ -710,9 +954,14 @@ mod tests {
         let b = boxes(&iref, 0, iref.len(), &mut budget);
         link(&iref, &b[0], Some(1), &mut items, &mut budget);
         assert!(!items[0].describes);
-        assert!(item_info(&[2, 0, 0, 0, 0, 2, 0, 0, b'E', b'x']).is_none());
-        assert!(item_info(&[4, 0, 0, 0, 0, 2, 0, 0, b'E', b'x', b'i', b'f', 0]).is_none(), "unknown infe version");
-        assert!(item_info(&[2, 0, 0, 0, 0, 2, 0, 1, b'E', b'x', b'i', b'f', 0]).is_none(), "protected");
+        assert_eq!(item_info(&[2, 0, 0, 0, 0, 2, 0, 0, b'E', b'x']), Some((2, None)), "cut short: an item, but not metadata");
+        assert_eq!(item_info(&[4, 0, 0, 0, 0, 2, 0, 0, b'E', b'x', b'i', b'f', 0]), None, "unknown infe version");
+        assert_eq!(item_info(&[2, 0, 0, 0, 0, 2, 0, 1, b'E', b'x', b'i', b'f', 0]), Some((2, None)), "protected");
+        // a full box's version is its own first byte, never the next box's
+        let two = [bx(b"iref", &[]), bx(b"free", &[1, 2, 3])].concat();
+        let mut budget = MAX_BOXES;
+        let b = boxes(&two, 0, two.len(), &mut budget);
+        assert_eq!((version(&two, &b[0]), version(&two, &b[1])), (None, Some(1)));
     }
 
     /// Every cut-short or damaged file is read without a panic.
@@ -739,6 +988,146 @@ mod tests {
                 let _ = crate::file_tag_rows(&g);
             }
         }
+    }
+
+    fn tiff_at(latitude: f64) -> Vec<u8> {
+        crate::write_exif(&crate::Metadata { gps: Some(crate::Gps { latitude, longitude: 2.0, altitude: None }), ..Default::default() })
+    }
+
+    /// Export's "remove location" check sees GPS anywhere in a HEIF's metadata, not only in the
+    /// photo's own first EXIF (#693 review): a thumbnail's EXIF, the primary image's second EXIF
+    /// item, an XMP item. What it can't read counts as a location, so the original isn't copied
+    /// out on a guess.
+    #[test]
+    fn a_location_anywhere_in_the_metadata_is_seen() {
+        let plain = tiff_with("Primary");
+        let thumb = |h: Heif| h.item(2, b"hvc1", b"thumbnail".to_vec(), Store::File, 1);
+        // only the thumbnail's EXIF has GPS
+        let f = thumb(Heif::new())
+            .item(10, b"Exif", exif_item(&[], &plain), Store::File, 1)
+            .item(11, b"Exif", exif_item(&[], &tiff_at(1.0)), Store::File, 1)
+            .cdsc(10, &[1])
+            .cdsc(11, &[2])
+            .build();
+        assert_eq!(crate::extract(&f).gps, None, "the photo's own EXIF has none");
+        assert!(crate::embeds_location(&f), "thumbnail");
+        // the primary image's second EXIF item has it
+        let f = Heif::new()
+            .item(10, b"Exif", exif_item(&[], &plain), Store::File, 1)
+            .item(11, b"Exif", exif_item(&[], &tiff_at(1.0)), Store::File, 1)
+            .cdsc(10, &[1])
+            .cdsc(11, &[1])
+            .build();
+        assert_eq!(crate::extract(&f).gps, None);
+        assert!(crate::embeds_location(&f), "second EXIF item");
+        // a thumbnail's XMP has it
+        let rdf = ("application/rdf+xml", "");
+        let xmp = crate::write_xmp(
+            &crate::Metadata { gps: Some(crate::Gps { latitude: 1.0, longitude: 2.0, altitude: None }), ..Default::default() },
+            None,
+        );
+        let f = thumb(Heif::new())
+            .item(10, b"Exif", exif_item(&[], &plain), Store::File, 1)
+            .cdsc(10, &[1])
+            .xmp(20, rdf, xmp.into_bytes())
+            .cdsc(20, &[2])
+            .build();
+        assert!(crate::embeds_location(&f), "thumbnail XMP");
+        // no location anywhere
+        let f = thumb(Heif::new())
+            .item(10, b"Exif", exif_item(&[], &plain), Store::File, 1)
+            .item(11, b"Exif", exif_item(&[], &tiff_with("Thumbnail")), Store::File, 1)
+            .cdsc(10, &[1])
+            .cdsc(11, &[2])
+            .build();
+        assert!(!crate::embeds_location(&f));
+        // unsure counts as yes: a compressed XMP item, an EXIF item cut off by the end of the file,
+        // one larger than the reader takes, more items than it looks at
+        let f = Heif::new().xmp(20, ("application/rdf+xml", "deflate"), b"compressed".to_vec()).build();
+        assert!(crate::embeds_location(&f), "compressed XMP");
+        let mut f = Heif::new().item(10, b"Exif", exif_item(&[], &plain), Store::File, 1).build();
+        f.truncate(f.len() - 1);
+        assert!(crate::embeds_location(&f), "cut off");
+        let f = Heif::new().item(10, b"Exif", exif_item(&[], &vec![0; MAX_ITEM]), Store::File, 1).build();
+        assert!(crate::embeds_location(&f), "too large");
+        let mut h = Heif::new();
+        for id in 0..2000 {
+            h = h.item(10 + id, b"Exif", exif_item(&[], &plain), Store::File, 1);
+        }
+        assert!(crate::embeds_location(&h.build()), "too many items");
+        // other files: what `extract` reads
+        assert!(crate::embeds_location(&tiff_at(1.0)));
+        assert!(!crate::embeds_location(&plain));
+    }
+
+    /// `iloc` is walked once, however many metadata items there are to place (#693 review: one
+    /// walk per item took over a second on a 48 MB `iloc` with 64 items).
+    #[test]
+    fn iloc_is_walked_once() {
+        // 64 metadata items, none placed by `iloc`, and 20,000 entries for other items
+        let mut iinf = vec![0u8, 0, 0, 0];
+        iinf.extend_from_slice(&64u16.to_be_bytes());
+        for id in 0..64u16 {
+            let mut e = vec![2u8, 0, 0, 0];
+            e.extend_from_slice(&(1000 + id).to_be_bytes());
+            e.extend_from_slice(&[0, 0]);
+            e.extend_from_slice(if id % 2 == 0 { b"Exif\0" } else { b"mime\0application/rdf+xml\0" });
+            iinf.extend(bx(b"infe", &e));
+        }
+        let entries = 20_000usize;
+        let mut iloc = vec![2u8, 0, 0, 0, 0, 0];
+        iloc.extend_from_slice(&(entries as u32).to_be_bytes());
+        for _ in 0..entries {
+            iloc.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 0]); // item 1, method 0, this file, no extents
+        }
+        let meta = full(b"meta", 0, &[bx(b"iinf", &iinf), bx(b"iloc", &iloc)].concat());
+        let f = [bx(b"ftyp", b"heic\0\0\0\0mif1heic"), meta].concat();
+        let walked = |read: &dyn Fn(&[u8])| {
+            ILOC_ENTRIES.with(|n| n.set(0));
+            read(&f);
+            ILOC_ENTRIES.with(std::cell::Cell::get)
+        };
+        let n = walked(&|f| assert_eq!(crate::embedded(f), Embedded::default()));
+        assert!(n <= entries, "embedded walked {n} entries of {entries}");
+        let n = walked(&|f| {
+            let _ = crate::embeds_location(f);
+        });
+        assert!(n <= entries, "embeds_location walked {n} entries of {entries}");
+    }
+
+    /// EXIF tied to an image the primary is derived from (`dimg`: an `iden` turn, an `iovl` overlay,
+    /// a `tmap` tone map, a grid) is the primary image's, through any depth and despite loops. So is
+    /// EXIF in a file whose `pitm` names no item. A thumbnail's EXIF still isn't.
+    #[test]
+    fn metadata_of_the_images_a_primary_is_made_from_is_read() {
+        let base = |h: Heif| {
+            let mut h = h
+                .item(2, b"hvc1", b"thumbnail".to_vec(), Store::File, 1)
+                .item(3, b"hvc1", b"coded picture".to_vec(), Store::File, 1)
+                .item(10, b"Exif", exif_item(&[], &tiff_with("Thumbnail")), Store::File, 1)
+                .item(11, b"Exif", exif_item(&[], &tiff_with("Input")), Store::File, 1)
+                .cdsc(10, &[2])
+                .cdsc(11, &[3]);
+            h.items[0].kind = b"iden";
+            h
+        };
+        // the primary (1) turns item 3
+        let f = base(Heif::new()).iref(b"dimg", 1, &[3]).build();
+        assert_eq!(crate::extract(&f).model.as_deref(), Some("Input"));
+        // two levels (a tone map of a grid of 3), and a loop back to the primary
+        let f = base(Heif::new())
+            .item(4, b"grid", Vec::new(), Store::File, 1)
+            .iref(b"dimg", 1, &[4])
+            .iref(b"dimg", 4, &[3])
+            .iref(b"dimg", 3, &[1])
+            .build();
+        assert_eq!(crate::extract(&f).model.as_deref(), Some("Input"));
+        // `pitm` names an item that doesn't exist: there is no primary image, so tied items count
+        let mut h = Heif::new().item(11, b"Exif", exif_item(&[], &tiff_with("Orphan")), Store::File, 1).cdsc(11, &[1]);
+        h.primary = 99;
+        assert_eq!(crate::extract(&h.build()).model.as_deref(), Some("Orphan"));
+        // the thumbnail is not an input of the primary: without the `dimg`, nothing is the photo's
+        assert_eq!(crate::extract(&base(Heif::new()).build()).model, None);
     }
 
     proptest::proptest! {

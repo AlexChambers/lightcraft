@@ -305,6 +305,14 @@ pub fn lens_spec_name(spec: [f64; 4]) -> Option<String> {
     Some(format!("{focal} mm f/{aperture}"))
 }
 
+/// Does the file embed a GPS position anywhere it can be read from? Export's "remove location"
+/// asks before copying an original byte for byte. For HEIF, HEIC and AVIF that is any EXIF or XMP
+/// item, whichever image it describes (a thumbnail's too), and an item that can't be read counts
+/// as a location; for other files, what [`extract`] reads.
+pub fn embeds_location(bytes: &[u8]) -> bool {
+    heif::embeds_location(bytes).unwrap_or_else(|| extract(bytes).gps.is_some())
+}
+
 /// Lenient number parsing used by XMP/IPTC: `"28/10"`, `"2.8"`, `"+0.7"`.
 pub(crate) fn parse_number(s: &str) -> Option<f64> {
     let s = s.trim();
