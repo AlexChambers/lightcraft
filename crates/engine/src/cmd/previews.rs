@@ -238,8 +238,8 @@ fn smart_run(
     cache: &crate::media::Invalidation,
 ) -> std::result::Result<SmartCounts, String> {
     let mut n = SmartCounts::default();
-    // Cleared once, when the run ends; recorded on disk before the first proxy changes, so a
-    // quit or crash before that clear makes the next opening use new thumbnail keys.
+    // Cleared once, when the run ends; recorded on disk before the first usable proxy is
+    // replaced, so a quit or crash before that clear makes the next opening use new thumbnail keys.
     let mut pending = cache.pending();
     if !discard {
         // a chosen folder on another drive must be there: never recreate it on this one
@@ -258,12 +258,10 @@ fn smart_run(
         // depend on having the original online.
         let path = crate::smart::existing_file_path(dir, path);
         if discard {
-            if path.symlink_metadata().is_ok() {
-                pending.before_change()?;
-                if std::fs::remove_file(&path).is_ok() {
-                    n.removed += 1;
-                    pending.changed();
-                }
+            // (no marker: a discard replaces no picture, and on a full drive it must free space)
+            if std::fs::remove_file(&path).is_ok() {
+                n.removed += 1;
+                pending.changed();
             }
         } else {
             // a complete, current proxy is kept; a missing or damaged one (cut short by a crash or a
@@ -277,7 +275,9 @@ fn smart_run(
             if usable && !stale {
                 n.built += 1;
             } else {
-                pending.before_change()?;
+                if stale {
+                    pending.before_replacing()?;
+                }
                 // a stale proxy is rebuilt from the original only: never from itself (the file
                 // fallback or a source decoded from a proxy would stamp the old look as current)
                 let source = if stale { source.and_then(original_only) } else { source };

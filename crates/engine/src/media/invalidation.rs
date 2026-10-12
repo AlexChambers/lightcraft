@@ -1,9 +1,10 @@
 //! A proxy worker's invalidation follows cache replacements for the same library directory.
-//! Before a worker changes its first proxy it records that on disk ([`Pending`]), so a process
-//! exit before its cache clear reopens the library with a new thumbnail namespace.
+//! Before a worker replaces its first usable proxy it records that on disk ([`Pending`]), so a
+//! process exit before its cache clear reopens the library with a new thumbnail namespace.
 
 use lightcraft_preview::PreviewCache;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
@@ -22,12 +23,14 @@ impl Drop for State {
 }
 static LIBRARIES: OnceLock<Mutex<HashMap<std::path::PathBuf, Weak<Current>>>> = OnceLock::new();
 
-/// Marker files sit at the top of the thumbnail folder, outside the cache's two-digit shard
-/// folders, so pruning and clearing never touch them. They are empty: creating one needs no
-/// free data blocks, so on a full drive the proxy writes still fail one by one, not the run.
+/// Marker files are empty and sit at the top of the thumbnail folder, outside the cache's
+/// two-digit shard folders, so pruning and clearing never touch them. A full drive can refuse
+/// even an empty file (APFS and HFS+ do); see [`Pending::before_replacing`].
 const MARKER_PREFIX: &str = "smart-previews-changing-";
-/// Markers of workers still running in this process: opening their library keeps them.
-static RUNNING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// The file names of the markers of workers still running in this process: opening their
+/// library keeps them. Names are unique (process, time, counter), so they match however the
+/// library's path is spelled.
+static RUNNING: Mutex<Vec<OsString>> = Mutex::new(Vec::new());
 
 #[derive(Clone)]
 pub(crate) struct Invalidation(Arc<Current>);
@@ -80,10 +83,12 @@ impl Invalidation {
 }
 
 /// One run of Build / Discard Smart Previews or of the look refresh. It clears the thumbnail
-/// cache once, when it ends, if it changed a proxy. [`Pending::before_change`] first creates a
-/// durable marker in the thumbnail folder, which is removed after that clear. If the process
-/// ends in between, the marker stays: the next opening finds it ([`interrupted_runs`]) and
-/// takes a new thumbnail namespace before reading any thumbnail.
+/// cache once, when it ends, if it changed a proxy. Before it replaces a usable proxy (a format
+/// conversion or a look refresh), [`Pending::before_replacing`] creates a durable marker in the
+/// thumbnail folder, which is removed after that clear. If the process ends in between, the
+/// marker stays: the next opening finds it ([`interrupted_runs`]) and takes a new thumbnail
+/// namespace before reading any thumbnail. Discarding, building a missing proxy and repairing a
+/// damaged one need no marker: no thumbnail can show a picture that they replace.
 pub(crate) struct Pending {
     invalidation: Invalidation,
     marker: Option<PathBuf>,
@@ -92,27 +97,37 @@ pub(crate) struct Pending {
 }
 
 impl Pending {
-    /// Call before each proxy write or removal; only the first call does I/O. On an error no
-    /// proxy may change, because the change could outlive the cache clear.
-    pub(crate) fn before_change(&mut self) -> Result<(), String> {
+    /// Call before each proxy that replaces a usable one; only the first call does I/O.
+    ///
+    /// When the marker can't be created (a full drive refuses even an empty file), the thumbnail
+    /// cache is cleared at once, in every namespace. That removes every thumbnail of the proxies
+    /// about to be replaced and frees space, and the marker is tried again. If the drive is still
+    /// full, the run goes on without it: an exit can leave no thumbnail of a replaced proxy,
+    /// because those were just removed and a proxy is only replaced from its online original.
+    /// Any other failure, such as a read-only folder where nothing can be cleared either, is an
+    /// error, and no proxy may change.
+    pub(crate) fn before_replacing(&mut self) -> Result<(), String> {
         if self.recorded {
             return Ok(());
         }
         let dir = self.invalidation.0.lock().unwrap_or_else(PoisonError::into_inner).cache.disk().map(|disk| disk.dir().to_path_buf());
         // (a memory-only cache does not outlive the process)
         if let Some(dir) = dir {
-            static N: AtomicU64 = AtomicU64::new(0);
-            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-            let marker = dir.join(format!("{MARKER_PREFIX}{}-{stamp}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-            // registered before it exists: an opening in this process never takes it for a leftover
-            RUNNING.lock().unwrap_or_else(PoisonError::into_inner).push(marker.clone());
-            let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::File::create(&marker)).and_then(|file| file.sync_all());
-            if let Err(e) = written {
-                finished(&marker);
-                return Err(format!("could not record the thumbnail cache change in {}: {e}", dir.display()));
-            }
-            lightcraft_catalog::safe_file::sync_dir(&dir);
-            self.marker = Some(marker);
+            self.marker = match create_marker(&dir) {
+                Ok(marker) => Some(marker),
+                Err(first) => {
+                    log::warn!("thumbnail cache: {}: {first}; clearing it before smart previews change", dir.display());
+                    self.invalidation.clear();
+                    match create_marker(&dir) {
+                        Ok(marker) => Some(marker),
+                        Err(e) if matches!(e.kind(), std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded) => {
+                            log::warn!("thumbnail cache: {}: {e}; it was cleared, continuing without a marker", dir.display());
+                            None
+                        }
+                        Err(e) => return Err(format!("could not record the thumbnail cache change in {}: {e}", dir.display())),
+                    }
+                }
+            };
         }
         self.recorded = true;
         Ok(())
@@ -141,8 +156,39 @@ impl Drop for Pending {
     }
 }
 
+/// Create and sync an empty marker in `dir`. It is registered as running before it exists, so
+/// an opening in this process never takes it for a leftover.
+fn create_marker(dir: &Path) -> std::io::Result<PathBuf> {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let marker = dir.join(format!("{MARKER_PREFIX}{}-{stamp}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    if let Some(name) = marker.file_name() {
+        RUNNING.lock().unwrap_or_else(PoisonError::into_inner).push(name.to_os_string());
+    }
+    #[cfg(test)]
+    if let Some(e) = crate::smart::tests_conversion::injected_marker_failure(dir) {
+        finished(&marker);
+        return Err(e);
+    }
+    let created = std::fs::create_dir_all(dir).and_then(|()| std::fs::File::create(&marker)).and_then(|file| file.sync_all());
+    match created {
+        Ok(()) => {
+            lightcraft_catalog::safe_file::sync_dir(dir);
+            Ok(marker)
+        }
+        Err(e) => {
+            // (it may exist without being synced)
+            let _ = std::fs::remove_file(&marker);
+            finished(&marker);
+            Err(e)
+        }
+    }
+}
+
 fn finished(marker: &Path) {
-    RUNNING.lock().unwrap_or_else(PoisonError::into_inner).retain(|m| m != marker);
+    if let Some(name) = marker.file_name() {
+        RUNNING.lock().unwrap_or_else(PoisonError::into_inner).retain(|m| m != name);
+    }
 }
 
 /// The markers in the thumbnail folder `thumbs` of runs that ended without clearing the
@@ -154,7 +200,7 @@ pub(crate) fn interrupted_runs(thumbs: &Path) -> Vec<PathBuf> {
         .flatten()
         .filter(|e| e.file_name().to_str().is_some_and(|name| name.starts_with(MARKER_PREFIX)))
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter(|e| !running.contains(&e.file_name()))
         .map(|e| e.path())
-        .filter(|path| !running.contains(path))
         .collect()
 }

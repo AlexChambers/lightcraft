@@ -16,7 +16,7 @@ mod format;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod migration;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests_conversion;
+pub(crate) mod tests_conversion;
 #[cfg(test)]
 mod tests_lossless;
 #[cfg(all(test, not(target_arch = "wasm32")))]
