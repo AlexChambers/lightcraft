@@ -253,6 +253,8 @@ pub struct ImportTask {
     pub warnings: Vec<ImportWarning>,
     undo0: usize,
     first: Option<u64>,
+    /// A native document open shows the result in Detail after the import finishes.
+    open_documents: bool,
     /// Reading a folder for the Local view: the photos stay out of the library, and nothing is
     /// selected or announced as added.
     browse: bool,
@@ -694,6 +696,17 @@ pub fn start_paths(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Value,
     Ok(json!({"importing": total}))
 }
 
+/// Open documents from the operating system using the normal add-in-place import. Existing
+/// photos are selected by the importer's duplicate handling; new photos use the same defaults,
+/// sidecars, errors and undo as window drops. No copy or move is implied by opening a document.
+pub fn start_documents(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Value, String> {
+    let result = start_paths(app, paths)?;
+    if let Some(task) = app.import.as_mut() {
+        task.open_documents = true;
+    }
+    Ok(result)
+}
+
 /// Advance the import in progress (called every frame): start its worker, then add the batches it
 /// has readied to the catalog.
 pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
@@ -879,6 +892,15 @@ fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
             app.toast(ctx, crate::i18n::tr_format!("{} photo{} not readable", task.failed, if task.failed == 1 { "" } else { "s" }));
         }
         return;
+    }
+    if task.open_documents && (task.first.is_some() || !task.existing.is_empty()) {
+        // An album, Local folder or search must not hide the file just opened by Finder.
+        let _ = app.run("library.clearFilter", json!({}));
+        let _ = app.run("library.source", json!({"kind": "all"}));
+        let _ = app.run("view.detail", json!({}));
+        if task.first.is_none() {
+            let _ = app.run("library.select", json!({"ids": task.existing}));
+        }
     }
     if let Some(f) = task.first.filter(|_| !task.moved_on) {
         // a view the new photos aren't in (an album, Picks, a Local folder) would leave the active
@@ -1714,5 +1736,62 @@ mod tests {
         d.last_clicked = Some(99);
         d.click(2, true);
         assert_eq!(d.checked, [true, true, false, false, true, true]);
+    }
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+    use crate::Services;
+    use crate::state::ViewMode;
+
+    #[test]
+    fn document_paths_use_the_import_command_and_add_mode() {
+        let mut app = LightcraftApp::new(lightcraft_engine::Session::new(), Services::default());
+        start_documents(&mut app, vec!["/Volumes/NAS/撮影 café #1.ARW".into(), "/tmp/missing %.dng".into()]).unwrap();
+        let task = app.import.as_ref().unwrap();
+        assert_eq!(task.queue, ["/Volumes/NAS/撮影 café #1.ARW", "/tmp/missing %.dng"]);
+        let mut params = task.params.clone();
+        params["paths"] = json!(task.queue);
+        let request = lightcraft_engine::cmd::library::import_params(&app.session, &params).unwrap();
+        assert_eq!(request.opts.mode, lightcraft_engine::import::ImportMode::Add);
+        assert!(task.open_documents);
+    }
+
+    #[test]
+    fn documents_import_select_and_reopen_duplicates_in_detail() {
+        let dir = std::env::temp_dir().join(format!("lc-document-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("撮影 café #1.png");
+        let img = lightcraft_raster::Rgba8 { width: 8, height: 8, data: vec![[20, 90, 30, 255]; 64] };
+        let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        let mut app = LightcraftApp::new(lightcraft_engine::Session::new().with_fs(), Services::default());
+        let ctx = egui::Context::default();
+        let mut active = None;
+        for pass in 0..2 {
+            app.run("library.source", json!({"kind": "picks"})).unwrap();
+            app.run("library.filter", json!({"text": "not-the-file-name"})).unwrap();
+            app.ui.view = ViewMode::PhotoGrid;
+            start_documents(&mut app, vec![file.to_str().unwrap().into()]).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while app.import.is_some() && std::time::Instant::now() < deadline {
+                tick(&mut app, &ctx);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(app.import.is_none());
+            assert_eq!(app.session.catalog.len(), 1);
+            assert_eq!(app.ui.view, ViewMode::Detail);
+            let photo = app.session.catalog.photo(app.session.active().unwrap()).unwrap();
+            assert!(matches!(&photo.source, lightcraft_catalog::Source::File { path } if path == file.to_str().unwrap()));
+            assert!(!photo.local);
+            if pass == 0 {
+                active = app.session.selection.active;
+            }
+            assert_eq!(app.session.selection.active, active);
+            assert_eq!(app.session.visible().len(), 1);
+        }
+        assert!(file.exists(), "opening must leave the original in place");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
