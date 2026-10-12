@@ -310,7 +310,7 @@
     "many": "智慧型預覽資料夾已變更。有 {count} 個來源檔案無法移除。",
     "other": "智慧型預覽資料夾已變更。有 {count} 個來源檔案無法移除。"
   },
-  "Smart preview folder change failed: {error}": "變更智慧預覽資料夾失敗：{error}",
+  "Smart preview folder change failed: {error}": "變更智慧型預覽資料夾失敗：{error}",
   ". {count} existing previews kept unchanged": {
     "one": "。已保留 {count} 個現有預覽，未做變更",
     "few": "。已保留 {count} 個現有預覽，未做變更",

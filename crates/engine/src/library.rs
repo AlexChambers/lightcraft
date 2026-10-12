@@ -570,6 +570,8 @@ impl Session {
         let presets_saved = PresetsSaved::state_of(self);
         // photo ids are per library: drop decoded sources of the previous one
         self.media.clear_sources();
+        #[cfg(not(target_arch = "wasm32"))]
+        let interrupted = if on_disk { self.new_namespace_after_interrupted_runs(&dir.join("thumbs")) } else { Vec::new() };
         if on_disk {
             self.media.attach_disk_cache_namespace(&dir.join("thumbs"), self.cache_bytes(), self.smart_previews_cache_generation);
             self.tidy_thumbnail_cache();
@@ -592,6 +594,8 @@ impl Session {
             blocked: settings.blocked,
             lock: lock.take(),
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        self.forget_interrupted_runs(interrupted);
         // forget untouched Local records of folders not browsed for a while (journaled at once)
         if self.forget_local_days > 0 {
             let plan = self.forget_local(false, None);
@@ -664,6 +668,45 @@ impl Session {
             lib.presets_saved = state;
         }
         Ok(())
+    }
+
+    /// A smart preview build or look refresh that ended before clearing the thumbnail cache (a
+    /// quit or crash) left a marker in `thumbs` ([`crate::media::interrupted_runs`]): the cache
+    /// can hold thumbnails of the proxies it replaced. The library then takes a new thumbnail
+    /// namespace before its cache is attached. Returns the markers, removed by
+    /// [`Self::forget_interrupted_runs`] once the namespace is saved.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new_namespace_after_interrupted_runs(&mut self, thumbs: &std::path::Path) -> Vec<PathBuf> {
+        let markers = crate::media::interrupted_runs(thumbs);
+        if !markers.is_empty() {
+            log::info!("thumbnail cache: a smart preview build did not finish; using new thumbnail keys");
+            match self.smart_previews_cache_generation.checked_add(1) {
+                Some(next) => self.smart_previews_cache_generation = next,
+                // no new namespace left: remove the cached thumbnails instead
+                None => lightcraft_preview::DiskCache::new(thumbs, 0).clear(),
+            }
+        }
+        markers
+    }
+
+    /// Save the namespace [`Self::new_namespace_after_interrupted_runs`] took, then remove the
+    /// markers. Until the save succeeds they stay, and each opening takes a new namespace.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn forget_interrupted_runs(&mut self, markers: Vec<PathBuf>) {
+        if markers.is_empty() {
+            return;
+        }
+        if let Err(e) = self.save_prefs() {
+            log::warn!("thumbnail cache: {e}; the next opening uses new thumbnail keys again");
+            return;
+        }
+        for marker in markers {
+            if let Err(e) = std::fs::remove_file(&marker)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!("thumbnail cache: {}: {e}", marker.display());
+            }
+        }
     }
 
     /// Persist if commands left ops pending (cheap; frontends call it once per frame for state

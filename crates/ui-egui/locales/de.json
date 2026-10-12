@@ -2344,7 +2344,6 @@
   "Checking the GPU for faces": "GPU für Gesichter wird geprüft",
   "Changing smart preview folder": "Ordner für Smart-Vorschauen wird geändert",
   "Refreshing smart previews": "Smart-Vorschauen werden aktualisiert",
-  "Smart preview folder changed. One source file could not be removed.": "Ordner für Smart-Vorschauen geändert. Eine Quelldatei konnte nicht entfernt werden.",
   "Smart preview folder changed.": "Ordner für Smart-Vorschauen geändert.",
   "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "Der bisherige Ordner bleibt bis zum Ende des Kopierens in Gebrauch. Abbrechen behält den bisherigen Ordner bei. Nach dem Ordnerwechsel kann das Löschen der Quelldateien nicht abgebrochen werden.",
   "Smart preview folder change cancelled. The old folder is still in use.": "Ordnerwechsel für Smart-Vorschauen abgebrochen. Der bisherige Ordner bleibt in Gebrauch.",
@@ -2361,10 +2360,12 @@
   "the smart preview folder changed; start the build again to check its free space": "Der Smart-Vorschauordner wurde geändert. Starten Sie die Erstellung erneut, um den freien Speicherplatz zu prüfen.",
   "Keep smart previews on a drive with enough free space. The thumbnail cache stays in the library.": "Speichern Sie Smart-Vorschauen auf einem Laufwerk mit genügend freiem Speicherplatz. Der Miniaturbild-Cache bleibt in der Bibliothek.",
   "Compact (JPEG)": "Kompakt (JPEG)",
-  "Checking free space...": "Freier Speicherplatz wird geprüft...",
   "Lossless (32-bit TIFF)": "Verlustfrei (32-Bit-TIFF)",
   "Previews are rebuilt from available originals. Offline originals keep their existing previews.": "Vorschauen werden anhand verfügbarer Originale neu erstellt. Offline-Originale behalten ihre vorhandenen Vorschauen.",
   "The estimated build will not fit in the available space. Free space or choose another folder before building.": "Der geschätzte Speicherbedarf übersteigt den freien Speicherplatz. Geben Sie Speicherplatz frei oder wählen Sie vor dem Erstellen einen anderen Ordner.",
   "Compact uses about 1 MB per photo. Lossless preserves source precision and can use 40 to 50 MB per photo.": "Kompakt benötigt etwa 1 MB pro Foto. Verlustfrei erhält die Präzision der Quelldaten und kann 40 bis 50 MB pro Foto benötigen.",
-  "Build Anyway": "Trotzdem erstellen"
+  "Build Anyway": "Trotzdem erstellen",
+  "Smart Preview Format": "Format der Smart-Vorschauen",
+  "Checking free space…": "Freier Speicherplatz wird geprüft…",
+  "Build": "Erstellen"
 }

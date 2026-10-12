@@ -305,24 +305,24 @@
   "{what} merge added at {mp}: its full size, {full}, needs more memory than this computer has": "{what} mesclagem adicionada em {mp}: o tamanho completo, {full}, precisa de mais memória do que este computador tem",
   "{what} merge added at {mp}, the largest a panorama can be (its full size is {full})": "{what} mesclagem adicionada em {mp}, o maior tamanho possível para um panorama (tamanho completo: {full})",
   "Smart preview folder changed. {count} source files could not be removed.": {
-    "one": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivo de origem.",
-    "few": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
-    "many": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
-    "other": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem."
+    "one": "Pasta de pré-visualizações inteligentes alterada. Não foi possível remover {count} arquivo de origem.",
+    "few": "Pasta de pré-visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
+    "many": "Pasta de pré-visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
+    "other": "Pasta de pré-visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem."
   },
-  "Smart preview folder change failed: {error}": "Falha ao alterar a pasta de visualizações inteligentes: {error}",
+  "Smart preview folder change failed: {error}": "Falha ao alterar a pasta de pré-visualizações inteligentes: {error}",
   ". {count} existing previews kept unchanged": {
-    "one": ". {count} visualização existente mantida sem alterações",
-    "few": ". {count} visualizações existentes mantidas sem alterações",
-    "many": ". {count} visualizações existentes mantidas sem alterações",
-    "other": ". {count} visualizações existentes mantidas sem alterações"
+    "one": ". {count} pré-visualização existente mantida sem alterações",
+    "few": ". {count} pré-visualizações existentes mantidas sem alterações",
+    "many": ". {count} pré-visualizações existentes mantidas sem alterações",
+    "other": ". {count} pré-visualizações existentes mantidas sem alterações"
   },
   "{count} smart previews · {size:.1} MiB": {
-    "one": "{count} visualização inteligente · {size:.1} MiB",
-    "few": "{count} visualizações inteligentes · {size:.1} MiB",
-    "many": "{count} visualizações inteligentes · {size:.1} MiB",
-    "other": "{count} visualizações inteligentes · {size:.1} MiB"
+    "one": "{count} pré-visualização inteligente · {size:.1} MiB",
+    "few": "{count} pré-visualizações inteligentes · {size:.1} MiB",
+    "many": "{count} pré-visualizações inteligentes · {size:.1} MiB",
+    "other": "{count} pré-visualizações inteligentes · {size:.1} MiB"
   },
-  "could not check smart preview storage: {e}": "Não foi possível verificar o armazenamento das visualizações inteligentes: {e}",
+  "could not check smart preview storage: {e}": "Não foi possível verificar o armazenamento das pré-visualizações inteligentes: {e}",
   "free space is unavailable for {path} on this platform": "O espaço livre de {path} não está disponível nesta plataforma."
 }

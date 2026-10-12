@@ -2340,7 +2340,6 @@
   "A face model uses the GPU only when a check shows it gives the same results faster.": "Un modèle de visages n’utilise le GPU que si une vérification montre qu’il donne les mêmes résultats plus vite.",
   "Checking the GPU for faces": "Vérification du GPU pour les visages",
   "Changing smart preview folder": "Changement du dossier des aperçus dynamiques",
-  "Smart preview folder changed. One source file could not be removed.": "Dossier des aperçus dynamiques modifié. Un fichier source n'a pas pu être supprimé.",
   "Smart preview folder changed.": "Dossier des aperçus dynamiques modifié.",
   "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "L'ancien dossier reste utilisé jusqu'à la fin de la copie. Annuler conserve l'ancien dossier. La suppression des fichiers sources ne peut plus être annulée après le changement de dossier.",
   "Refreshing smart previews": "Actualisation des aperçus dynamiques",
@@ -2351,7 +2350,6 @@
   "the smart preview folder changed; start the build again to check its free space": "Le dossier des aperçus dynamiques a changé. Relancez la création pour vérifier son espace libre.",
   "Keep smart previews on a drive with enough free space. The thumbnail cache stays in the library.": "Conservez les aperçus dynamiques sur un disque disposant de suffisamment d'espace libre. Le cache des miniatures reste dans la bibliothèque.",
   "Compact (JPEG)": "Compact (JPEG)",
-  "Checking free space...": "Vérification de l'espace libre...",
   "no smart preview build to confirm": "Aucune création d'aperçus dynamiques à confirmer.",
   "Free space is unavailable. Check the destination drive before building.": "L'espace libre est indisponible. Vérifiez le disque de destination avant de créer les aperçus.",
   "About 39.5 MB per photo, measured on an A7CR proxy. Actual sizes vary; existing previews may reduce the space needed.": "Environ 39,5 Mo par photo, mesurés sur un aperçu A7CR. La taille réelle varie ; les aperçus existants peuvent réduire l'espace nécessaire.",
@@ -2363,5 +2361,8 @@
   "Use Library Format": "Utiliser le format de la bibliothèque",
   "Build Smart Previews converts existing previews from available originals. Offline previews stay as they are until you build again with the drive connected.": "Créer des aperçus dynamiques convertit les aperçus existants à partir des originaux disponibles. Les aperçus hors ligne restent inchangés jusqu'à leur prochaine création avec le disque connecté.",
   "Build Anyway": "Créer quand même",
-  "the free-space check stopped unexpectedly": "La vérification de l'espace libre s'est arrêtée de façon inattendue."
+  "the free-space check stopped unexpectedly": "La vérification de l'espace libre s'est arrêtée de façon inattendue.",
+  "Smart Preview Format": "Format des aperçus dynamiques",
+  "Checking free space…": "Vérification de l'espace libre…",
+  "Build": "Créer"
 }

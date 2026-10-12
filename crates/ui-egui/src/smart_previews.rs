@@ -127,7 +127,7 @@ pub(crate) fn body(ui: &mut egui::Ui, dialog: &Dialog) {
     ui.label(crate::i18n::tr_format!("Destination: {path}", path = path.display()));
     if *checking {
         ui.spinner();
-        ui.label(crate::i18n::tr("Checking free space..."));
+        ui.label(crate::i18n::tr("Checking free space…"));
     } else if let Some(free) = free_bytes {
         ui.label(crate::i18n::tr_format!("Free space: {size}", size = size(*free)));
         if exceeds_free_space(dialog) {
@@ -243,58 +243,76 @@ mod tests {
         app.ui.settings.gpu = false;
         app.run("library.smartPreviews", json!({"ids": [1, 2]})).unwrap();
         finish_check(&mut app);
-        if let Some(Dialog::BuildSmartPreviews { free_bytes, .. }) = &mut app.ui.dialog {
-            *free_bytes = Some(1);
-        }
         let mut h = crate::headless::Headless::new(app, [800.0, 600.0], 1.0);
-        for locale in crate::i18n::Locale::ALL {
-            h.app.ui.language = *locale;
-            for (w, height) in [(800.0, 600.0), (1600.0, 1000.0)] {
-                h.size = egui::vec2(w, height);
-                h.settle(std::time::Duration::from_secs(10));
-                let text = h.painted_text().join("\n");
-                for key in [
-                    "Build Lossless Smart Previews",
-                    "Build Anyway",
-                    "Previews are rebuilt from available originals. Offline originals keep their existing previews.",
-                ] {
-                    let translated = locale.tr(key);
-                    if *locale != crate::i18n::Locale::En {
-                        assert_ne!(translated, key, "{locale:?}: missing translation");
-                    }
-                    assert!(text.contains(translated), "{locale:?}: missing {translated:?} in {text}");
-                }
-                fn check_title(shape: &egui::epaint::Shape, title: &str) {
-                    match shape {
-                        egui::epaint::Shape::Text(text) if text.galley.job.text == title => {
-                            assert!(!text.galley.elided, "dialog title was cut short: {title}");
+        // Low free space confirms with Build Anyway; the usual case, enough space, with Build.
+        for (free, confirm) in [(1, "Build Anyway"), (1_000_000_000_000, "Build")] {
+            if let Some(Dialog::BuildSmartPreviews { free_bytes, .. }) = &mut h.app.ui.dialog {
+                *free_bytes = Some(free);
+            }
+            for locale in crate::i18n::Locale::ALL {
+                h.app.ui.language = *locale;
+                for (w, height) in [(800.0, 600.0), (1600.0, 1000.0)] {
+                    h.size = egui::vec2(w, height);
+                    h.settle(std::time::Duration::from_secs(10));
+                    let painted = h.painted_text();
+                    let text = painted.join("\n");
+                    for key in [
+                        "Build Lossless Smart Previews",
+                        confirm,
+                        "Previews are rebuilt from available originals. Offline originals keep their existing previews.",
+                    ] {
+                        let translated = locale.tr(key);
+                        if *locale != crate::i18n::Locale::En {
+                            assert_ne!(translated, key, "{locale:?}: missing translation");
                         }
-                        egui::epaint::Shape::Vec(shapes) => shapes.iter().for_each(|shape| check_title(shape, title)),
-                        _ => {}
+                        assert!(text.contains(translated), "{locale:?}: missing {translated:?} in {text}");
                     }
-                }
-                for shape in &h.view.shapes {
-                    check_title(&shape.shape, locale.tr("Build Lossless Smart Previews"));
-                }
-                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, h.size);
-                for id in ["dialog:window", "button:dialogOk", "button:dialogCancel"] {
-                    let rect = h.app.widgets.iter().find(|(key, _)| key == id).unwrap().1;
-                    assert!(screen.contains_rect(rect), "{locale:?}: {id} outside {screen:?}: {rect:?}");
-                }
-                if let Some(output) = std::env::var_os("LC_SMART_SCREENSHOTS") {
-                    let pixels = h.view.paint(&Default::default());
-                    let image = lightcraft_raster::Rgba8 {
-                        width: pixels.size[0],
-                        height: pixels.size[1],
-                        data: pixels.pixels.iter().map(|p| p.to_array()).collect(),
-                    };
-                    let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&image), &Default::default()).unwrap();
-                    std::fs::write(std::path::PathBuf::from(output).join(format!("storage-{}-{w}.png", locale.code())), bytes).unwrap();
+                    assert!(painted.iter().any(|line| line == locale.tr(confirm)), "{locale:?}: no {confirm:?} button in {text}");
+                    fn check_title(shape: &egui::epaint::Shape, title: &str) {
+                        match shape {
+                            egui::epaint::Shape::Text(text) if text.galley.job.text == title => {
+                                assert!(!text.galley.elided, "dialog title was cut short: {title}");
+                            }
+                            egui::epaint::Shape::Vec(shapes) => shapes.iter().for_each(|shape| check_title(shape, title)),
+                            _ => {}
+                        }
+                    }
+                    for shape in &h.view.shapes {
+                        check_title(&shape.shape, locale.tr("Build Lossless Smart Previews"));
+                    }
+                    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, h.size);
+                    for id in ["dialog:window", "button:dialogOk", "button:dialogCancel"] {
+                        let rect = h.app.widgets.iter().find(|(key, _)| key == id).unwrap().1;
+                        assert!(screen.contains_rect(rect), "{locale:?}: {id} outside {screen:?}: {rect:?}");
+                    }
+                    if let Some(output) = std::env::var_os("LC_SMART_SCREENSHOTS") {
+                        let pixels = h.view.paint(&Default::default());
+                        let image = lightcraft_raster::Rgba8 {
+                            width: pixels.size[0],
+                            height: pixels.size[1],
+                            data: pixels.pixels.iter().map(|p| p.to_array()).collect(),
+                        };
+                        let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&image), &Default::default()).unwrap();
+                        std::fs::write(std::path::PathBuf::from(output).join(format!("storage-{}-{free}-{w}.png", locale.code())), bytes).unwrap();
+                    }
                 }
             }
         }
         crate::i18n::set_language(crate::i18n::Locale::En);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn smart_preview_labels_are_translated_in_every_language() {
+        let mut labels: Vec<&str> =
+            lightcraft_engine::command_specs().iter().filter(|spec| spec.id.contains("smartPreview")).map(|spec| spec.label).collect();
+        assert!(labels.contains(&"Smart Preview Format"), "{labels:?}");
+        labels.extend(["Build", "Build Anyway", "Build for All Photos", "Build Lossless Smart Previews"]);
+        for locale in crate::i18n::Locale::ALL.iter().filter(|locale| **locale != crate::i18n::Locale::En) {
+            for label in &labels {
+                assert_ne!(locale.tr(label), *label, "{locale:?}: {label:?} is not translated");
+            }
+        }
     }
 
     #[test]
