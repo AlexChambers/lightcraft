@@ -377,7 +377,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let aspect = vw / vh;
 
     let srgb = srgb_lut();
-    let preview_light = if exact { None } else { light.as_ref().map(|lo| crate::light_v3::PreviewOps::new(lo, &|v| encode_srgb(srgb, v))) };
+    let preview_light = if exact { None } else { light.as_ref().and_then(|lo| crate::light_v3::PreviewOps::new(lo, &|v| encode_srgb(srgb, v))) };
     let peak = fp.peak;
     let hdr = peak > 1.0;
     let mut out = vec![T::default(); w * h];
@@ -424,7 +424,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
             if let Some(lo) = &preview_light {
                 d = lo.apply(d);
             } else if let Some(lo) = light {
-                d = lo.apply(d, &linear_to_srgb);
+                d = if exact { lo.apply(d, &linear_to_srgb) } else { lo.apply(d, &|v| encode_srgb(srgb, v)) };
             }
 
             // --- colour

@@ -24,6 +24,47 @@ fn gpu() -> bool {
     ok
 }
 
+fn check_v3_luminance_cutoff(chroma: f32, pixel: [f32; 3], expected: [u8; 4]) {
+    if !gpu() {
+        return;
+    }
+    // These uniform nonnegative sources expose cancellation after camera chroma scaling
+    // and Contrast, just below the positive Blacks luminance cutoff.
+    let curve = lightcraft_pipeline::tone::CameraTone::new(std::array::from_fn(|i| {
+        let x = (i + 1) as f32 / 33.0;
+        [x, x]
+    }))
+    .unwrap()
+    .with_chroma([chroma; 8])
+    .unwrap();
+    let info = SourceInfo { raw: true, camera_tone: Some(curve), ..Default::default() };
+    let src = Arc::new(Rgb32f::filled(64, 64, pixel));
+    let mut s = DevelopSettings { process: Process::V3.version(), ..Default::default() };
+    s.light.contrast = 100.0;
+    s.light.blacks = 80.0;
+    let req = RenderRequest::fit(64, 64);
+    let cpu = render(&src, &info, &s, &req).image;
+    let gpu = lightcraft_gpu::try_render(&src, &info, &s, &req, None).expect("GPU render without CPU fallback").image;
+    for image in [&cpu, &gpu] {
+        assert!(image.data.iter().all(|p| *p == image.data[0]));
+        for (actual, expected) in image.data[0].into_iter().zip(expected) {
+            assert!(actual.abs_diff(expected) <= 1, "chroma {chroma}: {:?}, expected {expected}", image.data[0]);
+        }
+    }
+    let (_, max, _) = diff(&cpu, &gpu);
+    assert!(max <= 1, "chroma {chroma}: CPU {:?}, GPU {:?}", cpu.data[0], gpu.data[0]);
+}
+
+#[test]
+fn v3_luminance_cutoff_chroma_2() {
+    check_v3_luminance_cutoff(2.0, [0.023_433_316, 0.000_071_107_73, 0.005_175_675], [27, 0, 8, 255]);
+}
+
+#[test]
+fn v3_luminance_cutoff_chroma_4() {
+    check_v3_luminance_cutoff(4.0, [0.035_338_085, 0.000_048_468_723, 0.010_193_758], [47, 0, 19, 255]);
+}
+
 #[test]
 fn camera_tone_and_relative_wb() {
     if !gpu() {

@@ -22,6 +22,38 @@ fn camera_look() -> SourceInfo {
     SourceInfo { raw: true, as_shot_temp: 5200.0, as_shot_tint: 4.0, camera_tone: Some(camera_curve()), ..Default::default() }
 }
 
+fn check_luminance_cutoff(chroma: f32, pixel: [f32; 3], expected: [u8; 4]) {
+    // Nonnegative source pixels become mixed-sign ProPhoto values after camera chroma
+    // scaling. Contrast must not move their nearly cancelling luminance across 1e-6.
+    let curve = crate::tone::CameraTone::new(std::array::from_fn(|i| {
+        let x = (i + 1) as f32 / 33.0;
+        [x, x]
+    }))
+    .unwrap()
+    .with_chroma([chroma; 8])
+    .unwrap();
+    let info = SourceInfo { raw: true, camera_tone: Some(curve), ..Default::default() };
+    let src = Rgb32f::filled(64, 64, pixel);
+    let mut s = DevelopSettings { process: Process::V3.version(), ..Default::default() };
+    s.light.contrast = 100.0;
+    s.light.blacks = 80.0;
+    let image = render(&src, &info, &s, &RenderRequest::fit(64, 64)).image;
+    assert!(image.data.iter().all(|p| *p == image.data[0]));
+    for (actual, expected) in image.data[0].into_iter().zip(expected) {
+        assert!(actual.abs_diff(expected) <= 1, "chroma {chroma}: {:?}, expected {expected}", image.data[0]);
+    }
+}
+
+#[test]
+fn v3_luminance_cutoff_chroma_2() {
+    check_luminance_cutoff(2.0, [0.023_433_316, 0.000_071_107_73, 0.005_175_675], [27, 0, 8, 255]);
+}
+
+#[test]
+fn v3_luminance_cutoff_chroma_4() {
+    check_luminance_cutoff(4.0, [0.035_338_085, 0.000_048_468_723, 0.010_193_758], [47, 0, 19, 255]);
+}
+
 fn scenes() -> Vec<Rgb32f> {
     let lib = lightcraft_scenes::demo_library();
     vec![lib[0].render(480, 320), lib[3].render(400, 300)]
@@ -168,11 +200,12 @@ fn preview_tables_match_exact_operators_over_combined_amounts() {
             s.light.blacks = blacks;
             let Some(exact) = LightOps::new(&s, &info) else { continue };
             let preview = light_v3::PreviewOps::new(&exact, &encode);
+            assert_eq!(preview.is_some(), blacks <= 0.0);
             for i in 0..=8192 {
                 let v = i as f32 / 8192.0;
                 for p in [[v; 3], [v, v * 0.1, v * 0.02], [v * 0.04, v, v * 0.2], [v * 0.1, v * 0.03, v], [v * 3.0, -v * 0.2, v]] {
                     let a = exact.apply(p, &linear_to_srgb);
-                    let b = preview.apply(p);
+                    let b = preview.as_ref().map_or_else(|| exact.apply(p, &encode), |preview| preview.apply(p));
                     for (a, b) in a.into_iter().zip(b) {
                         let error = (linear_to_srgb(a.clamp(0.0, 1.0)) - linear_to_srgb(b.clamp(0.0, 1.0))).abs() * 255.0;
                         worst = worst.max(error);

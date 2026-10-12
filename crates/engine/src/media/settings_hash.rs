@@ -49,4 +49,3 @@ pub(super) fn with_process<'a>(h: &'a mut Hasher128, s: &DevelopSettings) -> &'a
     }
     h
 }
-

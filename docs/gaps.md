@@ -105,7 +105,6 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 | 2026-10-12 | minor | Gap 10: SR2/SRF folder discovery fixed; F828 imports as preview-only. Sensor decoding remains a gap; readiness scores unchanged |
 | 2026-10-23 | minor | Gap 28: ⌘L / Ctrl+L (Library ▸ Enable Filters) puts the filter aside and brings it back as it was; the entry drops ⌘L; hours unchanged |
 | 2026-10-15 | minor | Gap 28: `\` shows / hides the Filter Bar in the grids; the entry drops `[` `]` (#509), flag cycling (#1490) and F1 (Help), already on main; ⌘L is the filter-bar key left; hours unchanged |
-
 | 2026-10-12 | minor | Measured Contrast and Blacks calibration; Whites and broader fidelity remain open |
 | 2026-10-14 | minor | Gap 26: at 100k photos stack and album lookups are indexed, so an "In a Stack" or "Album" smart album counts in ~14 ms (was 0.6–2.7 s); open time unchanged |
 | 2026-10-14 | minor | Gap 10: Camera-coverage sweep (#1327): 30 models verified on 40 CC0 files (coverage.py 515 → 545 verified); sensor verification does not establish colour parity (#1277) |
