@@ -37,6 +37,9 @@ impl crate::Session {
         } else {
             source_edge_needed(&p, &settings, apply_crop, max_w.max(max_h))
         });
+        // A worker can clear the cache while this job is being constructed. Capture the
+        // generation before taking a source and carry it through the key and result.
+        let cache_generation = self.media.rendered.generation();
         let source = self.media.source_ref(&p, level);
         let request = RenderRequest { apply_crop, ..RenderRequest::fit(max_w, max_h) };
         // the photo id is part of the key: two photos with the same settings and size must not
@@ -56,7 +59,7 @@ impl crate::Session {
             ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ content.rotate_left(17)
             ^ salt
-            ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93);
+            ^ cache_generation.wrapping_mul(0xd6e8_feb8_6659_fd93);
         let cache = thumb_bucket.map(|b| {
             let mut k = Hasher128::new();
             k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key());
@@ -66,9 +69,12 @@ impl crate::Session {
             }
             (self.media.rendered.clone(), k.finish())
         });
+        if self.media.rendered.generation() != cache_generation {
+            return None;
+        }
         Some(RenderJob {
             request_id: 0,
-            cache_generation: self.media.rendered.generation(),
+            cache_generation,
             source_key: Some(source_key),
             photo: id,
             level,
@@ -98,7 +104,7 @@ impl crate::Session {
             ^ ((max_h as u64) << 20)
             ^ (apply_crop as u64)
             ^ (job.level as u64) << 60
-            ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93);
+            ^ job.cache_generation.wrapping_mul(0xd6e8_feb8_6659_fd93);
         Some(job)
     }
 
@@ -123,11 +129,17 @@ impl crate::Session {
         let p = self.catalog.photo(id)?.clone();
         let edge = edge.clamp(16, SourceLevel::Thumb.max_edge());
         let level = SourceLevel::Thumb;
+        // A worker can clear the cache while this job is being constructed. Capture the
+        // generation before taking a source and carry it through the key and result.
+        let cache_generation = self.media.rendered.generation();
         let source = self.media.source_ref(&p, level);
         let ck = Self::variant_key(&p, settings, edge);
+        if self.media.rendered.generation() != cache_generation {
+            return None;
+        }
         Some(RenderJob {
             request_id: 0,
-            cache_generation: self.media.rendered.generation(),
+            cache_generation,
             source_key: Some(Hasher128::new().str(&content_key(&p)).finish()),
             photo: id,
             level,
@@ -136,7 +148,7 @@ impl crate::Session {
             info: source_info(&p),
             settings: Arc::new(settings.clone()),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
-            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93),
+            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ cache_generation.wrapping_mul(0xd6e8_feb8_6659_fd93),
             cache: Some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
@@ -177,12 +189,18 @@ impl crate::Session {
         // pixels along the long edge that leave `edge` across the crop
         let needed = (edge as f64 * w.max(h) / side).ceil().min(SourceLevel::Preview.max_edge() as f64);
         let level = SourceLevel::for_size(needed as usize);
+        // A worker can clear the cache while this job is being constructed. Capture the
+        // generation before taking a source and carry it through the key and result.
+        let cache_generation = self.media.rendered.generation();
         let source = self.media.source_ref(&p, level);
         let ck = Self::variant_key(&p, &settings, edge);
+        if self.media.rendered.generation() != cache_generation {
+            return None;
+        }
         let preview_cut = self.face_preview_cut(&p, rect, edge, needed as usize);
         Some(RenderJob {
             request_id: 0,
-            cache_generation: self.media.rendered.generation(),
+            cache_generation,
             source_key: Some(Hasher128::new().str(&content_key(&p)).finish()),
             photo: id,
             level,
@@ -191,7 +209,7 @@ impl crate::Session {
             info: source_info(&p),
             settings: Arc::new(settings),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
-            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93),
+            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ cache_generation.wrapping_mul(0xd6e8_feb8_6659_fd93),
             cache: Some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,

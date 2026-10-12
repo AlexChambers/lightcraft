@@ -58,7 +58,7 @@ pub fn existing_file_path(dir: &Path, sharded: PathBuf) -> PathBuf {
     if legacy.exists() { legacy } else { sharded }
 }
 
-/// The most header [`is_valid`] reads (the magic and JSON line before the pixels).
+/// The most header [`is_complete`] reads (the magic and JSON line before the pixels).
 const HEADER_MAX: u64 = 4096;
 
 /// The header field that records which version of the camera-look fit (`camera_preview::LOOK_VERSION`)
@@ -431,20 +431,21 @@ pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
                 // Create only the shard, never missing parent directories on an unplugged drive.
                 let prepare = if parent.is_dir() { Ok(()) } else { std::fs::create_dir(parent) };
                 prepare.and_then(|()| {
-                    if is_valid(&dst)
-                        && (!is_valid(&src)
+                    if is_usable(&dst)
+                        && (!is_usable(&src)
                             || header(&dst).map(|h| h.0) == header(&src).map(|h| h.0)
                             || header(&dst).is_some_and(|h| h.0 == Format::Lossless))
                     {
                         // Keep a valid destination of the same or higher precision.
                         std::fs::remove_file(&src)
                     } else {
-                        // across drives: copied atomically (never a partial proxy at the new place)
-                        std::fs::rename(&src, &dst).or_else(|_| {
-                            std::fs::read(&src)
-                                .and_then(|b| lightcraft_catalog::safe_file::write_atomic(&dst, &b))
-                                .and_then(|()| std::fs::remove_file(&src))
-                        })
+                        // Verify before replacing anything, then verify the atomic destination
+                        // before removing the source. This also works across drives.
+                        let bytes = read(&src).map_err(std::io::Error::other)?;
+                        decode(&bytes).map_err(std::io::Error::other)?;
+                        lightcraft_catalog::safe_file::write_atomic(&dst, &bytes)?;
+                        load(&dst).map_err(std::io::Error::other)?;
+                        std::fs::remove_file(&src)
                     }
                 })
             }
@@ -457,10 +458,10 @@ pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
     (done, failed)
 }
 
-/// A cheap completeness check using the header and format's end marker. Lossless files also
-/// require the declared payload length. Full decoding checks the payload checksum. A file cut
-/// short by a crash or full drive fails this check and is rebuilt by Build Smart Previews.
-pub fn is_valid(path: &Path) -> bool {
+/// A cheap structural hint using the bounded header, payload length and end marker.
+/// This does not verify pixel integrity. Use [`is_usable`] before keeping a destination,
+/// deleting another copy, or skipping a rebuild.
+pub fn is_complete(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else { return false };
     let mut head = Vec::with_capacity(1024);
@@ -492,6 +493,12 @@ pub fn is_valid(path: &Path) -> bool {
     f.seek(SeekFrom::Start((jpeg_end - 2) as u64)).is_ok() && f.read_exact(&mut end).is_ok() && end == [0xFF, 0xD9]
 }
 
+/// Whether a bounded read decodes successfully, including the LCSP2 payload checksum.
+/// Use this for decisions that keep a proxy instead of rebuilding it or retaining another copy.
+pub fn is_usable(path: &Path) -> bool {
+    load(path).is_ok()
+}
+
 /// The fit version a header records: a missing, negative, fractional or otherwise malformed value
 /// counts as 0 (older than any real version).
 fn header_look_version(head: &serde_json::Value) -> u64 {
@@ -511,9 +518,9 @@ fn header_encode_version(head: &serde_json::Value) -> u64 {
 /// its stored curve, and the colour baked into its pixels, are out of date; the fit only reaches
 /// those raws, so a JPEG's or DNG's proxy is never stale for it). A proxy from a newer build is
 /// left alone (rebuilding it here would only undo that build's work), as is one that can't be
-/// read: those are [`is_valid`]'s business.
+/// read: those are [`is_usable`]'s business.
 pub fn is_stale_for(path: &Path, look: bool) -> bool {
-    is_valid(path) && header(path).is_some_and(|(storage, h)| {
+    is_complete(path) && header(path).is_some_and(|(storage, h)| {
         (storage == Format::Compact && header_encode_version(&h) < ENCODE_VERSION)
         || (look && header_look_version(&h) < u64::from(crate::camera_preview::LOOK_VERSION))
     })

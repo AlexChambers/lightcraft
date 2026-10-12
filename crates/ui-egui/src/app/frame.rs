@@ -59,6 +59,7 @@ impl LightcraftApp {
         merge::poll(self, ctx);
         import::poll_scan(self, ctx);
         sync::poll(self, ctx);
+        smart_previews::poll(self, ctx);
         sync::poll_run(self, ctx);
         // Import commits batches and must not run twice in one host frame. The first layout pass
         // and a hidden logic tick both report pass index 0; a second pass reports 1. A wall-clock

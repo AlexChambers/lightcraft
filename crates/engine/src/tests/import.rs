@@ -740,6 +740,34 @@ fn lossless_smart_previews_migrate_persist_and_invalidate_old_renders() {
     std::fs::remove_dir_all(lib).unwrap();
 }
 
+#[test]
+fn regression709_build_repairs_checksum_damaged_lossless_proxy() {
+    let src = temp_dir("checksum-source");
+    let lib = temp_dir("checksum-library");
+    write_png(&src.join("a.png"), 7);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.join("a.png")]})).unwrap();
+    let id = s.active().unwrap();
+    s.execute("library.smartPreviews", &json!({"format": "lossless"})).unwrap();
+    let path = crate::smart::file_path(s.media.smart_dir.as_ref().unwrap(), s.catalog.photo(id).unwrap());
+    let good = std::fs::read(&path).unwrap();
+    let mut corrupt = good.clone();
+    let byte = corrupt.len() - 9;
+    corrupt[byte] ^= 0x40;
+    std::fs::write(&path, &corrupt).unwrap();
+    assert!(crate::smart::load(&path).is_err());
+    let built = s.execute("library.smartPreviews", &json!({"format": "lossless"})).unwrap();
+    assert_eq!(built["repaired"], 1, "{built}");
+    assert_eq!(built["built"], 1);
+    assert_eq!(built["failed"], json!([]));
+    assert_eq!(std::fs::read(&path).unwrap(), good);
+    assert!(crate::smart::load(&path).is_ok());
+    drop(s);
+    std::fs::remove_dir_all(src).unwrap();
+    std::fs::remove_dir_all(lib).unwrap();
+}
+
 /// Issue #106: a smart preview cut short (crash, full drive) counted as built forever and failed
 /// exactly when the original went offline. Writes are atomic now, and a damaged proxy is not
 /// reported as present and is rebuilt.
@@ -765,11 +793,11 @@ fn damaged_smart_previews_are_rebuilt_and_failed_writes_leave_none() {
 
     let r = s.execute("library.smartPreviews", &json!({})).unwrap();
     assert_eq!((r["built"].as_u64(), r["repaired"].as_u64()), (Some(1), Some(0)), "{r}");
-    assert!(crate::smart::is_valid(&file));
+    assert!(crate::smart::is_complete(&file));
     // cut short, as by a crash before the fix
     let full = std::fs::read(&file).unwrap();
     std::fs::write(&file, &full[..full.len() / 2]).unwrap();
-    assert!(!crate::smart::is_valid(&file));
+    assert!(!crate::smart::is_complete(&file));
     assert_eq!(s.execute("photo.smartPreview", &json!({})).unwrap()["smartPreview"], false, "not counted as there");
     let r = s.execute("library.smartPreviews", &json!({})).unwrap();
     assert_eq!((r["built"].as_u64(), r["repaired"].as_u64()), (Some(1), Some(1)), "{r}");
@@ -2037,7 +2065,7 @@ fn malformed_smart_preview_look_versions_are_handled() {
     for bad in [json!("1"), json!(-1), json!(1.5), json!(null), json!([]), json!({}), json!(true), json!(1e30), json!(-0.0)] {
         let shown = bad.to_string();
         edit_smart_header(&file, |h| h["look_version"] = bad);
-        assert!(crate::smart::is_valid(&file), "{shown}");
+        assert!(crate::smart::is_complete(&file), "{shown}");
         assert!(crate::smart::is_stale(&file), "{shown} counts as version 0");
         assert!(crate::smart::decode(&std::fs::read(&file).unwrap()).is_ok(), "{shown}");
     }

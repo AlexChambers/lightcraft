@@ -160,11 +160,11 @@ fn lossless_completeness_and_mixed_format_byte_accounting() {
     std::fs::create_dir(dir.join("ab")).unwrap();
     let path = dir.join("ab/ab000000000000000000000000000000.lcsp");
     std::fs::write(&path, &lossless).unwrap();
-    assert!(is_valid(&path));
+    assert!(is_complete(&path));
     assert_eq!(stats(&dir), (2, (compact.len() + lossless.len()) as u64));
     for cut in [lossless.len() - 1, lossless.len() / 2, 0] {
         std::fs::write(&path, &lossless[..cut]).unwrap();
-        assert!(!is_valid(&path));
+        assert!(!is_complete(&path));
     }
     for bytes in [&compact, &lossless] {
         let (storage, mut head, body) = format::split(bytes).unwrap();
@@ -174,7 +174,7 @@ fn lossless_completeness_and_mixed_format_byte_accounting() {
         let full = format::pack(storage, &head, body).unwrap();
         assert_eq!(full.len() - body.len(), HEADER_MAX as usize);
         std::fs::write(&path, &full).unwrap();
-        assert!(is_valid(&path), "a header at the limit still permits the pixel marker to be read");
+        assert!(is_complete(&path), "a header at the limit still permits the pixel marker to be read");
         assert!(decode(&full).is_ok());
     }
     std::fs::remove_dir_all(dir).unwrap();
@@ -202,5 +202,58 @@ fn folder_migration_keeps_a_complete_proxy_over_damaged_or_lower_precision_pixel
         assert!(errors.is_empty());
         assert_eq!(std::fs::read(to.join("one.lcsp")).unwrap(), expected);
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn regression709_migration_replaces_checksum_damaged_destination() {
+    let dir = super::tests::temp("checksum-migrate");
+    let from = dir.join("from");
+    let to = dir.join("to");
+    std::fs::create_dir(&from).unwrap();
+    std::fs::create_dir(&to).unwrap();
+    let image = Rgb32f::new(4, 3);
+    let good = encode_format(&image, None, Format::Lossless).unwrap();
+    let mut corrupt = good.clone();
+    let byte = corrupt.len() - 9; // Last payload byte, before the intact end marker.
+    corrupt[byte] ^= 0x40;
+    assert!(decode(&corrupt).is_err());
+    for source in [encode(&image, None).unwrap(), good] {
+        std::fs::write(from.join("one.lcsp"), &source).unwrap();
+        std::fs::write(to.join("one.lcsp"), &corrupt).unwrap();
+        assert!(is_complete(&to.join("one.lcsp")), "structural hints cannot detect payload damage");
+        assert!(!is_usable(&to.join("one.lcsp")));
+        let (moved, errors) = migrate(&from, &to, Existing::Move);
+        assert_eq!(moved, 1, "{errors:?}");
+        assert!(errors.is_empty());
+        assert!(load(&to.join("one.lcsp")).is_ok(), "migration deleted the last usable proxy");
+        assert_eq!(std::fs::read(to.join("one.lcsp")).unwrap(), source);
+        assert!(!from.join("one.lcsp").exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_verified_migration_retains_the_source() {
+    let dir = super::tests::temp("verified-migrate-failure");
+    let from = dir.join("from");
+    let to = dir.join("to");
+    std::fs::create_dir(&from).unwrap();
+    std::fs::create_dir(&to).unwrap();
+    let good = encode_format(&Rgb32f::new(4, 3), None, Format::Lossless).unwrap();
+    std::fs::write(from.join("one.lcsp"), &good).unwrap();
+    {
+        let _fault = lightcraft_catalog::safe_file::fail_writes_after(64);
+        let (moved, errors) = migrate(&from, &to, Existing::Move);
+        assert_eq!(moved, 0);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(std::fs::read(from.join("one.lcsp")).unwrap(), good);
+        assert!(!to.join("one.lcsp").exists());
+    }
+    std::fs::write(from.join("one.lcsp"), b"damaged source").unwrap();
+    let (moved, errors) = migrate(&from, &to, Existing::Move);
+    assert_eq!(moved, 0);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(std::fs::read(from.join("one.lcsp")).unwrap(), b"damaged source");
     std::fs::remove_dir_all(dir).unwrap();
 }

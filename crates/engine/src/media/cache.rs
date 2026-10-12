@@ -67,6 +67,8 @@ impl Default for MediaCache {
             file_bytes: None,
             smart_dir: None,
             source_generation: 0,
+            #[cfg(test)]
+            clear_after_source: false,
             availability: Default::default(),
             scenes: Vec::new(),
             rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
@@ -302,6 +304,11 @@ impl MediaCache {
         if let (SourceRef::File { denoise, .. }, Some((spec, loader))) = (&mut r, self.denoise.get(p.id)) {
             *denoise = Some((spec.clone(), loader.clone()));
         }
+        // Deterministically reproduce a worker clearing the cache after source acquisition.
+        #[cfg(test)]
+        if std::mem::take(&mut self.clear_after_source) {
+            self.rendered.clear();
+        }
         r
     }
 
@@ -337,7 +344,7 @@ impl MediaCache {
             let legacy = dir.join(crate::smart::file_name(p));
             let sp = if self.availability.exists(&sharded.to_string_lossy()) == Some(true) { sharded } else { legacy };
             // (a proxy cut short fails to load, like the offline original; the worker's fallback
-            // in `SourceRef::load` only uses a proxy that passes `smart::is_valid`)
+            // in `SourceRef::load` only uses a proxy that passes `smart::is_complete`)
             if self.availability.is_offline(path) && self.availability.exists(&sp.to_string_lossy()) == Some(true) {
                 return SourceRef::Smart { path: sp };
             }

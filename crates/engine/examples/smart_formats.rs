@@ -37,16 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let encode_ms = start.elapsed().as_secs_f64() * 1000.0;
             let start = Instant::now();
-            let mut decoded = if matches!(format, "jpeg92" | "tiff32") {
-                smart::decode(&bytes)?.0
-            } else {
-                lightcraft_codecs::decode(&bytes, Default::default())?.image
-            };
-            if !matches!(format, "jpeg92" | "tiff32") {
-                for p in &mut decoded.data {
-                    *p = p.map(|v| v * span + low);
-                }
-            }
+            let decoded = if matches!(format, "jpeg92" | "tiff32") { smart::decode(&bytes)?.0 } else { decode_integer(&bytes, low, span)? };
             let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
             let max_error = img.data.iter().flatten().zip(decoded.data.iter().flatten()).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
             let mut fidelity = Vec::new();
@@ -81,6 +72,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// The integer codecs receive identical sRGB-companded channel values. Their decoders
+/// linearize them, but JXL also changes primaries. Undo that change before restoring the
+/// stored range so every error is measured in the original scene-linear Rec.2020 samples.
+fn decode_integer(bytes: &[u8], low: f32, span: f32) -> Result<lightcraft_raster::Rgb32f, lightcraft_codecs::Error> {
+    let decoded = lightcraft_codecs::decode(bytes, Default::default())?;
+    let matrix = decoded.space.to_space(&lightcraft_color::SRGB).to_f32();
+    let mut image = decoded.image;
+    for pixel in &mut image.data {
+        let [r, g, b] = *pixel;
+        *pixel = matrix.map(|row| (row[0] * r + row[1] * g + row[2] * b) * span + low);
+    }
+    Ok(image)
+}
+
+#[test]
+fn integer_codecs_compare_in_the_same_sample_space() {
+    let samples: Vec<u16> = (0..96 * 64 * 3).map(|i| ((i * 977 + 123) % 65536) as u16).collect();
+    let encoded = EncodeImage::new(96, 64, 3, Samples::U16(&samples));
+    let jxl = lightcraft_codecs::encode_jxl(&encoded, &lightcraft_codecs::JxlOptions { lossless: true, ..Default::default() }, &Default::default())
+        .unwrap();
+    let direct = jxl_oxide::JxlImage::builder().read(std::io::Cursor::new(&jxl)).unwrap();
+    let frame = direct.render_frame(0).unwrap();
+    let fb = frame.image_all_channels();
+    let codes: Vec<u16> = fb.buf().iter().map(|v| (v * 65535.0).round() as u16).collect();
+    assert_eq!(codes, samples, "lossless JXL preserves all integer samples");
+    let (low, span) = (-0.1, 4.0);
+    let reference: Vec<f32> = samples.iter().map(|v| lightcraft_color::transfer::srgb_to_linear(*v as f32 / 65535.0) * span + low).collect();
+    for (name, bytes) in [
+        ("png16", lightcraft_codecs::encode_png(&encoded, &Default::default()).unwrap()),
+        ("tiff16", lightcraft_codecs::encode_tiff(&encoded, TiffCompression::Deflate, &Default::default()).unwrap()),
+        ("jxl16", jxl),
+    ] {
+        let decoded = decode_integer(&bytes, low, span).unwrap();
+        let error = reference.iter().zip(decoded.data.as_flattened()).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        eprintln!("{name}: normalized colour conversion error {}", error / span);
+        // Colour conversion is approximate. Allow two normalized 16-bit steps across the
+        // stored range; the encoded JXL integers were checked exactly above.
+        assert!(error < span * 2.0 / 65535.0, "{name}: colour conversion error {error}");
+    }
 }
 
 fn render(

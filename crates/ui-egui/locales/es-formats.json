@@ -1,4 +1,8 @@
 {
+  "Photos: {count}": "Photos: {count}",
+  "Estimated total size: {size}": "Estimated total size: {size}",
+  "Destination: {path}": "Destination: {path}",
+  "Free space: {size}": "Free space: {size}",
   ". {kept} existing previews kept unchanged": ". Se conservaron {kept} previsualizaciones existentes sin cambios",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} con varios archivos parecidos: usar Localizar)",
   " ({} in Recently Deleted)": " ({} en Eliminadas recientemente)",
