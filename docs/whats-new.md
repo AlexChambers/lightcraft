@@ -721,6 +721,14 @@
   JPEG get faster too.
 ## 2026-10-12
 
+### Consistent edits while zoomed in
+
+- Zoom windows now include the surrounding image needed by Dehaze, Clarity,
+  Texture, Highlights and Shadows, even when the visible window is small
+  (issue #1146). Mask blurs and edge refinement receive their context too.
+  Full-image renders keep their pixels in both existing process versions.
+
+
 ### Canon CR2 highlights
 - Blown highlights in CR2 files from the Canon EOS 50D, 60D, 450D (Rebel XSi), 500D (Rebel T1i), 550D (Rebel T2i),
   1200D (Rebel T5) and 100D (Rebel SL1) now count as clipped (issue #1272). They used to stop at 81–98% of white, so

@@ -846,6 +846,9 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 | 2026-10-13 | minor | LRC-LIB-KEYWORDS: the Keyword List marks a keyword that has an applied keyword inside it (a dot in its box); status unchanged |
 | 2026-10-12 | minor | LR-IMP-FORMATS: folder discovery includes SR2/SRF; MCP and CLI reuse the engine extension list. DSC-F828 remains preview-only; decoder support and row status unchanged |
 | 2026-10-15 | patch | KEYC-RATING: `\` shows / hides the Filter Bar in Photo Grid and Square Grid (Show Original in Detail); status unchanged (🟡) |
+| 2026-10-12 | minor | LR-VIEW-ZOOM: supplied mattes and hidden masks avoid unused context, Defringe support includes spot reads, and CPU/GPU finishing uses requested pixels; remaining sampling and airlight limits documented; status unchanged |
+| 2026-10-12 | minor | LR-VIEW-ZOOM round 4: CPU/GPU reduced planes keep the full-frame sampling scale and origin; airlight and rounding limits remain; status unchanged |
+| 2026-10-12 | minor | LR-VIEW-ZOOM round 5: full-resolution airlight for windows, cached mask alphas and corrected memory accounting; status unchanged |
 | 2026-10-12 | minor | LR-EDIT-OPTICS-PROFILE: Sony ARW shading, CA and distortion tables decoded with settings and provenance (raw IFD, `SR2SubIFD` fallback); applied corrections unchanged (ILCE-7RM4A and ILCE-7RM6 distortion); status unchanged (🟡) |
 | 2026-10-14 | minor | LR-IMP-CAMERA-COVERAGE: Camera-coverage sweep (#1327): 30 models verified on 40 CC0 files (coverage.py 515 → 545 verified); sensor verification does not establish colour parity (#1277); status unchanged (🟡) |
 | 2026-10-13 | minor | LR-MERGE-PANO: a panorama's DNG takes its `AsShotNeutral` from the median of its frames' vendor white-balance multipliers (CR2, NEF, ARW…) instead of the first frame's tags, and frames now carry the multipliers (issue #1144); status unchanged (✅) |

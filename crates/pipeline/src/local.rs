@@ -10,6 +10,7 @@ use std::sync::Arc;
 use lightcraft_raster::{Plane, Rgb32f, par_join};
 
 use crate::geometry::Frame;
+pub use crate::sampling::{GuidedGrid, ResampleTaps};
 use crate::{Prepared, Quality, SourceInfo, for_rows, masks, timed};
 
 /// White balance (relative to the source's as-shot white) and exposure, in place.
@@ -248,6 +249,20 @@ pub fn guided_fast(p: &Plane, sigma: f32, eps: f32) -> Plane {
     let lo = resize(p, lw, lh, Filter::Box);
     let (ma, mb) = guided_coeffs(&lo, sigma / s as f32, eps);
     guided_apply(p, &ma, &mb)
+}
+
+fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, frame: &Frame) -> Plane {
+    let step = guided_fast_step(sigma);
+    let Some(grid) = GuidedGrid::for_window(p.width, p.height, step, frame.view) else {
+        return guided_fast(p, sigma, eps);
+    };
+    let lo = crate::sampling::resize(p, &grid.down);
+    let (ma, mb) = guided_coeffs(&lo, sigma / step as f32, eps);
+    guided_apply(p, &crate::sampling::resize(&ma, &grid.up), &crate::sampling::resize(&mb, &grid.up))
+}
+
+fn tone_base_window(l: &Plane, sigma: f32, detail: usize, frame: &Frame) -> Plane {
+    if detail == 0 { guided_fast_window(l, sigma, BASE_EPS, frame) } else { guided_fast_window(&median_hv(l, detail), sigma, BASE_EPS, frame) }
 }
 
 /// Separable median (`2r+1` px along each row, then each column; clamped edges). It keeps the
@@ -557,15 +572,23 @@ pub struct PlaneSigmas {
     pub chroma: Option<f32>,
 }
 
+/// Spatial planes selected by the global settings and visible, nonempty masks.
+/// Hidden and empty masks do not choose the tone base Clarity reads (#1214).
 pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneSigmas {
+    select_plane_sigmas(s, px_per_long, q)
+}
+
+/// Plan context for the same planes that can affect the rendered pixels.
+pub(crate) fn context_plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneSigmas {
+    select_plane_sigmas(s, px_per_long, q)
+}
+
+fn select_plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneSigmas {
     let ppl = px_per_long as f32;
-    // A hidden mask, or one with no components, does not change the picture. Its sliders must
-    // not pick the tone base Clarity reads (#1214).
-    let live = |m: &&lightcraft_develop::Mask| m.visible && !m.components.is_empty();
-    let local_any = |f: fn(&lightcraft_develop::LocalAdjustments) -> f64| s.masks.iter().filter(live).any(|m| f(&m.adjust) != 0.0);
-    let tone_active = s.light.highlights != 0.0
-        || s.light.shadows != 0.0
-        || s.masks.iter().filter(live).any(|m| m.adjust.highlights != 0.0 || m.adjust.shadows != 0.0);
+    let local_any = |f: fn(&lightcraft_develop::LocalAdjustments) -> bool| {
+        s.masks.iter().any(|m| (m.visible && !m.components.is_empty()) && f(&m.adjust))
+    };
+    let tone_active = s.light.highlights != 0.0 || s.light.shadows != 0.0 || local_any(|a| a.highlights != 0.0 || a.shadows != 0.0);
     // Edge-aware base at ~1.5% of the long edge (EV² epsilon: edges of > ~0.6 EV are preserved)
     // From V2 it is taken of the median at 0.15%: lines and texture finer than that are detail,
     // not tone (#632).
@@ -573,17 +596,17 @@ pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneS
         let sigma = (0.015 * ppl).max(1.0);
         if q == Quality::Draft { sigma.min(24.0) } else { sigma }
     });
-    let clarity = (s.effects.clarity != 0.0 || local_any(|a| a.clarity)).then(|| (0.012 * ppl).max(1.0));
+    let clarity = (s.effects.clarity != 0.0 || local_any(|a| a.clarity != 0.0)).then(|| (0.012 * ppl).max(1.0));
     // local Noise and Defringe read the fine detail band too
     let texture = (s.effects.texture != 0.0
         || s.detail.sharpen_amount != 0.0
-        || local_any(|a| a.texture)
-        || local_any(|a| a.sharpness)
-        || local_any(|a| a.noise)
-        || s.masks.iter().filter(live).any(|m| m.adjust.defringe > 0.0))
+        || local_any(|a| a.texture != 0.0)
+        || local_any(|a| a.sharpness != 0.0)
+        || local_any(|a| a.noise != 0.0)
+        || local_any(|a| a.defringe > 0.0))
     .then(|| (0.0018 * ppl).max(0.6));
-    let dark = (s.effects.dehaze != 0.0 || local_any(|a| a.dehaze)).then(|| (0.02 * ppl).max(1.0));
-    let chroma = (local_any(|a| a.moire) || s.masks.iter().filter(live).any(|m| m.adjust.noise > 0.0)).then(|| (CHROMA_SIGMA * ppl).max(1.0));
+    let dark = (s.effects.dehaze != 0.0 || local_any(|a| a.dehaze != 0.0)).then(|| (0.02 * ppl).max(1.0));
+    let chroma = (local_any(|a| a.moire != 0.0) || local_any(|a| a.noise > 0.0)).then(|| (CHROMA_SIGMA * ppl).max(1.0));
     let base_detail = if base.is_some() { tone_base_detail(s, px_per_long) } else { 0 };
     PlaneSigmas { base, base_detail, clarity, texture, dark, chroma }
 }
@@ -617,10 +640,10 @@ pub(crate) fn prepare(
     });
     let l = &log_l;
     let (base, (clarity_blur, (texture_blur, dark))) = par_join(
-        || base_sigma.map(|sg| plane_at(sb, base_key(s, sg, base_detail), || timed("base", || tone_base(l, sg, base_detail)))),
+        || base_sigma.map(|sg| plane_at(sb, base_key(s, sg, base_detail), || timed("base", || tone_base_window(l, sg, base_detail, frame)))),
         || {
             par_join(
-                || clarity_sigma.map(|sg| plane_at(sc, sg.to_bits(), || timed("clarity", || guided_fast(l, sg, CLARITY_EPS)))),
+                || clarity_sigma.map(|sg| plane_at(sc, sg.to_bits(), || timed("clarity", || guided_fast_window(l, sg, CLARITY_EPS, frame)))),
                 || {
                     par_join(
                         || texture_sigma.map(|sg| plane_at(st, sg.to_bits(), || timed("texture", || gaussian(l, sg)))),
@@ -649,38 +672,6 @@ pub(crate) fn prepare(
     let (cache, keys) = alphas;
     let masks = timed("masks", || masks::evaluate_cached(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes, keys, cache));
     Prepared { img, log_l, base, clarity_blur, texture_blur, dark, chroma_blur, air, masks, px_per_long }
-}
-
-/// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
-/// a windowed render must dehaze with the frame's airlight, not that of the pixels it holds.
-pub(crate) fn frame_airlight(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, frame: &Frame, proxy_w: usize, proxy_h: usize) -> f32 {
-    let mut img = Rgb32f::clone(&frame_proxy(src, frame, proxy_w, proxy_h));
-    white_balance(&mut img, info, s);
-    let sigma = (0.02 * frame.px_per_long(proxy_w)).max(1.0) as f32;
-    airlight(&gaussian(&img.map(dark_of), sigma))
-}
-
-/// How many airlight proxies [`frame_proxy`] keeps (one per photo and frame being zoomed into; each ≤ 1.8 MB).
-const FRAME_PROXIES_KEPT: usize = 4;
-
-/// `frame.sample(src, w, h)`, kept for the last few (source, frame, size): sampling a 64 MP original down to the
-/// airlight proxy reads all of it (~190 ms of CPU), and every window of a zoomed view with Dehaze asked for it again,
-/// on each pan and slider tick. The proxy is taken before white balance, so a WB change still hits.
-fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
-    type Entry = (u64, Frame, usize, usize, Arc<Rgb32f>);
-    static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
-    let key = crate::optics::fingerprint(src);
-    let found = |c: &[Entry]| c.iter().find(|e| e.0 == key && e.1 == *frame && (e.2, e.3) == (w, h)).map(|e| e.4.clone());
-    if let Some(img) = found(&CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {
-        return img;
-    }
-    let img = Arc::new(frame.sample(src, w, h));
-    let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    c.push((key, frame.clone(), w, h, img.clone()));
-    if c.len() > FRAME_PROXIES_KEPT {
-        c.remove(0);
-    }
-    img
 }
 
 /// The airlight is estimated from every `AIRLIGHT_STEP`-th value of the dark channel.

@@ -19,10 +19,12 @@
 //! Exposure is a gain, so the spatial stages run on the un-exposed image and the per-pixel stage
 //! applies it (filters on log luminance are shift-equivariant: identical result). With
 //! [`render_cached`] each stage's output is reused while its inputs are unchanged ([`StageCache`]):
-//! dragging a tone, colour or exposure slider re-runs only the per-pixel stage.
+//! tone and colour edits reuse prepared planes and mask alphas. Exposure edits also rebuild
+//! the alpha of masks whose selection reads exposure, such as Sky and range masks.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod airlight;
 pub mod auto;
 pub mod blemish;
 pub mod colorops;
@@ -39,11 +41,13 @@ pub mod optics;
 pub mod output;
 pub mod profiles;
 pub mod redeye;
+mod sampling;
 pub mod spots;
 pub mod tone;
 pub mod transform;
 pub mod upright;
 pub mod visualize;
+mod window;
 
 pub use curve::{PARAM_AMOUNTS, PARAM_LUT, ParametricCurve};
 pub use output::{DeepImage, DeepSamples, DisplaySpace, OutputDepth, OutputSpace, OutputTrc, Proof, ProofLut, proof_profile, register_proof_profile};
@@ -153,8 +157,9 @@ pub struct RenderRequest {
 
 /// A window of the (virtual) full output, in its pixels: what a zoomed view needs, rendered
 /// without materializing the whole frame. The output frame is the one `max_w × max_h` fits, after
-/// crop, straighten and flips, as drawn. Out-of-range windows are clamped into it. Spatial stages
-/// (clarity, dehaze, sharpening…) read their neighbours, so ask for a margin around what is kept.
+/// crop, straighten and flips, as drawn. Out-of-range windows are clamped into it.
+/// The renderer supplies the context read by local filters and returns only this window.
+/// Floating-point filter sums can still round differently from a full render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelWindow {
     pub x: usize,
@@ -246,19 +251,21 @@ pub fn frame_for(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, apply_cro
 /// buffer, framing and output size; the white-balanced, retouched, denoised image by those plus
 /// white balance, spots and noise reduction; each spatial plane by that plus its own radius; each
 /// mask's alpha by its definition, the framing and, for masks that read them, that image and the
-/// exposure ([`masks::alpha_key`]). So a tone or colour slider drag (or exposure) re-runs only the
-/// per-pixel stage, a clarity drag skips resampling and noise reduction, and so on. Holds the last few output sizes (a draft-size and a
-/// full-size render of the same view both stay warm).
+/// exposure ([`masks::alpha_key`]). Tone and colour edits reuse these stages. Exposure edits
+/// rebuild only alphas that read exposure, such as Sky and range masks. A clarity drag skips
+/// resampling and noise reduction. Holds the last few output sizes so draft and full-size renders
+/// of the same view both stay warm.
 pub struct StageCache {
     entries: Mutex<Vec<CacheEntry>>,
     capacity: usize,
+    airlight: airlight::AirlightCache,
     /// Another renderer's per-view state (the GPU renderer keeps its device-resident stages here).
     ext: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Default for StageCache {
     fn default() -> Self {
-        StageCache { entries: Mutex::new(Vec::new()), capacity: 2, ext: Mutex::new(None) }
+        StageCache { entries: Mutex::new(Vec::new()), capacity: 2, airlight: airlight::AirlightCache::default(), ext: Mutex::new(None) }
     }
 }
 
@@ -266,6 +273,7 @@ impl StageCache {
     /// Drop everything (e.g. when memory is needed).
     pub fn clear(&self) {
         self.lock().clear();
+        self.airlight.clear();
         *self.ext.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -303,7 +311,9 @@ impl StageCache {
             }
         };
         for e in self.lock().iter() {
-            add(Arc::as_ptr(&e.sampled) as usize, size(&e.sampled));
+            if !Arc::ptr_eq(&e.sampled, &e.src) {
+                add(Arc::as_ptr(&e.sampled) as usize, size(&e.sampled));
+            }
             if let Some((_, l)) = &e.lin {
                 add(Arc::as_ptr(l) as usize, size(l));
             }
@@ -387,18 +397,14 @@ pub struct Plan<'a> {
     pub pre_nr_key: u64,
     /// Red eye / pet eye corrections with their detected pupils, in output pixels.
     pub eyes: Vec<redeye::EyeK>,
-    /// The whole frame's dehaze airlight, for a windowed render (which can't see the whole frame).
-    pub fixed_air: Option<f32>,
-    /// A windowed render works on a larger window when spots reach into it (see
-    /// [`spots::window_for_reads`]); this is the requested window inside the rendered one, which
-    /// the result is cut to.
+    /// Whether this window needs the full-frame Dehaze statistic. Planning does no pixel work.
+    pub needs_airlight: bool,
+    /// A windowed render prepares a larger window for spatial filters and spot reads.
+    /// This is the requested window inside that work buffer, which the result is cut to.
     pub keep: Option<PixelWindow>,
     /// The source's segmentation mattes ([`SourceInfo::mattes`]).
     pub mattes: Option<Arc<masks::Mattes>>,
 }
-
-/// Long edge of the small render a windowed render estimates the whole frame's airlight from.
-const AIRLIGHT_PROXY_EDGE: usize = 384;
 
 /// Resolve `s` against `src` for `req` (see [`Plan`]).
 pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &RenderRequest) -> Plan<'a> {
@@ -421,18 +427,23 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let (full_w, full_h) = frame.fit(req.max_w, req.max_h);
     // sizes and scale are those of the whole output; a window only narrows what is drawn
     let px_per_long = frame.px_per_long(full_w);
-    let mut fixed_air = None;
+    let needs_airlight = req.window.is_some() && local::context_plane_sigmas(s, px_per_long, req.quality).dark.is_some();
     let mut keep = None;
     let (frame, w, h) = match req.window {
         Some(win) => {
             let win = win.clamped(full_w, full_h);
-            if s.section_enabled("effects") && (s.effects.dehaze != 0.0 || s.masks.iter().any(|m| m.adjust.dehaze != 0.0)) {
-                let k = (AIRLIGHT_PROXY_EDGE as f64 / full_w.max(full_h) as f64).min(1.0);
-                let (pw, ph) = (((full_w as f64 * k).round() as usize).max(1), ((full_h as f64 * k).round() as usize).max(1));
-                fixed_air = Some(local::frame_airlight(src, info, s, &frame, pw, ph));
-            }
-            // (spots grow the rendered window; only 8-bit renders are cut back to the request)
-            let work = if req.depth == OutputDepth::U8 { spots::window_for_reads(s, &frame, full_w, full_h, px_per_long, win) } else { win };
+            let margin = window::margin(s, px_per_long, src.width.max(src.height), full_w.max(full_h), req.quality, info.mattes.as_deref());
+            let work = window::expand(win, full_w, full_h, margin);
+            // Spots upstream of the filters must supply the expanded context too.
+            let work = spots::window_for_reads_checked(s, &frame, full_w, full_h, px_per_long, work).unwrap_or(PixelWindow {
+                x: 0,
+                y: 0,
+                w: full_w,
+                h: full_h,
+            });
+            // Defringe precedes spots, so its neighbourhood must also surround
+            // every source patch that the spots read, before NR and local planes.
+            let work = window::expand(work, full_w, full_h, optics::defringe_radius(s, px_per_long / optics::DEFRINGE_REF_LONG));
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -444,7 +455,12 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     // (an original reported smaller than the source is the source)
     let native_long = info.native_long.unwrap_or(0).max(src_long).max(1);
     let detail_scale = local::detail_scale(px_per_long, native_long);
-    let geo = hash_of((format!("{frame:?}"), w, h));
+    // A whole-frame work buffer has the same sampling and upstream cache keys as window=None.
+    let mut cache_frame = frame.clone();
+    if frame.view.is_some_and(|v| v.x == 0.0 && v.y == 0.0 && v.full_w == w as f64 && v.full_h == h as f64) {
+        cache_frame.view = None;
+    }
+    let geo = hash_of((format!("{cache_frame:?}"), w, h));
     let (wb_t, wb_tint) = local::effective_wb(info, s);
     let eyes = redeye::resolve(src, &s.red_eye, s.orientation, &frame, w, h, px_per_long);
     let d = &s.detail;
@@ -457,6 +473,9 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         format!("{:?}", s.optics),
         // and the local tone mapping
         local_tone::enabled(info, s),
+        local::wb_matrix_for(info, s).map(|m| m.map(|row| row.map(f32::to_bits))),
+        // Metadata can change while the source Arc stays the same.
+        local_tone::enabled(info, s).then(|| format!("{:?}", info.local_tone)),
         src_long,
     ));
     let lin_key = hash_of((
@@ -464,7 +483,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits),
         detail_scale.to_bits(),
     ));
-    Plan { settings, frame, w, h, px_per_long, src_long, detail_scale, geo, lin_key, pre_nr_key, eyes, fixed_air, keep, mattes: info.mattes.clone() }
+    Plan { settings, frame, w, h, px_per_long, src_long, detail_scale, geo, lin_key, pre_nr_key, eyes, needs_airlight, keep, mattes: info.mattes.clone() }
 }
 
 /// Whether the scene-linear stage needs work only the CPU does (defringe, spot removal).
@@ -563,6 +582,15 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Src::Shared(a) => a,
     };
     let plan = plan(src_img, info, s, req);
+    let full = plan.needs_airlight.then(|| self::plan(src_img, info, s, &RenderRequest { window: None, ..*req }));
+    // Compute before allocating window stages; retain only the scalar across pans and edits.
+    let fixed_air = full.as_ref().filter(|full| full.lin_key != plan.lin_key).map(|full| {
+        let compute = || airlight::compute(src_img, info, full);
+        match (&src, cache) {
+            (Src::Shared(src), Some(cache)) => cache.airlight.get_or_compute(src, full.lin_key, compute),
+            _ => compute(),
+        }
+    });
     let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, .. } = plan;
     let s = &*plan.settings;
 
@@ -573,7 +601,19 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let cached = shared.and_then(|(a, c)| c.get(a, geo));
     let sampled = match &cached {
         Some(e) => e.sampled.clone(),
-        None => Arc::new(frame.sample(src_img, w, h)),
+        None => {
+            let sampling = frame.sample_plan(src_img.width, src_img.height, w, h);
+            match &src {
+                Src::Shared(a)
+                    if frame.orient == lightcraft_geom::Orientation::Normal
+                        && sampling.prefilter.is_none()
+                        && matches!(sampling.mode, geometry::SampleMode::Copy) =>
+                {
+                    (*a).clone()
+                }
+                _ => Arc::new(frame.sample(src_img, w, h)),
+            }
+        }
     };
     lap("sample", &mut t);
 
@@ -600,7 +640,14 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     };
     let keys = masks::AlphaKeys { geo, image: lin_key };
     let mut prep = local::prepare(lin.clone(), s, frame, px_per_long, req.quality, &mut planes, plan.mattes.as_ref(), (&mut alphas, keys));
-    if let Some(a) = plan.fixed_air {
+    if let Some((src, cache)) = shared
+        && (req.window.is_none() || full.as_ref().is_some_and(|p| p.lin_key == lin_key))
+        && prep.dark.is_some()
+        && planes.key == lin_key
+    {
+        cache.airlight.remember(src, lin_key, prep.air);
+    }
+    if let Some(a) = fixed_air {
         prep.air = a;
     }
     lap("prepare", &mut t);
@@ -608,19 +655,22 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         c.put(CacheEntry { src: a.clone(), geo, sampled, lin: Some((lin_key, lin)), planes, masks: alphas });
     }
     if req.depth != OutputDepth::U8 {
-        let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof);
+        let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof, plan.keep);
         let image = deep.to_rgba8();
         let histogram = Histogram::of_srgb8(&image);
         lap("finish (deep)", &mut t);
         return Rendered { image, histogram, deep: Some(deep) };
     }
-    let image = finish::finish(&prep, s, frame, info, req.space, req.display.as_ref(), req.proof);
+    // Overlays may read neighbouring finished pixels; ordinary windows finish only their output.
+    let finish_keep = plan.keep.filter(|_| req.overlay == Overlay::None);
+    let crop = plan.keep.filter(|_| finish_keep.is_none());
+    let image = finish::finish(&prep, s, frame, info, req.space, req.display.as_ref(), req.proof, finish_keep);
     lap("finish", &mut t);
-    let cut = |i: &Rgba8| match plan.keep {
+    let cut = |i: &Rgba8| match crop {
         Some(k) => i.crop(k.x, k.y, k.w, k.h),
         None => i.clone(),
     };
-    let histogram = match plan.keep {
+    let histogram = match crop {
         Some(_) => Histogram::of_srgb8(&cut(&image)),
         None => Histogram::of_srgb8(&image),
     };
@@ -629,7 +679,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let mask = overlay_alpha(req.overlay, &plan, &prep);
     let masks = overlay_alphas_all(req.overlay, &plan, &prep);
     visualize::apply(&mut image, req.overlay, &plan, mask.as_ref(), masks.as_deref());
-    let mut image = if plan.keep.is_some() { cut(&image) } else { image };
+    let mut image = if crop.is_some() { cut(&image) } else { image };
     if req.overlay == Overlay::HdrRange && edit.hdr.enabled {
         // the HDR rendition of the same request says how far above SDR white each pixel goes
         let hreq = RenderRequest { depth: OutputDepth::F32Hdr, overlay: Overlay::None, proof: None, ..*req };
