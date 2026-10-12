@@ -91,6 +91,13 @@ impl Mattes {
             _ => Vec::new(),
         }
     }
+
+    /// Whether evaluation uses a supplied matte instead of a spatial heuristic.
+    pub(crate) fn uses_matte(&self, shape: &MaskShape) -> bool {
+        // Background evaluates Subject and then inverts its alpha.
+        let shape = if matches!(shape, MaskShape::Background) { &MaskShape::Subject } else { shape };
+        !self.for_shape(shape).is_empty()
+    }
 }
 
 pub struct Evaluated {
@@ -216,7 +223,7 @@ impl<H: std::hash::Hasher> std::fmt::Write for HashWrite<'_, H> {
 }
 
 /// The key of mask `m`'s alpha in a render with `keys` and global exposure `ev`: everything
-/// [`evaluate_one`] reads — its components, Refine Edges, Invert and Amount, the frame, and the
+/// [`evaluate_one`] reads: its components, Refine Edges, Invert and Amount, the frame, and the
 /// image and exposure for the masks that read them ([`reads`]). Not its other sliders, name or id.
 pub fn alpha_key(m: &Mask, keys: AlphaKeys, ev: f32) -> u64 {
     use std::fmt::Write;
@@ -511,7 +518,8 @@ fn frame_px(frame: &Frame, w: usize) -> f32 {
 }
 
 fn smooth_plane(p: &mut Plane, sigma: f32) {
-    *p = lightcraft_raster::blur::gaussian(p, sigma.max(0.5));
+    let owned = std::mem::replace(p, Plane::new(0, 0));
+    *p = lightcraft_raster::blur::gaussian_owned(owned, sigma.max(0.5));
 }
 
 /// The union (max) of `mattes` (0..255, over the EXIF-oriented source) at output resolution,
@@ -789,26 +797,27 @@ pub fn auto_refine(r: f64) -> (f32, f32) {
 /// Guided filter of `p` steered by `guide` (He et al.), clamped to 0..1: `p`'s edges snap to the
 /// guide's.
 pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
-    use lightcraft_raster::blur::gaussian;
+    use lightcraft_raster::blur::{gaussian, gaussian_owned};
     let mi = gaussian(guide, sigma);
     let mp = gaussian(p, sigma);
-    let cip = gaussian(&guide.zip_map(p, |a, b| a * b), sigma);
-    let cii = gaussian(&guide.map(|a| a * a), sigma);
+    let cip = gaussian_owned(guide.zip_map(p, |a, b| a * b), sigma);
+    let cii = gaussian_owned(guide.map(|a| a * a), sigma);
     let w = p.width;
     let rows = |y: usize, len: usize| y * w..y * w + len;
     // a = cov(I, p) / (var(I) + eps), b = mean(p) − a · mean(I)
-    let mut a = Plane::new(p.width, p.height);
+    // Reuse the covariance buffer for coefficients, then release each input after its last read.
+    let mut a = cip;
     for_rows(&mut a.data, w, |y, row| {
         let r = rows(y, row.len());
-        let (Some(cii), Some(mi), Some(cip), Some(mp)) = (cii.data.get(r.clone()), mi.data.get(r.clone()), cip.data.get(r.clone()), mp.data.get(r))
-        else {
+        let (Some(cii), Some(mi), Some(mp)) = (cii.data.get(r.clone()), mi.data.get(r.clone()), mp.data.get(r)) else {
             return;
         };
-        for (k, (((cii, mi), cip), mp)) in row.iter_mut().zip(cii.iter().zip(mi).zip(cip).zip(mp)) {
+        for (k, ((cii, mi), mp)) in row.iter_mut().zip(cii.iter().zip(mi).zip(mp)) {
             let var = (cii - mi * mi).max(0.0);
-            *k = (cip - mi * mp) / (var + eps);
+            *k = (*k - mi * mp) / (var + eps);
         }
     });
+    drop(cii);
     let mut b = mp;
     for_rows(&mut b.data, w, |y, row| {
         let r = rows(y, row.len());
@@ -817,7 +826,9 @@ pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
             *b -= k * mi;
         }
     });
-    let (ma, mut q) = (gaussian(&a, sigma), gaussian(&b, sigma));
+    drop(mi);
+    let ma = gaussian_owned(a, sigma);
+    let mut q = gaussian_owned(b, sigma);
     for_rows(&mut q.data, w, |y, row| {
         let r = rows(y, row.len());
         let (Some(ma), Some(g)) = (ma.data.get(r.clone()), guide.data.get(r)) else { return };

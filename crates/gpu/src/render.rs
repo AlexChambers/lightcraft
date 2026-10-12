@@ -10,7 +10,7 @@ use lightcraft_pipeline::finish::{FinishParams, MASK_TERMS, mask_terms};
 use lightcraft_pipeline::geometry::SampleMode;
 use lightcraft_pipeline::local::plane_at;
 use lightcraft_pipeline::masks::{AlphaCache, AlphaKeys, alpha_key};
-use lightcraft_pipeline::{Plan, RenderRequest, Rendered, SourceInfo, local};
+use lightcraft_pipeline::{Overlay, PixelWindow, Plan, RenderRequest, Rendered, SourceInfo, local};
 use lightcraft_raster::resample::Filter;
 use lightcraft_raster::{Histogram, Plane, Rgb32f, Rgba8};
 
@@ -21,6 +21,7 @@ use crate::params::{Present, finish_block};
 /// (as its extension). Holds the last two output sizes, like the CPU cache.
 #[derive(Default)]
 pub struct GpuStages {
+    airlight: lightcraft_pipeline::airlight::AirlightCache,
     entries: Mutex<Vec<Entry>>,
     /// The uploaded source (a view renders one photo at several sizes).
     source: Mutex<Option<(Arc<Rgb32f>, Arc<Buf>)>>,
@@ -122,6 +123,7 @@ impl GpuStages {
     /// Drop everything (e.g. when memory is needed).
     pub fn clear(&self) {
         self.lock().clear();
+        self.airlight.clear();
         *self.source.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -272,10 +274,15 @@ pub(crate) fn gaussian(cx: &mut Cx<'_>, src: &Buf, w: usize, h: usize, nc: usize
 /// Resample taps of `lightcraft_raster::resample::resize`, packed for the `resize_*` kernels.
 fn taps(src: usize, dst: usize, filter: Filter) -> Vec<u32> {
     let w = lightcraft_raster::resample::weights(src, dst, filter);
+    pack_taps(&w)
+}
+
+fn pack_taps(w: &[(usize, Vec<f32>)]) -> Vec<u32> {
+    let dst = w.len();
     let mut t = Vec::with_capacity(dst * 3);
     let mut weights = Vec::new();
     let base = dst * 3;
-    for (lo, ws) in &w {
+    for (lo, ws) in w {
         t.extend_from_slice(&[*lo as u32, ws.len() as u32, (base + weights.len()) as u32]);
         weights.extend(ws.iter().map(|v| v.to_bits()));
     }
@@ -293,6 +300,19 @@ pub(crate) fn resize(cx: &mut Cx<'_>, src: &Buf, (sw, sh): (usize, usize), (dw, 
     let tmp = cx.gpu.buffer(dw * sh * nc);
     cx.run("resize_h", &[sw as u32, sh as u32, dw as u32, nc as u32], &[Some(src), Some(&tx), Some(&tmp)], groups2(dw, sh, [16, 16]));
     let ty = cx.gpu.upload(&taps(sh, dh, filter));
+    let out = cx.gpu.buffer(dw * dh * nc);
+    cx.run("resize_v", &[dw as u32, sh as u32, dh as u32, nc as u32], &[Some(&tmp), Some(&ty), Some(&out)], groups2(dw, dh, [16, 16]));
+    out
+}
+
+/// Windowed resampling uses exactly the CPU's full-frame coefficient grid.
+fn resize_window(cx: &mut Cx<'_>, src: &Buf, (sw, sh): (usize, usize), nc: usize, taps: &local::ResampleTaps) -> Buf {
+    let [wx, wy] = taps;
+    let (dw, dh) = (wx.len(), wy.len());
+    let tx = cx.gpu.upload(&pack_taps(wx));
+    let tmp = cx.gpu.buffer(dw * sh * nc);
+    cx.run("resize_h", &[sw as u32, sh as u32, dw as u32, nc as u32], &[Some(src), Some(&tx), Some(&tmp)], groups2(dw, sh, [16, 16]));
+    let ty = cx.gpu.upload(&pack_taps(wy));
     let out = cx.gpu.buffer(dw * dh * nc);
     cx.run("resize_v", &[dw as u32, sh as u32, dh as u32, nc as u32], &[Some(&tmp), Some(&ty), Some(&out)], groups2(dw, dh, [16, 16]));
     out
@@ -338,24 +358,32 @@ fn median_hv(cx: &mut Cx<'_>, p: &Buf, w: usize, h: usize, r: usize) -> Buf {
 }
 
 /// The highlights/shadows base (`local::tone_base`; `detail` 0: V1, no median).
-fn tone_base(cx: &mut Cx<'_>, l: &Buf, w: usize, h: usize, sigma: f32, detail: usize) -> Buf {
+fn tone_base(cx: &mut Cx<'_>, l: &Buf, plan: &Plan<'_>, sigma: f32, detail: usize) -> Buf {
     if detail == 0 {
-        return guided_fast(cx, l, w, h, sigma, local::BASE_EPS);
+        return guided_fast(cx, l, plan, sigma, local::BASE_EPS);
     }
-    let m = median_hv(cx, l, w, h, detail);
-    guided_fast(cx, &m, w, h, sigma, local::BASE_EPS)
+    let m = median_hv(cx, l, plan.w, plan.h, detail);
+    guided_fast(cx, &m, plan, sigma, local::BASE_EPS)
 }
 
 /// Fast guided filter (`local::guided_fast`): coefficients on a subsampled grid.
-fn guided_fast(cx: &mut Cx<'_>, p: &Buf, w: usize, h: usize, sigma: f32, eps: f32) -> Buf {
+fn guided_fast(cx: &mut Cx<'_>, p: &Buf, plan: &Plan<'_>, sigma: f32, eps: f32) -> Buf {
+    let (w, h) = (plan.w, plan.h);
     let s = local::guided_fast_step(sigma);
     if s <= 1 {
         return guided(cx, p, w, h, sigma, eps);
     }
-    let (lw, lh) = (w.div_ceil(s).max(1), h.div_ceil(s).max(1));
-    let lo = resize(cx, p, (w, h), (lw, lh), 1, Filter::Box);
-    let ab = guided_coeffs(cx, &lo, lw, lh, sigma / s as f32, eps);
-    let up = resize(cx, &ab, (lw, lh), (w, h), 2, Filter::Bilinear);
+    let up = if let Some(grid) = local::GuidedGrid::for_window(w, h, s, plan.frame.view) {
+        let (lw, lh) = (grid.down[0].len(), grid.down[1].len());
+        let lo = resize_window(cx, p, (w, h), 1, &grid.down);
+        let ab = guided_coeffs(cx, &lo, lw, lh, sigma / s as f32, eps);
+        resize_window(cx, &ab, (lw, lh), 2, &grid.up)
+    } else {
+        let (lw, lh) = (w.div_ceil(s).max(1), h.div_ceil(s).max(1));
+        let lo = resize(cx, p, (w, h), (lw, lh), 1, Filter::Box);
+        let ab = guided_coeffs(cx, &lo, lw, lh, sigma / s as f32, eps);
+        resize(cx, &ab, (lw, lh), (w, h), 2, Filter::Bilinear)
+    };
     let q = cx.gpu.buffer(w * h);
     map(cx, "guided_apply", w * h, &[], [Some(p), Some(&up), None], &q);
     q
@@ -617,6 +645,15 @@ pub fn render(
         );
         return None;
     }
+    let full = plan.needs_airlight.then(|| lightcraft_pipeline::plan(src, info, s, &RenderRequest { window: None, ..*req }));
+    // Finish the full statistic before allocating the window's device buffers.
+    let fixed_air = full.as_ref().filter(|full| full.lin_key != plan.lin_key).map(|full| {
+        let compute = || frame_airlight(gpu, src, info, full);
+        match stages {
+            Some(stages) => stages.airlight.get_or_compute(src, full.lin_key, compute),
+            None => compute(),
+        }
+    });
     let s = &*plan.settings;
     let cached = stages.and_then(|c| c.get(src, plan.geo));
     let mut host = Host::default();
@@ -662,7 +699,13 @@ pub fn render(
     };
     let mut prep = prepare(&mut cx, &lin, &plan, req, &mut planes);
     // a window dehazes with the whole frame's airlight
-    if let Some(a) = plan.fixed_air {
+    if let Some(stages) = stages
+        && (req.window.is_none() || full.as_ref().is_some_and(|p| p.lin_key == plan.lin_key))
+        && prep.dark.is_some()
+    {
+        stages.airlight.remember(src, plan.lin_key, prep.air);
+    }
+    if let Some(a) = fixed_air {
         prep.air = a;
     }
     lap("planes", &mut t, &mut cx);
@@ -685,19 +728,23 @@ pub fn render(
         dark: prep.dark.is_some(),
         chroma: masks.is_some() && prep.chroma.is_some(),
     };
-    let (p, aux) = finish_block(&fp, &terms, &present);
+    let finish_keep = plan.keep.filter(|_| req.overlay == Overlay::None);
+    let crop = plan.keep.filter(|_| finish_keep.is_none());
+    let output = finish_keep.unwrap_or(PixelWindow { x: 0, y: 0, w, h });
+    let out_n = output.w * output.h;
+    let (p, aux) = finish_block(&fp, &terms, &present, output);
     let aux = gpu.upload(&aux);
     // cleared, so that work which never ran cannot pass for an image (see the check below)
-    let out = cx.zeroed(n);
+    let out = cx.zeroed(out_n);
     if fault == Some(crate::Fault::Validation) {
         // a dispatch the device rejects (too many workgroups)
         cx.run("box_h", &[0; 5], &[Some(&aux), Some(&out)], [gpu.device.limits().max_compute_workgroups_per_dimension + 1, 1, 1]);
     }
     // in bands of rows: each dispatch (and submission) stays short on a slow GPU
-    let rows = (BAND_PIXELS / w.max(1) / 16 * 16).max(16); // whole workgroups: bands never overlap
+    let rows = (BAND_PIXELS / output.w.max(1) / 16 * 16).max(16); // whole workgroups: bands never overlap
     let y0_at = crate::params::index("Y0").unwrap_or(0);
     let mut p = p;
-    for y0 in (0..h).step_by(rows).filter(|_| fault != Some(crate::Fault::DropWork)) {
+    for y0 in (0..output.h).step_by(rows).filter(|_| fault != Some(crate::Fault::DropWork)) {
         p[y0_at] = y0 as u32;
         cx.run(
             "main",
@@ -713,7 +760,7 @@ pub fn render(
                 Some(&aux),
                 Some(&out),
             ],
-            groups2(w, rows.min(h - y0), [16, 16]),
+            groups2(output.w, rows.min(output.h - y0), [16, 16]),
         );
     }
     // the alpha a mask overlay shows: copied out before the readback below submits
@@ -745,8 +792,8 @@ pub fn render(
     } else {
         None
     };
-    let data: Vec<[u8; 4]> = cx.read(&out, n);
-    let image = Rgba8 { width: w, height: h, data };
+    let data: Vec<[u8; 4]> = cx.read(&out, out_n);
+    let image = Rgba8 { width: output.w, height: output.h, data };
     lap("finish + readback", &mut t, &mut cx);
     if crate::ctx::failed() {
         return None;
@@ -756,10 +803,10 @@ pub fn render(
     // without reporting it — issue #78's all-black exports).
     let unwritten = unwritten(&image.data);
     if unwritten > 0 {
-        fail(FailKind::Fatal, format!("the GPU returned an incomplete image ({unwritten} of {n} pixels unwritten)"));
+        fail(FailKind::Fatal, format!("the GPU returned an incomplete image ({unwritten} of {out_n} pixels unwritten)"));
         return None;
     }
-    let histogram = match plan.keep {
+    let histogram = match crop {
         Some(k) => Histogram::of_srgb8(&image.crop(k.x, k.y, k.w, k.h)),
         None => Histogram::of_srgb8(&image),
     };
@@ -782,7 +829,7 @@ pub fn render(
     });
     lightcraft_pipeline::visualize::apply(&mut image, req.overlay, &plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
     // spots grew the window the render worked on: cut it back to the request
-    if let Some(k) = plan.keep {
+    if let Some(k) = crop {
         image = image.crop(k.x, k.y, k.w, k.h);
     }
     Some(Rendered { image, histogram, deep: None })
@@ -862,6 +909,35 @@ struct Prep {
     air: f32,
 }
 
+/// Use the same geometry, linear stages, dark-channel kernel and sample selection as a
+/// full GPU render. If that frame exceeds device limits, its reference is the CPU fallback.
+fn frame_airlight(gpu: &Gpu, src: &Arc<Rgb32f>, info: &SourceInfo, full: &Plan<'_>) -> f32 {
+    let (w, h) = (full.w, full.h);
+    let n = w * h;
+    if !gpu.fits(n * 3) {
+        return lightcraft_pipeline::airlight::compute(src, info, full);
+    }
+    let mut cx = Cx::new(gpu);
+    let mut host = Host::default();
+    let sampled = if gpu.fits(src.data.len() * 3) && !full.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) {
+        sample(&mut cx, src, Arc::new(gpu.upload(rgb_words(src))), full)
+    } else {
+        let img = full.frame.sample(src, w, h);
+        let b = Arc::new(gpu.upload(rgb_words(&img)));
+        host.sampled = Some(img);
+        b
+    };
+    let lin = linear(&mut cx, &sampled, info, full, &mut host);
+    drop(sampled);
+    let d0 = cx.gpu.buffer(n);
+    map(&mut cx, "dark_k", n, &[], [Some(&lin), None, None], &d0);
+    let dark = gaussian(&mut cx, &d0, w, h, 1, (0.02 * full.px_per_long as f32).max(1.0));
+    let m = n.div_ceil(local::AIRLIGHT_STEP);
+    let sub = cx.gpu.buffer(m);
+    map(&mut cx, "subsample", m, &[local::AIRLIGHT_STEP as u32], [Some(&dark), None, None], &sub);
+    local::airlight_of(cx.read(&sub, m))
+}
+
 /// The spatial planes (`local::prepare`), reusing those in `planes`.
 fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, planes: &mut Planes) -> Prep {
     let (w, h) = (plan.w, plan.h);
@@ -880,11 +956,11 @@ fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, pla
     let base = match sig.base {
         Some(sg) => {
             let key = local::base_key(&plan.settings, sg, sig.base_detail);
-            plane_at(&mut planes.base, key, || tone_base(cx, &log_l, w, h, sg, sig.base_detail))
+            plane_at(&mut planes.base, key, || tone_base(cx, &log_l, plan, sg, sig.base_detail))
         }
         None => log_l.clone(),
     };
-    let clarity = sig.clarity.map(|sg| plane_at(&mut planes.clarity, sg.to_bits(), || guided_fast(cx, &log_l, w, h, sg, local::CLARITY_EPS)));
+    let clarity = sig.clarity.map(|sg| plane_at(&mut planes.clarity, sg.to_bits(), || guided_fast(cx, &log_l, plan, sg, local::CLARITY_EPS)));
     let texture = sig.texture.map(|sg| plane_at(&mut planes.texture, sg.to_bits(), || gaussian(cx, &log_l, w, h, 1, sg)));
     let (dark, air) = match sig.dark {
         None => (None, 1.0),
