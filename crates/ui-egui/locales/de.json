@@ -2344,5 +2344,7 @@
   "Checking the GPU for faces": "GPU für Gesichter wird geprüft",
   "Quit LightCraft?": "LightCraft beenden?",
   "Waiting to import opened files": "Geöffnete Dateien warten auf den Import",
-  "1 file you opened hasn't been imported yet. Quitting discards this request.": "1 von dir geöffnete Datei wurde noch nicht importiert. Beim Beenden wird dieser Importauftrag verworfen."
+  "1 file you opened hasn't been imported yet. Quitting discards this request.": "1 von dir geöffnete Datei wurde noch nicht importiert. Beim Beenden wird dieser Importauftrag verworfen.",
+  "Finish or cancel the import and close Import Photos before switching libraries. Queued photos will open in this library.": "Schließen Sie den Import ab oder brechen Sie ihn ab, und schließen Sie „Fotos importieren“, bevor Sie die Bibliothek wechseln. Fotos in der Warteschlange werden in dieser Bibliothek geöffnet.",
+  "An import is already running. Wait for it to finish, then click Import again.": "Ein Import läuft bereits. Warten Sie, bis er abgeschlossen ist, und klicken Sie dann erneut auf „Importieren“."
 }
