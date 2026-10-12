@@ -823,7 +823,7 @@ fn a_waiting_review_never_replaces_a_running_import() {
     let Some(review) = h.app.ui.dialog.clone() else { panic!("the review opens once the dialog is closed") };
     assert!(matches!(review, Dialog::Import { .. }));
     // an import that started anyway (a Local folder browse, say) is the one that runs
-    h.app.import = Some(crate::import::ImportTask::new(vec![dir.path("more")], json!({"mode": "add"}), 0, false));
+    h.app.import = Some(crate::import::ImportTask::new(vec![dir.path("more")], json!({"mode": "add"}), 0, false, &h.app.session));
     assert!(crate::panels::dialogs::confirm_dialog(&mut h.app, &review).is_err(), "the review's OK is refused");
     assert_eq!(h.app.import.as_ref().map(|t| t.total), Some(1), "the running import stays");
     assert!(h.step_until(SETTLE, |h| h.app.import.is_none()), "it runs to the end");

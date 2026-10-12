@@ -23,6 +23,7 @@ pub(crate) fn can_switch_library(app: &LightcraftApp) -> Result<(), String> {
 /// lightroomCatalog: <.lrcat path or null>, path}`.
 pub fn open_library(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
     can_switch_library(app)?;
+    crate::import::check_library_switch(app)?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(x) => x.to_string(),
         None => {
@@ -121,6 +122,7 @@ pub fn open_library_name(app: &LightcraftApp) -> Option<String> {
 /// library already, nor anything else.
 pub fn new_library(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
     can_switch_library(app)?;
+    crate::import::check_library_switch(app)?;
     let name = match p.get("name") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(valid_library_name(s)?),
@@ -255,7 +257,7 @@ mod tests {
     fn app_with_import() -> LightcraftApp {
         let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), crate::Services::default());
         app.run("photo.setReference", json!({})).unwrap();
-        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false));
+        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false, &app.session));
         app
     }
 
@@ -286,7 +288,7 @@ mod tests {
         app.services.pick_folder = Some(Box::new(|| None));
         assert!(crate::menus::ui_enabled(&app, "app.openLibrary"));
         assert!(crate::menus::ui_enabled(&app, "app.newLibrary"));
-        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false));
+        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false, &app.session));
         assert!(!crate::menus::ui_enabled(&app, "app.openLibrary"));
         assert!(!crate::menus::ui_enabled(&app, "app.newLibrary"));
     }

@@ -12,6 +12,8 @@ const BATCH: usize = 8;
 /// UI thread between frames, so a slow drive never stalls the window.
 #[derive(Debug, Default)]
 pub struct ImportTask {
+    /// Photo IDs, import options and prepared batches belong to this library opening.
+    library: u64,
     /// Files and folders to import (handed to the worker when the task starts).
     queue: Vec<String>,
     pub total: usize,
@@ -54,8 +56,8 @@ pub struct ImportTask {
 
 impl ImportTask {
     /// An import of `paths` (files or folders) with `library.import` params (without `paths`).
-    pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool) -> Self {
-        ImportTask { total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
+    pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool, session: &lightcraft_engine::Session) -> Self {
+        ImportTask { library: session.library_generation(), total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
     }
 
     /// An Auto Import (see [`ImportTask::auto`]).
@@ -202,9 +204,8 @@ pub fn start(app: &mut LightcraftApp, d: &ImportDialog) -> Result<Value, String>
     if !d.in_library(app) {
         return Err("another library was opened since the photos were scanned: nothing was imported".into());
     }
-    // a browse scan that finishes starts its own import, replacing this one
-    if app.import.is_some() || app.scan.as_ref().is_some_and(|t| t.browse) {
-        return Err(crate::i18n::tr("An import is running").to_string());
+    if app.import.is_some() || app.scan.is_some() {
+        return Err(crate::i18n::tr("An import is already running. Wait for it to finish, then click Import again.").to_string());
     }
     let queue = d.selected_paths();
     if queue.is_empty() {
@@ -250,7 +251,7 @@ pub fn start(app: &mut LightcraftApp, d: &ImportDialog) -> Result<Value, String>
         }
     }
     let total = queue.len();
-    app.import = Some(ImportTask::new(queue, params, undo0, false));
+    app.import = Some(ImportTask::new(queue, params, undo0, false, &app.session));
     app.renderer.forget_imports();
     Ok(json!({"importing": total}))
 }
@@ -263,7 +264,7 @@ pub fn start_paths(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Value,
     }
     let undo0 = app.session.undo.len();
     let total = paths.len();
-    app.import = Some(ImportTask::new(paths, json!({"mode": "add"}), undo0, false));
+    app.import = Some(ImportTask::new(paths, json!({"mode": "add"}), undo0, false, &app.session));
     Ok(json!({"importing": total}))
 }
 
@@ -282,6 +283,12 @@ pub fn start_documents(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Va
 /// has readied to the catalog.
 pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
     let Some(mut task) = app.import.take() else { return };
+    // Check before both starting work and accepting prepared batches. The UI blocks library
+    // switches, but a host replacing its session must not commit old photo IDs into a new one.
+    if task.library != app.session.library_generation() {
+        app.notices.push(crate::i18n::tr("Import stopped because its library changed. Import the photos again in the intended library.").to_string());
+        return;
+    }
     if task.run.is_none() {
         let mut p = task.params.clone();
         p["paths"] = json!(task.queue);
