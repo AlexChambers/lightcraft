@@ -218,7 +218,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 )
 | LR-EDIT-OPTICS-DEFRINGE | Defringe | P1 | ✅ | `ctl:optics.defringe*` | no fringe eyedropper |
 | LR-EDIT-OPTICS-MANUAL | Manual distortion / vignetting | P1 | ✅ | `ctl:optics.distortion`, `ctl:optics.vignetting`, `ctl:optics.vignettingMidpoint` | |
-| LR-EDIT-GEOM-UPRIGHT | Upright | P1 | ✅ | `cmd:geometry.upright`, `cmd:geometry.guides` | LightCraft's own solver; Lightroom's saved Upright from XMP is kept as it is (LR-META-XMP); Rotate Left / Right turns a stored correction with the photo, and Paste / Sync / Auto Sync put it into each photo's frame |
+| LR-EDIT-GEOM-UPRIGHT | Upright | P1 | ✅ | `cmd:geometry.upright`, `cmd:geometry.guides` | LightCraft's own solver; Lightroom's saved Upright from XMP is kept as it is (LR-META-XMP); Rotate Left / Right turns a stored correction with the photo; a correction is the photo's own: Paste / Sync / Auto Sync turn it into virtual copies of the same file and carry only the mode and sliders to other files, presets keep the mode only |
 | LR-EDIT-GEOM-MANUAL | Manual transform | P1 | ✅ | `ctl:geometry.*` | |
 | LR-EDIT-GEOM-CONSTRAIN | Constrain crop | P1 | ✅ | `crates/ui-egui/src/panels/right.rs` (checkbox → `cmd:develop.merge`) | |
 | LR-EDIT-GEOM-GRID | Grid while transforming | P2 | ✅ | `crates/ui-egui/src/panels/detail.rs` | a fine grid over the photo while a geometry slider is dragged |
@@ -797,7 +797,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-12 | minor | LR-META-XMP: Lightroom's saved Upright correction for the selected mode is kept from XMP instead of being solved again (issue #205; catalogs fall back and report it); `PerspectiveUpright` 2, 3, 4 read as Full, Level, Vertical; sidecar crops follow the file's orientation (Synchronize Folder too); LR-EDIT-GEOM-UPRIGHT: Rotate turns a stored correction, Paste / Sync carry it into each photo's frame; statuses unchanged |
+| 2026-10-12 | minor | LR-META-XMP: Lightroom's saved Upright correction for the selected mode is kept from XMP instead of being solved again (issue #205; catalogs fall back and report it); `PerspectiveUpright` 2, 3, 4 read as Full, Level, Vertical; sidecar crops follow the file's orientation (Synchronize Folder too); LR-EDIT-GEOM-UPRIGHT: Rotate turns a stored correction; Paste / Sync / presets carry the Upright mode to other files and the correction only to virtual copies; statuses unchanged |
 | 2026-10-12 | minor | LR-EDIT-OPTICS-PROFILE: Sony ARW shading, CA and distortion tables decoded with settings and provenance (raw IFD, `SR2SubIFD` fallback); applied corrections unchanged (ILCE-7RM4A and ILCE-7RM6 distortion); status unchanged (🟡) |
 | 2026-10-14 | minor | LR-IMP-CAMERA-COVERAGE: Camera-coverage sweep (#1327): 30 models verified on 40 CC0 files (coverage.py 515 → 545 verified); sensor verification does not establish colour parity (#1277); status unchanged (🟡) |
 | 2026-10-13 | minor | LR-MERGE-PANO: a panorama's DNG takes its `AsShotNeutral` from the median of its frames' vendor white-balance multipliers (CR2, NEF, ARW…) instead of the first frame's tags, and frames now carry the multipliers (issue #1144); status unchanged (✅) |

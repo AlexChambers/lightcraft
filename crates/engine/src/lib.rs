@@ -79,6 +79,7 @@ pub mod smart;
 pub mod sync;
 pub mod text;
 pub mod upright_frames;
+pub mod upright_transfer;
 mod view;
 pub mod walk;
 
@@ -260,9 +261,9 @@ pub struct Session {
     pub(crate) focus_scan: focus_scan::FocusScan,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
-    /// The frame of the photo the clipboard was copied from (its Upright correction is put into
-    /// each target's frame on Paste: [`crate::upright_frames`]).
-    pub clipboard_frame: Option<crate::upright_frames::PhotoFrame>,
+    /// The photo the clipboard was copied from (an Upright correction moves only between entries of
+    /// the same file: [`crate::upright_transfer`]).
+    pub clipboard_source: Option<crate::upright_transfer::UprightSource>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
     pub browse: Option<Browse>,
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
@@ -443,7 +444,7 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             focus_scan: Default::default(),
             clipboard: None,
-            clipboard_frame: None,
+            clipboard_source: None,
             meta_clipboard: None,
             browse: None,
             library_folder: None,
@@ -914,8 +915,8 @@ impl Session {
                 return Vec::new();
             }
         }
-        // an Upright correction goes into each photo's own frame
-        let source = self.catalog.photo(id).and_then(|p| crate::upright_frames::frame_of(p, new));
+        // an Upright correction moves only between entries of the same file
+        let source = self.catalog.photo(id).map(|p| crate::upright_transfer::source_of(p, new));
         self.selection
             .ids
             .iter()
@@ -923,7 +924,7 @@ impl Session {
             .filter_map(|x| self.develop_of(*x).map(|d| (*x, d)))
             .filter_map(|(x, d)| {
                 let synced = match self.catalog.photo(x) {
-                    Some(p) => crate::upright_frames::transferred(p, &d, &delta, source.as_ref()),
+                    Some(p) => crate::upright_transfer::transferred(p, &d, &delta, source.as_ref()),
                     None => lightcraft_develop::apply_partial(&d, &delta, 1.0),
                 };
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()

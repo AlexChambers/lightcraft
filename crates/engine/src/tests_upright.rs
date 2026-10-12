@@ -391,7 +391,12 @@ fn write_turned_jpeg(path: &Path) {
 
 /// A `w × h` JPEG (stored size) with EXIF orientation `exif`.
 fn write_jpeg(path: &Path, w: usize, h: usize, exif: u16) {
-    let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 6) as u8, (i / w * 9) as u8, 30, 255]).collect();
+    write_jpeg_seeded(path, w, h, exif, 30);
+}
+
+/// [`write_jpeg`] with its own pixels (`seed`), so two of them aren't duplicates.
+fn write_jpeg_seeded(path: &Path, w: usize, h: usize, exif: u16, seed: u8) {
+    let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 6) as u8, (i / w * 9) as u8, seed, 255]).collect();
     let img = lightcraft_raster::Rgba8 { width: w, height: h, data };
     let exif = lightcraft_codecs::exif::minimal_exif(exif);
     let meta = lightcraft_codecs::EncodeMeta { exif: Some(&exif), ..Default::default() };
@@ -681,7 +686,8 @@ fn same(a: Option<Homography>, b: Homography) -> bool {
 /// A 60 × 40 JPEG `name` with EXIF `exif` (and, with `sidecar`, that XMP next to it), imported.
 fn import_jpeg(s: &mut Session, dir: &Path, name: &str, exif: u16, sidecar: Option<&str>) -> lightcraft_catalog::PhotoId {
     let photo = dir.join(format!("{name}.jpg"));
-    write_jpeg(&photo, 60, 40, exif);
+    // each name its own pixels: identical files would be skipped as duplicates
+    write_jpeg_seeded(&photo, 60, 40, exif, name.bytes().fold(17u8, |a, b| a.wrapping_mul(31).wrapping_add(b)));
     if let Some(x) = sidecar {
         std::fs::write(dir.join(format!("{name}.xmp")), x).unwrap();
     }
@@ -718,25 +724,38 @@ fn transferred_upright_lands_in_the_target_photo_frame() {
     }
 }
 
-/// Between files with different orientations the correction goes through the stored image, as
-/// Lightroom keeps it: into an EXIF-8 photo, and into an EXIF-6 photo the user turned right.
+/// A saved Upright matrix is one photo's own analysis: between different files only the mode and
+/// the Transform sliders move (as Lightroom does when it syncs the Upright mode). A target with the
+/// same mode keeps its own correction; one whose mode changes solves its own. (Converting the
+/// source's matrix into another file's frame was wrong whenever a frame wasn't recorded.)
 #[test]
-fn transferred_upright_follows_each_files_orientation() {
-    let src = temp_dir("upright-transfer-exif");
-    let mut s = Session::new().with_fs();
-    let a = import_jpeg(&mut s, &src, "a", 1, Some(&lightroom(1)));
-    let b = import_jpeg(&mut s, &src, "b", 8, None);
-    let c = import_jpeg(&mut s, &src, "c", 6, None);
-    s.execute("library.select", &json!({"ids": [c.0]})).unwrap();
-    s.execute("photo.rotateRight", &json!({})).unwrap();
-    s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
-    s.execute("develop.copy", &json!({"groups": ["geometry"]})).unwrap();
-    s.execute("library.select", &json!({"ids": [b.0, c.0]})).unwrap();
-    s.execute("develop.paste", &json!({})).unwrap();
-    assert!(same(dev(&s, b).geometry.upright_transform, placed(1, Orientation::Rotate270, 60.0, 40.0)), "EXIF 8: {:?}", dev(&s, b).geometry);
-    let c_frame = Orientation::Rotate90.then(Orientation::Rotate90);
-    assert!(same(dev(&s, c).geometry.upright_transform, placed(1, c_frame, 60.0, 40.0)), "EXIF 6 turned right: {:?}", dev(&s, c).geometry);
-    let _ = std::fs::remove_dir_all(&src);
+fn transfers_between_files_carry_the_upright_mode_not_the_matrix() {
+    for command in ["develop.paste", "develop.sync", "develop.pastePrevious"] {
+        let src = temp_dir(&format!("upright-between-files-{}", command.replace('.', "-")));
+        let mut s = Session::new().with_fs();
+        let a = import_jpeg(&mut s, &src, "a", 8, Some(&lightroom(1)));
+        // b has its own saved Auto matrix (another one), c has Upright Off
+        let b = import_jpeg(&mut s, &src, "b", 8, Some(&lightroom(1).replace(SLOTS[1], SLOTS[2])));
+        let c = import_jpeg(&mut s, &src, "c", 6, None);
+        let own_b = upright_in_frame(&SavedUpright { mode: Upright::Auto, matrix: matrix(SLOTS[2]) }, Orientation::Rotate270, 60.0, 40.0).unwrap();
+        assert!(same(dev(&s, b).geometry.upright_transform, own_b));
+        s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
+        s.execute("develop.copy", &json!({"groups": ["geometry"]})).unwrap();
+        for target in [b, c] {
+            if command == "develop.sync" {
+                s.selection = crate::Selection { ids: vec![a, target], active: Some(a) };
+            } else {
+                s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
+                s.execute("library.select", &json!({"ids": [target.0]})).unwrap();
+            }
+            s.execute(command, &json!({"groups": ["geometry"]})).unwrap();
+        }
+        let gb = dev(&s, b).geometry;
+        assert!(gb.upright == Upright::Auto && same(gb.upright_transform, own_b), "{command}: b keeps its own: {gb:?}");
+        let gc = dev(&s, c).geometry;
+        assert_eq!((gc.upright, gc.upright_transform), (Upright::Auto, None), "{command}: c solves its own");
+        let _ = std::fs::remove_dir_all(&src);
+    }
 }
 
 /// A crop paste carries the source's rotation: the target's own Upright correction turns with it.
@@ -829,4 +848,267 @@ fn synchronize_folder_reads_sidecars_in_the_photo_frame() {
     let warned = r["warnings"].as_array().into_iter().flatten().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "guided");
     assert!(warned, "{r}");
     let _ = std::fs::remove_dir_all(&src);
+}
+
+// ------------------------------------------------------------------ round three: presets, merge, stale frames
+
+/// The catalog keeps its format: nothing about the file's frame is written into it (a recorded
+/// frame would be dropped by an older build that reads format 7, and go stale when the file
+/// changes).
+#[test]
+fn catalogs_keep_their_format() {
+    let src = temp_dir("upright-catalog-format");
+    let mut s = Session::new().with_fs();
+    import_jpeg(&mut s, &src, "a", 8, Some(&lightroom(1)));
+    assert!(!s.catalog.to_snapshot().contains("file_orientation"));
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Sidecars are read in the frame the file has now: a file whose EXIF orientation changed (8 to 6)
+/// gets its crop and saved Upright in the new frame on Read Metadata from File and Synchronize
+/// Folder (a frame recorded at import used to stay, 19 px off, the crop on the wrong end).
+#[test]
+fn sidecars_are_read_in_the_files_current_frame() {
+    let crop = r#"crs:HasCrop="True" crs:CropLeft="0.206655" crs:CropTop="0" crs:CropRight="1" crs:CropBottom="1" crs:CropAngle="0""#;
+    let packet = |exposure: &str| lightroom(1).replace(r#"crs:Exposure2012="+0.30""#, &format!(r#"crs:Exposure2012="{exposure}" {crop}"#));
+    for via_sync in [false, true] {
+        let src = temp_dir(&format!("upright-current-frame-{via_sync}"));
+        let mut s = Session::new().with_fs();
+        let id = import_jpeg(&mut s, &src, "turned", 8, Some(&packet("+0.30")));
+        write_jpeg_seeded(&src.join("turned.jpg"), 60, 40, 6, b"turned".iter().fold(17u8, |a, b| a.wrapping_mul(31).wrapping_add(*b)));
+        let sidecar = src.join("turned.xmp");
+        std::fs::write(&sidecar, packet("+0.60")).unwrap();
+        if via_sync {
+            bump(&sidecar, 5);
+            let r = s.execute("folder.synchronize", &json!({"path": src.to_string_lossy(), "readMetadata": true, "importNew": false})).unwrap();
+            assert_eq!(r["read"], 1, "{r}");
+        } else {
+            s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+        }
+        let d = dev(&s, id);
+        assert_eq!(d.light.exposure, 0.6);
+        let r = [d.crop.geometry.rect.x0, d.crop.geometry.rect.y0, d.crop.geometry.rect.x1, d.crop.geometry.rect.y1];
+        assert_eq!(r.map(|v| (v * 1e6).round() / 1e6), [0.0, 0.206655, 1.0, 1.0], "sync: {via_sync}");
+        assert!(same(d.geometry.upright_transform, placed(1, Orientation::Rotate90, 60.0, 40.0)), "sync: {via_sync}: {:?}", d.geometry);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
+/// A preset keeps the Upright mode and the Transform sliders, never a saved correction: made from a
+/// photo turned right and applied after it is turned back, the photo keeps its own correction (the
+/// preset used to restore the quarter-turned one); a photo with another mode solves its own.
+#[test]
+fn presets_carry_the_upright_mode_not_a_correction() {
+    let src = temp_dir("upright-presets");
+    let mut s = Session::new().with_fs();
+    let id = import_jpeg(&mut s, &src, "a", 1, Some(&lightroom(1)));
+    let other = import_jpeg(&mut s, &src, "b", 1, None);
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    let pid = s.execute("preset.create", &json!({"name": "Upright", "groups": ["geometry"]})).unwrap()["id"].as_str().unwrap().to_string();
+    let preset = s.presets.iter().find(|p| p.id == pid).unwrap().clone();
+    assert!(preset.settings.pointer("/geometry/upright_transform").is_none_or(Value::is_null), "{}", preset.settings);
+    s.execute("photo.rotateLeft", &json!({})).unwrap();
+    s.execute("preset.apply", &json!({"id": pid})).unwrap();
+    assert!(same(dev(&s, id).geometry.upright_transform, placed(1, Orientation::Normal, 60.0, 40.0)), "{:?}", dev(&s, id).geometry);
+    s.execute("library.select", &json!({"ids": [other.0]})).unwrap();
+    s.execute("preset.apply", &json!({"id": pid})).unwrap();
+    assert_eq!((dev(&s, other).geometry.upright, dev(&s, other).geometry.upright_transform), (Upright::Auto, None));
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Settings JSON (develop.merge: MCP `set_develop`, the CLI) that only turns the photo turns the
+/// correction it keeps, as Rotate does; one that changes the mode drops it to be solved again; an
+/// explicit correction is taken as given. Undo restores each step.
+#[test]
+fn merging_settings_json_keeps_upright_in_the_photo_frame() {
+    let src = temp_dir("upright-merge");
+    let mut s = Session::new().with_fs();
+    let id = import_jpeg(&mut s, &src, "a", 1, Some(&lightroom(1)));
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let original = placed(1, Orientation::Normal, 60.0, 40.0);
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    s.execute("develop.merge", &json!({"settings": {"orientation": "Normal"}})).unwrap();
+    assert!(same(dev(&s, id).geometry.upright_transform, original), "{:?}", dev(&s, id).geometry);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(same(dev(&s, id).geometry.upright_transform, placed(1, Orientation::Rotate90, 60.0, 40.0)));
+    s.execute("edit.redo", &json!({})).unwrap();
+    let given = placed(2, Orientation::Rotate90, 60.0, 40.0);
+    s.execute("develop.merge", &json!({"settings": {"orientation": "Rotate90", "geometry": {"upright_transform": given}}})).unwrap();
+    assert!(same(dev(&s, id).geometry.upright_transform, given));
+    s.execute("develop.merge", &json!({"settings": {"geometry": {"upright": "vertical"}}})).unwrap();
+    assert_eq!((dev(&s, id).geometry.upright, dev(&s, id).geometry.upright_transform), (Upright::Vertical, None));
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// A sidecar whose only change is a crop the photo's file can't be read to place is still reported
+/// by Synchronize Folder (holding the crop used to hide the change, and with it the warning).
+#[test]
+fn a_crop_only_change_that_cant_be_placed_is_reported() {
+    let src = temp_dir("upright-held-crop");
+    let mut s = Session::new().with_fs();
+    let crop = |left: &str| crop_packet(&format!(r#"crs:CropLeft="{left}" crs:CropTop="0" crs:CropRight="1" crs:CropBottom="1" crs:CropAngle="0""#));
+    let id = import_jpeg(&mut s, &src, "gone", 8, Some(&crop("0.206655")));
+    let before = dev(&s, id);
+    std::fs::write(src.join("gone.jpg"), b"not a photo any more").unwrap();
+    let sidecar = src.join("gone.xmp");
+    std::fs::write(&sidecar, crop("0.3")).unwrap();
+    bump(&sidecar, 5);
+    let r = s.execute("folder.synchronize", &json!({"path": src.to_string_lossy(), "readMetadata": true, "importNew": false})).unwrap();
+    assert_eq!(dev(&s, id).crop, before.crop, "{r}");
+    let held = r["warnings"].as_array().into_iter().flatten().any(|w| w["code"] == "unmappedXmp" && w["fields"].to_string().contains("Crop"));
+    assert!(held, "{r}");
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+// ------------------------------------------------------------------ sweeps over every frame
+
+/// The correction `m` (a matrix on the stored 60 × 40 image) in the frame of a photo whose file is
+/// turned by `file` and then by the user's `user`, built from coordinate maps alone.
+fn oracle(file: Orientation, user: Orientation, m: [f64; 9]) -> Homography {
+    let (sw, sh) = if file.swaps_axes() { (40.0, 60.0) } else { (60.0, 40.0) };
+    let (ow, oh) = if user.swaps_axes() { (sh, sw) } else { (sw, sh) };
+    let l = f64::max(ow, oh) / 2.0;
+    let at = |x: f64, y: f64| {
+        let (u, v) = file.map(x * 60.0, y * 40.0, 60.0, 40.0);
+        let (u, v) = user.map(u, v, sw, sh);
+        Point::new((u - ow / 2.0) / l, (v - oh / 2.0) / l)
+    };
+    let (o, x, y) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0));
+    let c = Homography([x.x - o.x, y.x - o.x, o.x, x.y - o.y, y.y - o.y, o.y, 0.0, 0.0, 1.0]);
+    let h = c.mul(&Homography(m)).mul(&c.inverse().unwrap());
+    Homography(h.0.map(|v| v / h.0[8]))
+}
+
+const TURNS: [Orientation; 4] = [Orientation::Normal, Orientation::Rotate90, Orientation::Rotate180, Orientation::Rotate270];
+
+/// A photo of a 60 × 40 file (`path`) with EXIF `file`, shown turned `user`, with saved Auto
+/// correction `m` in its frame.
+fn sweep_photo(id: u64, path: &str, file: Orientation, user: Orientation, m: [f64; 9]) -> lightcraft_catalog::Photo {
+    let (w, h) = if file.swaps_axes() { (40, 60) } else { (60, 40) };
+    let mut p = lightcraft_catalog::Photo::new(
+        lightcraft_catalog::PhotoId(id),
+        lightcraft_catalog::Source::File { path: path.into() },
+        "a.jpg",
+        "JPEG",
+        w,
+        h,
+        "2026-01-01T00:00:00",
+    );
+    let mut d = DevelopSettings { orientation: user, ..Default::default() };
+    d.geometry.upright = Upright::Auto;
+    d.geometry.upright_transform = Some(oracle(file, user, m));
+    p.develop = std::sync::Arc::new(d);
+    p
+}
+
+fn sweep_transfer(s: &mut Session, command: &str, groups: &[&str]) {
+    let (a, b) = (lightcraft_catalog::PhotoId(1), lightcraft_catalog::PhotoId(2));
+    s.selection = crate::Selection::single(a);
+    s.execute("develop.copy", &json!({"groups": groups})).unwrap();
+    if command == "develop.sync" {
+        s.selection = crate::Selection { ids: vec![a, b], active: Some(a) };
+    } else {
+        s.previous_active = Some(a);
+        s.selection = crate::Selection::single(b);
+    }
+    s.execute(command, &json!({"groups": groups})).unwrap();
+}
+
+/// Paste, Sync and Paste from Previous, every source and target EXIF orientation and user turn and
+/// the Geometry, Crop and both groups: between different files (9,216 cases) each target keeps its
+/// own correction, in the frame it ends up in; between a photo and its virtual copy (1,152 cases)
+/// the correction moves into the copy's frame. Undo restores every paste exactly.
+#[test]
+fn transfers_in_every_frame_and_group() {
+    let (mine, theirs) = (matrix(SLOTS[1]), matrix(SLOTS[2]));
+    let mut cases = 0;
+    for command in ["develop.paste", "develop.sync", "develop.pastePrevious"] {
+        for groups in [&["geometry"][..], &["crop"][..], &["geometry", "crop"][..]] {
+            for fa in ORIENTATIONS {
+                for fb in ORIENTATIONS {
+                    for ua in TURNS {
+                        for ub in TURNS {
+                            let a = sweep_photo(1, "/sweep/a.jpg", fa, ua, mine);
+                            let b = sweep_photo(2, "/sweep/b.jpg", fb, ub, theirs);
+                            let mut s = Session::new();
+                            s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(a) }).unwrap();
+                            s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(b) }).unwrap();
+                            let before = dev(&s, lightcraft_catalog::PhotoId(2));
+                            sweep_transfer(&mut s, command, groups);
+                            let got = dev(&s, lightcraft_catalog::PhotoId(2));
+                            let user = if groups.contains(&"crop") { ua } else { ub };
+                            assert_eq!(got.orientation, user);
+                            assert!(
+                                same(got.geometry.upright_transform, oracle(fb, user, theirs)),
+                                "{command} {groups:?} {fa:?}/{ua:?} -> {fb:?}/{ub:?}"
+                            );
+                            if command == "develop.paste" {
+                                s.execute("edit.undo", &json!({})).unwrap();
+                                assert_eq!(dev(&s, lightcraft_catalog::PhotoId(2)), before);
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+                // the same file: a virtual copy of photo 1
+                for ua in TURNS {
+                    for ub in TURNS {
+                        let a = sweep_photo(1, "/sweep/a.jpg", fa, ua, mine);
+                        let mut b = sweep_photo(2, "/sweep/a.jpg", fa, ub, mine);
+                        b.copy_of = Some(lightcraft_catalog::PhotoId(1));
+                        let mut s = Session::new();
+                        s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(a) }).unwrap();
+                        s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(b) }).unwrap();
+                        sweep_transfer(&mut s, command, groups);
+                        let got = dev(&s, lightcraft_catalog::PhotoId(2));
+                        let user = if groups.contains(&"crop") { ua } else { ub };
+                        assert!(
+                            same(got.geometry.upright_transform, oracle(fa, user, mine)),
+                            "same file {command} {groups:?} {fa:?} {ua:?} -> {ub:?}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 9216 + 1152);
+}
+
+/// Auto Sync of an edited correction (develop.merge on the active photo) for every source and
+/// target EXIF orientation and user turn (1,024 cases): a virtual copy of the same file gets it in
+/// its own frame, another file keeps its own.
+#[test]
+fn auto_sync_in_every_frame() {
+    let (mine, theirs, edited) = (matrix(SLOTS[1]), matrix(SLOTS[2]), matrix(SLOTS[4]));
+    let mut cases = 0;
+    for fa in ORIENTATIONS {
+        for fb in ORIENTATIONS {
+            for ua in TURNS {
+                for ub in TURNS {
+                    let same_file = fa == fb && cases % 2 == 0;
+                    let a = sweep_photo(1, "/sweep/a.jpg", fa, ua, mine);
+                    let mut b = if same_file { sweep_photo(2, "/sweep/a.jpg", fb, ub, mine) } else { sweep_photo(2, "/sweep/b.jpg", fb, ub, theirs) };
+                    if same_file {
+                        b.copy_of = Some(lightcraft_catalog::PhotoId(1));
+                    }
+                    let mut s = Session::new();
+                    s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(a) }).unwrap();
+                    s.catalog.apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(b) }).unwrap();
+                    s.selection = crate::Selection {
+                        ids: vec![lightcraft_catalog::PhotoId(1), lightcraft_catalog::PhotoId(2)],
+                        active: Some(lightcraft_catalog::PhotoId(1)),
+                    };
+                    s.auto_sync = true;
+                    s.execute("develop.merge", &json!({"settings": {"geometry": {"upright_transform": oracle(fa, ua, edited)}}})).unwrap();
+                    let got = dev(&s, lightcraft_catalog::PhotoId(2)).geometry.upright_transform;
+                    let want = if same_file { oracle(fb, ub, edited) } else { oracle(fb, ub, theirs) };
+                    assert!(same(got, want), "same file {same_file}: {fa:?}/{ua:?} -> {fb:?}/{ub:?}");
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 1024);
 }

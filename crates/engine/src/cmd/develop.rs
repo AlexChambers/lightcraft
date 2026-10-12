@@ -249,7 +249,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let partial = p.get("settings").cloned().ok_or_else(|| bad("develop.merge", "missing settings"))?;
             let label = str_param(p, "label").unwrap_or("Edit").to_string();
             edit(s, "develop.merge", &label, |d| {
+                let before = d.clone();
                 *d = d.merged(&partial).map_err(|e| bad("develop.merge", e.to_string()))?;
+                // a turn turns the Upright correction the photo keeps, as Rotate does; a new mode
+                // drops it; a correction stated in the JSON is taken as given
+                if partial.pointer("/geometry/upright_transform").is_none() {
+                    crate::upright_transfer::settle_edit(&before, d);
+                }
                 Ok(())
             })
         }),
@@ -795,7 +801,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let d = s.develop_of(id).unwrap_or_default();
                 s.clipboard = Some(lightcraft_develop::extract_groups(&d, &s.copy_groups));
-                s.clipboard_frame = s.catalog.photo(id).and_then(|p| crate::upright_frames::frame_of(p, &d));
+                s.clipboard_source = s.catalog.photo(id).map(|p| crate::upright_transfer::source_of(p, &d));
                 Ok(json!({"groups": s.copy_groups}))
             }
         ),
@@ -813,11 +819,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let groups = groups_param(p, c)?.unwrap_or_else(|| s.copy_groups.clone());
                 let partial = lightcraft_develop::extract_groups(&s.develop_of(prev).unwrap_or_default(), &groups);
                 let ids: Vec<PhotoId> = s.targets(p)?.into_iter().filter(|id| *id != prev).collect();
-                let source = s.catalog.photo(prev).and_then(|ph| crate::upright_frames::frame_of(ph, &ph.develop));
+                let source = s.catalog.photo(prev).map(|ph| crate::upright_transfer::source_of(ph, &ph.develop));
                 let ops = ids
                     .iter()
                     .filter_map(|id| {
-                        s.catalog.photo(*id).map(|ph| (*id, crate::upright_frames::transferred(ph, &ph.develop, &partial, source.as_ref())))
+                        s.catalog.photo(*id).map(|ph| (*id, crate::upright_transfer::transferred(ph, &ph.develop, &partial, source.as_ref())))
                     })
                     .filter_map(|(id, d)| s.develop_op(id, d, "Paste from Previous"))
                     .collect::<Vec<_>>();
@@ -843,11 +849,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     clip = lightcraft_develop::extract_groups(&full, &only);
                 }
                 let ids = s.targets(p)?;
-                let source = s.clipboard_frame;
+                let source = s.clipboard_source.clone();
                 let ops = ids
                     .iter()
                     .filter_map(|id| {
-                        s.catalog.photo(*id).map(|ph| (*id, crate::upright_frames::transferred(ph, &ph.develop, &clip, source.as_ref())))
+                        s.catalog.photo(*id).map(|ph| (*id, crate::upright_transfer::transferred(ph, &ph.develop, &clip, source.as_ref())))
                     })
                     .filter_map(|(id, d)| s.develop_op(id, d, "Paste Settings"))
                     .collect::<Vec<_>>();
@@ -869,14 +875,16 @@ pub fn specs() -> Vec<CommandSpec> {
                 let groups = groups_param(p, c)?.unwrap_or_else(SettingsGroup::default_copy);
                 let d = s.develop_of(id).unwrap_or_default();
                 let partial = lightcraft_develop::extract_groups(&d, &groups);
-                let source = s.catalog.photo(id).and_then(|ph| crate::upright_frames::frame_of(ph, &d));
+                let source = s.catalog.photo(id).map(|ph| crate::upright_transfer::source_of(ph, &d));
                 let ops = s
                     .selection
                     .ids
                     .clone()
                     .into_iter()
                     .filter(|x| *x != id)
-                    .filter_map(|x| s.catalog.photo(x).map(|ph| (x, crate::upright_frames::transferred(ph, &ph.develop, &partial, source.as_ref()))))
+                    .filter_map(|x| {
+                        s.catalog.photo(x).map(|ph| (x, crate::upright_transfer::transferred(ph, &ph.develop, &partial, source.as_ref())))
+                    })
                     .filter_map(|(x, dd)| s.develop_op(x, dd, "Sync Settings"))
                     .collect::<Vec<_>>();
                 let n = ops.len();
@@ -992,10 +1000,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 .iter()
                 .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
                 .filter_map(|(id, d)| {
-                    // a preset that turns the photo turns the Upright correction it keeps
+                    // a preset carries no Upright correction: the photo keeps its own, turned with
+                    // it, or solves its own for another mode
                     let mut after = preset.apply(&d, amount);
                     if let Some(ph) = s.catalog.photo(id) {
-                        crate::upright_frames::settle(ph, &d, &mut after, &preset.settings, None);
+                        crate::upright_transfer::settle(ph, &d, &mut after, &preset.settings, None);
                     }
                     s.develop_op(id, after, &format!("Preset: {}", preset.name))
                 })
@@ -1011,7 +1020,10 @@ pub fn specs() -> Vec<CommandSpec> {
             let groups = groups_param(p, c)?.unwrap_or_else(SettingsGroup::default_copy);
             let d = s.develop_of(id).unwrap_or_default();
             let pid = format!("user.{}.{}", s.presets.len(), name.to_lowercase().replace(' ', "-"));
-            s.presets.push(Preset::from_settings(&pid, name, group, &d, &groups));
+            let mut preset = Preset::from_settings(&pid, name, group, &d, &groups);
+            // an Upright correction is this photo's own analysis: a preset keeps the mode
+            preset.settings = crate::upright_transfer::without_correction(preset.settings);
+            s.presets.push(preset);
             Ok(json!({"id": pid}))
         }),
         cmd!("preset.delete", "Delete Preset", [], None, "{id}", always, |s, p| {
@@ -1054,14 +1066,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 let current = s.develop_of(id).unwrap_or_default().to_json();
                 let groups = groups_param(p, c)?;
                 let pr = user_preset(s, p, c)?;
-                pr.settings = match groups {
+                pr.settings = crate::upright_transfer::without_correction(match groups {
                     Some(g) => lightcraft_develop::extract_groups(&serde_json::from_value(current).unwrap_or_default(), &g),
                     // the same keys as before, with the current values
                     None => {
                         let keys: Vec<String> = pr.settings.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
                         Value::Object(keys.into_iter().filter_map(|k| current.get(&k).cloned().map(|v| (k, v))).collect())
                     }
-                };
+                });
                 ok()
             }
         ),

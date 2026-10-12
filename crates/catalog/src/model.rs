@@ -308,13 +308,6 @@ pub struct Photo {
     /// whether the user changed anything since (see [`crate::local`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_baseline: Option<u64>,
-    /// How the file's stored image is turned to be shown (its EXIF orientation, as the decoder
-    /// applies it; `width × height` is the turned size), recorded on import. Lightroom's crop
-    /// edges and saved Upright refer to the stored image, and Upright corrections move between
-    /// photos through it. `None` for photos imported before it was recorded: they are taken as
-    /// stored the way they are shown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_orientation: Option<lightcraft_geom::Orientation>,
 }
 
 /// What assisted culling measured on a photo.
@@ -401,7 +394,6 @@ impl Photo {
             preview_only: None,
             preview_checked: String::new(),
             local_baseline: None,
-            file_orientation: None,
         }
     }
     /// Sets [`Photo::preview_only`] as this build decided it, with its stamp.

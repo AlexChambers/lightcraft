@@ -677,13 +677,6 @@ pub fn upright_in_frame(saved: &SavedUpright, orientation: Orientation, stored_w
     normalized(a.inverse()?.mul(&Homography(saved.matrix)).mul(&a))
 }
 
-/// The inverse of [`upright_in_frame`]: a correction in LightCraft's frame, as a matrix on the
-/// stored image (Lightroom's convention), so it can be put in another photo's frame.
-pub fn upright_on_stored(h: &Homography, orientation: Orientation, stored_w: f64, stored_h: f64) -> Option<[f64; 9]> {
-    let a = centred_to_stored(orientation, stored_w, stored_h)?;
-    normalized(a.mul(h).mul(&a.inverse()?)).map(|n| n.0)
-}
-
 /// Centred coordinates of the oriented image → normalized coordinates of the stored image.
 fn centred_to_stored(orientation: Orientation, stored_w: f64, stored_h: f64) -> Option<Homography> {
     if !(stored_w.is_finite() && stored_h.is_finite() && stored_w > 0.0 && stored_h > 0.0) {

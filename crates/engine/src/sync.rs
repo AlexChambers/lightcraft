@@ -589,8 +589,11 @@ fn sidecar_has_news(labels: &Catalog, p: &Photo, naming: SidecarNaming, listing:
     }
     let Ok(text) = std::fs::read_to_string(&file) else { return false };
     let Ok(mut sc) = crate::sidecar::parse_sidecar(&text, crate::crs::Target::for_photo(p)) else { return false };
-    // compared in the photo's frame, as it would be read
-    framed(&mut sc, crate::sidecar::recorded_frame(p), path);
+    // compared in the photo's frame, as it would be read; a crop that can't be placed is still news,
+    // so the synchronize that reads it says why it was left
+    if framed(&mut sc, path) {
+        return true;
+    }
     let sc = sc.resolve_label(labels);
     let mut q = p.clone();
     crate::sidecar::merge_into(&mut q, &sc, "");
@@ -627,8 +630,8 @@ pub struct SyncWork {
     moved: Vec<FolderMoved>,
     missing: Vec<FolderPhoto>,
     /// (photo, its file, how its sidecar is named)
-    /// (photo, its file, sidecar naming, white balance target, its stored frame when recorded)
-    sidecars: Vec<(PhotoId, String, SidecarNaming, crate::crs::Target, Option<crate::sidecar::StoredFrame>)>,
+    /// (photo, its file, sidecar naming, white balance target)
+    sidecars: Vec<(PhotoId, String, SidecarNaming, crate::crs::Target)>,
 }
 
 /// The catalog half of a synchronize (see [`SyncJob`]).
@@ -682,7 +685,7 @@ impl SyncJob {
                 .zip(namings)
                 .filter_map(|(m, naming)| {
                     let p = s.catalog.photo(PhotoId(m.id))?;
-                    Some((p.id, m.path, naming, crate::crs::Target::for_photo(p), crate::sidecar::recorded_frame(p)))
+                    Some((p.id, m.path, naming, crate::crs::Target::for_photo(p)))
                 })
                 .collect()
         } else {
@@ -754,11 +757,11 @@ impl SyncWork {
             return;
         }
         let mut read = Vec::with_capacity(sidecars.len());
-        for (id, path, naming, target, frame) in sidecars {
+        for (id, path, naming, target) in sidecars {
             if cancel.load(Relaxed) {
                 break;
             }
-            read.push((id, path.clone(), read_sidecar(&path, naming, target, frame)));
+            read.push((id, path.clone(), read_sidecar(&path, naming, target)));
             step(1);
         }
         if !read.is_empty() {
@@ -767,14 +770,9 @@ impl SyncWork {
     }
 }
 
-/// Read and parse photo file `path`'s XMP sidecar file, its crop and saved Upright in the photo's
-/// stored frame (`frame`, else read from the file), as import reads them.
-fn read_sidecar(
-    path: &str,
-    naming: SidecarNaming,
-    target: crate::crs::Target,
-    frame: Option<crate::sidecar::StoredFrame>,
-) -> std::result::Result<crate::sidecar::SidecarData, String> {
+/// Read and parse photo file `path`'s XMP sidecar file, its crop and saved Upright in the frame the
+/// file has now, as import reads them.
+fn read_sidecar(path: &str, naming: SidecarNaming, target: crate::crs::Target) -> std::result::Result<crate::sidecar::SidecarData, String> {
     let file = crate::sidecar::find_sidecar(path, naming).ok_or_else(|| "no XMP sidecar".to_string())?;
     let len = std::fs::metadata(&file).map_err(|e| format!("{}: {e}", file.display()))?.len();
     if len > MAX_SIDECAR_BYTES {
@@ -782,18 +780,19 @@ fn read_sidecar(
     }
     let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let mut sc = crate::sidecar::parse_sidecar(&text, target).map_err(|e| format!("{}: {e}", file.display()))?;
-    framed(&mut sc, frame, path);
+    framed(&mut sc, path);
     Ok(sc)
 }
 
-/// Give a parsed sidecar of the photo whose file is `path` its stored frame: `frame` when the
-/// catalog recorded it, else read from the file (only when the packet's crop or saved Upright
-/// needs it). Without one, the photo's crop is left as it is and the report says so.
-fn framed(sc: &mut crate::sidecar::SidecarData, frame: Option<crate::sidecar::StoredFrame>, path: &str) {
-    if sc.needs_frame() {
-        sc.set_frame(frame.or_else(|| crate::sidecar::probe_frame(path)));
-        sc.hold_unframed_crop();
+/// Give a parsed sidecar of the photo whose file is `path` the frame the file has now (read only
+/// when the packet's crop or saved Upright needs it). Without one, the photo's crop is left as it
+/// is and the report says so; returns whether a crop was held that way.
+fn framed(sc: &mut crate::sidecar::SidecarData, path: &str) -> bool {
+    if !sc.needs_frame() {
+        return false;
     }
+    sc.set_frame(crate::sidecar::probe_frame(path));
+    sc.hold_unframed_crop()
 }
 
 impl SyncCommit {
