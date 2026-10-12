@@ -215,6 +215,10 @@ impl<P> AlphaCache<P> {
         self.slots = slots;
     }
 
+    pub(crate) fn mattes(&self) -> Option<&Arc<Mattes>> {
+        self.mattes.as_ref()
+    }
+
     /// The alphas held.
     pub fn planes(&self) -> impl Iterator<Item = &Arc<P>> {
         self.slots.iter().map(|(_, p)| p)
@@ -928,7 +932,8 @@ fn refinement_mean_key(m: &Mask, keys: AlphaKeys, ev: f32) -> u64 {
 
 /// Independent channels share a blur traversal. Every channel retains the
 /// scalar filter's pass order, band origins and arithmetic. This makes the
-/// horizontal recurrence vectorizable without changing V1/V2 pixels.
+/// horizontal recurrence vectorizable without changing V1/V2 pixels. Finite
+/// values (including signed zero) retain their bits; NaN payloads may differ.
 #[allow(clippy::too_many_arguments)]
 fn guided_cross_cached(guide: &Plane, p: &Plane, sigma: f32, eps: f32, cache: &mut RefinementCache, guide_key: u64, mean_key: Option<u64>) -> Plane {
     use lightcraft_raster::blur::gaussian_owned;

@@ -144,6 +144,22 @@ An oversized request returns an actionable error through `pipeline::render`,
 smaller statistic or truncates filter support. These APIs now return `Result`.
 Full renders (`window=None`) keep their existing operators and pixels.
 
+The wasm32 CPU path and web worker also check a conservative 3 GiB render
+budget before allocating work images. The estimate includes the source and its
+sampling copies, old stage entries and their sources, work images, mask alphas
+and means, peak grouped-refinement scratch, and any separate full Dehaze pass.
+It applies when the work rectangle equals the full frame and when `window=None`.
+The worker counts all views, releases reusable caches on pressure, then checks
+again. Rejected jobs return an error and a smaller job can run in the same
+worker. The remaining 1 GiB of the wasm32 address space is reserved for runtime
+state, encoded input and allocation overhead. This estimate can reject a render
+that might fit; native limits are unchanged. It does not budget source decoding
+or guarantee that a browser will supply the full address space.
+
+Detail keeps the preview when Region or RegionBefore fails and shows a small
+status message suggesting a lower zoom. The message disappears at Fit or when
+the failed render is replaced successfully.
+
 Native `Session::region_job_of` first calls `render_job` with the full frame's
 size and then adds the window. Source selection therefore matches the equivalent
 full render, including a smaller preview source and crop-driven source selection.
@@ -175,7 +191,9 @@ The imported dependency classifier conservatively treats supplied mattes like
 heuristics. A supplied Sky matte can therefore be rebuilt unnecessarily after
 Exposure changes. This does not affect the three-mask probe, which has no mattes.
 Refine Edges blurs independent channels together, preserving each channel's
-scalar arithmetic, pass order and band origins. It reuses the guide's means
+scalar pass order and band origins. Tests compare finite values and signed
+zero by their bits, and require matching finite, infinite and NaN classes. NaN
+payloads may differ. It reuses the guide's means
 when the image and radius are unchanged, and a geometric mask's blurred mean
 across WB/NR edits. Refinement intermediates have a 512 MiB limit per stage
 entry, at most two entries per view. They are counted, invalidated by their

@@ -1359,3 +1359,52 @@ mod color_image_tests {
         assert!(color_image(&img).pixels.is_empty());
     }
 }
+
+#[cfg(test)]
+mod region_failure_regression {
+    use super::*;
+    use crate::{LightcraftApp, Services, headless::Headless};
+    use std::time::Duration;
+
+    #[test]
+    fn region_failures_show_status_and_keep_the_preview() {
+        let app = LightcraftApp::new(Session::with_demo(), Services::default());
+        let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+        assert_eq!(h.request("ui.set", serde_json::json!({"view":"detail", "right":"none", "filmstrip":false}), Duration::from_secs(20))["ok"], true);
+        h.settle(Duration::from_secs(120));
+        h.app.ui.zoom = crate::state::Zoom::Percent(200.0);
+        h.app.ui.before_after = crate::state::BeforeAfter::SideBySide;
+        h.settle(Duration::from_secs(120));
+        let message = "Zoom detail is unavailable. Try a lower zoom.";
+        for locale in crate::i18n::Locale::ALL.iter().skip(1) {
+            assert_ne!(locale.tr(message), message, "translation for {locale:?}");
+        }
+        for slot in [Slot::Region, Slot::RegionBefore] {
+            h.app.renderer.textures.remove(&slot);
+            h.app.region_tiles.clear();
+            h.app.renderer.failed.insert(slot, (0, "exact-render memory budget".into(), h.app.renderer.catalog_rev));
+            h.step();
+            assert!(h.painted_text().iter().any(|t| t == message), "{slot:?}: missing region status");
+            if let Some(dir) = std::env::var_os("REGION_FAILURE_SCREENSHOT_DIR") {
+                let pixels = h.paint();
+                let image = lightcraft_raster::Rgba8 {
+                    width: pixels.size[0],
+                    height: pixels.size[1],
+                    data: pixels.pixels.iter().map(|c| c.to_array()).collect(),
+                };
+                let png =
+                    lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&image), &lightcraft_codecs::EncodeMeta::default()).unwrap();
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(std::path::Path::new(&dir).join(format!("{slot:?}.png")), png).unwrap();
+            }
+            assert!(h.app.loupe_shown.is_some_and(|(_, shown)| shown == "render"), "the preview stays visible");
+            h.app.ui.zoom = crate::state::Zoom::Fit;
+            h.step();
+            assert!(!h.painted_text().iter().any(|t| t == message), "Fit hides stale region errors");
+            h.app.ui.zoom = crate::state::Zoom::Percent(200.0);
+            h.app.renderer.failed.remove(&slot);
+            h.step();
+            assert!(!h.painted_text().iter().any(|t| t == message), "status clears on success");
+        }
+    }
+}
