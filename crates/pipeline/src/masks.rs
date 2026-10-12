@@ -125,6 +125,27 @@ impl Mattes {
         }
     }
 
+    /// Peak orientation and float conversion storage in matte_alpha. Mattes
+    /// are sampled one at a time; a small output can still read a large matte.
+    pub(crate) fn sampling_bytes(&self, mask: &Mask, frame: &Frame, w: usize) -> u64 {
+        mask.components
+            .iter()
+            .flat_map(|component| {
+                let shape = if matches!(component.shape, MaskShape::Background) { &MaskShape::Subject } else { &component.shape };
+                self.for_shape(shape)
+            })
+            .map(|matte| {
+                let (mw, mh) = if frame.orient.swaps_axes() { (matte.height, matte.width) } else { (matte.width, matte.height) };
+                let k = mw as f64 / frame.ow * frame.ow.max(frame.oh) / frame.px_per_long(w).max(1e-9);
+                let f = if k >= 2.0 { (k.floor() as usize).min(64) } else { 1 };
+                let converted = (mw.div_ceil(f) as u64).saturating_mul(mh.div_ceil(f) as u64).saturating_mul(4);
+                let oriented = if frame.orient == Orientation::Normal { 0 } else { (mw as u64).saturating_mul(mh as u64) };
+                converted.saturating_add(oriented)
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Whether evaluation uses a supplied matte instead of a spatial heuristic.
     pub(crate) fn uses_matte(&self, shape: &MaskShape) -> bool {
         // Background evaluates Subject and then inverts its alpha.

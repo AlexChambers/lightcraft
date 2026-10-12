@@ -194,23 +194,30 @@ impl WorkerCore {
         };
         let info = src.info_or(job.info());
         let request = job.request();
-        let check = |retained| lightcraft_engine::pipeline::budget::check_wasm_render(&src.image, &info, &job.settings, &request, retained);
-        // Stage entries can keep old sources alive after the source LRU evicts
-        // them. Count every view, not only this job's cache. On pressure, release
-        // reusable data and retry admission before allocating any work images.
-        let retained = self.stages.values().fold(self.sources.cost() as u64, |n, c| n.saturating_add(c.retained_bytes() as u64));
-        if check(retained).is_err() {
+        use lightcraft_engine::pipeline::budget;
+        // Count allocation identity across the active source, source LRU and
+        // every view. Stage entries can outlive their source's LRU entry.
+        let retained_bytes = |core: &Self| {
+            let mut live = budget::LiveImages::default();
+            live.source(&src.image, &info);
+            let active = live.bytes();
+            for source in core.sources.values() {
+                live.source(&source.image, &source.info_or(SourceInfo::default()));
+            }
+            for cache in core.stages.values() {
+                cache.count_retained_images(&mut live);
+            }
+            live.bytes().saturating_sub(active)
+        };
+        let mut retained = retained_bytes(self);
+        let exact = budget::estimate_wasm_render(&src.image, &info, &job.settings, &request, job.stages.is_some());
+        if exact.saturating_add(retained) > budget::WASM_RENDER_BYTES {
             self.stages.clear();
             self.sources.retain(|cached| *cached == key);
-            check(self.sources.cost() as u64)?;
+            retained = retained_bytes(self);
         }
-        let mut rendered = match &job.stages {
-            Some(view) => {
-                let st = self.stages.entry(view.clone()).or_default().clone();
-                lightcraft_engine::pipeline::render_cached(&src.image, &info, &job.settings, &job.request(), &st)
-            }
-            None => lightcraft_engine::pipeline::render(&src.image, &info, &job.settings, &job.request()),
-        }?;
+        let stages = job.stages.as_ref().map(|view| self.stages.entry(view.clone()).or_default().clone());
+        let mut rendered = lightcraft_engine::pipeline::render_web(&src.image, &info, &job.settings, &request, stages.as_deref(), retained)?;
         // an HDR edit's histogram shows its HDR range (as on native)
         if let Some(h) = lightcraft_engine::pipeline::hdr_histogram(&src.image, &info, &job.settings, &job.request()) {
             rendered.histogram = h;
@@ -437,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_dehaze_jobs_report_errors_and_allow_a_smaller_retry() {
+    fn oversized_exact_dehaze_uses_web_fallback_and_native_still_rejects() {
         use lightcraft_engine::pipeline::PixelWindow;
         let mut session = Session::with_demo();
         let id = session.visible_cloned()[0];
@@ -450,8 +457,8 @@ mod tests {
         wire.max_edge = 600;
         let mut wire: WireJob = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
         let mut core = WorkerCore::default();
-        let error = core.render(&wire, None).err().expect("worker memory-budget error");
-        assert!(error.contains("memory budget"), "{error}");
+        let rendered = core.render(&wire, None).unwrap();
+        assert_eq!((rendered.image.width, rendered.image.height), (400, 300));
         let error = job.clone().run().rendered.err().expect("native memory-budget error");
         assert!(error.contains("memory budget"), "{error}");
         wire.max_w = 600;
@@ -500,7 +507,7 @@ mod tests {
         core.sources.insert(wire.source_key(), DecodedSource::new(src.clone(), None), 600 * 400 * 12);
         let plan = pipeline::plan(&src, &wire.info(), &wire.settings, &wire.request());
         assert_eq!((plan.w, plan.h), (9504, 6336), "filter support reaches the entire frame");
-        for window in [wire.window, Some([0, 0, 9504, 6336]), None] {
+        for window in [Some([0, 0, 9504, 6336]), None] {
             wire.window = window;
             let error = core.render(&wire, None).err().expect("wasm32 memory-budget error");
             assert!(error.contains("memory budget"), "{error}");
@@ -513,6 +520,31 @@ mod tests {
         let expected = pipeline::render(&src, &wire.info(), &wire.settings, &wire.request()).unwrap();
         assert_eq!((rendered.image.width, rendered.image.height), (121, 83));
         assert_eq!(rendered.image, expected.image);
+    }
+
+    #[test]
+    #[ignore = "large decoded-source regression; run serially with --ignored"]
+    fn default_large_sources_render_in_the_worker() {
+        for (w, h, window, fit) in [(6000, 4000, false, false), (9504, 6336, false, false), (9504, 6336, false, true), (9504, 6336, true, false)] {
+            let mut session = Session::with_demo();
+            let id = session.visible_cloned()[0];
+            let job = session.render_job(id, 1600, 1067, false, true).unwrap();
+            let mut wire = WireJob::from_job(&job, false, "Region");
+            wire.settings = Arc::new(DevelopSettings::default());
+            wire.max_edge = w;
+            wire.max_w = if fit { 1600 } else { w };
+            wire.max_h = if fit { 1067 } else { h };
+            wire.stages = Some("Region".into());
+            wire.window = window.then_some([w / 3, h / 3, 121, 83]);
+            let wire: WireJob = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+            let source = DecodedSource::new(Arc::new(lightcraft_raster::Rgb32f::new(w, h)), None);
+            let cost = source.bytes();
+            let mut core = WorkerCore::default();
+            core.sources.insert(wire.source_key(), source, cost);
+            let result = core.render(&wire, None).unwrap();
+            let expected = if window { (121, 83) } else { (wire.max_w, wire.max_h) };
+            assert_eq!((result.image.width, result.image.height), expected);
+        }
     }
 
     // a job from before windows existed has none
