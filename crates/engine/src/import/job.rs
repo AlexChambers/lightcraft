@@ -337,7 +337,10 @@ impl ImportJob {
                 .or_else(|| info.xmp.clone().filter(|_| raw));
             let target = crate::crs::Target::for_file(info.kind, &info.format, info.preview_only.is_some(), &info.meta.camera);
             let sidecar = packet.and_then(|x| match crate::sidecar::parse_sidecar(&x, target) {
-                Ok(sc) => Some(sc),
+                Ok(mut sc) => {
+                    sc.set_frame(info.stored_frame());
+                    Some(sc)
+                }
                 Err(e) => {
                     log::warn!("import {path}: XMP: {e}");
                     None

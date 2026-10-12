@@ -1,5 +1,5 @@
 use super::*;
-use lightcraft_geom::CropGeometry;
+use lightcraft_geom::{Affine, CropGeometry, Point, Rect};
 fn row(v: Value) -> Row {
     serde_json::from_value(v).unwrap()
 }
@@ -357,6 +357,69 @@ fn imported_crops_use_the_catalog_orientation() {
     let g = s.catalog.photos().next().unwrap().develop.crop.geometry;
     let r = [g.rect.x0, g.rect.y0, g.rect.x1, g.rect.y1].map(|v| (v * 1e9).round() / 1e9);
     assert_eq!(r, [0.1, 0.1, 0.8, 0.6]);
+}
+
+/// Lightroom's saved Upright isn't read from catalogs until a real catalog verifies how it is
+/// stored there (issue #205): whatever form the fields take, the mode is solved again (no
+/// transform is kept) and the report names what was lost. Upright Off loses nothing.
+#[test]
+fn catalog_upright_falls_back_to_solving_and_is_reported() {
+    let auto = "1.010477639,-0.008540717,-0.006124940,0.014938050,1.011645918,-0.015359712,-0.007190889,-0.003396748,1.000000000";
+    for settings in [
+        format!(r#"s = {{ PerspectiveUpright = 1, UprightVersion = 151388160, UprightTransformCount = 6, UprightTransform_1 = "{auto}" }}"#),
+        "s = { PerspectiveUpright = 3, UprightVersion = 151388160, UprightTransform_3 = { 1, 0, 0, 0, 1, 0, 0, 0, 1 } }".to_string(),
+        r#"s = { PerspectiveUpright = 5, UprightFourSegmentsCount = 2, UprightFourSegments_0 = "0.2, 0.1, 0.25, 0.9" }"#.to_string(),
+    ] {
+        for o in [Orientation::Normal, Orientation::Rotate90] {
+            let (partial, unknown) = mapped_settings(&settings, crate::crs::Target::RawAbsolute, 1.5, o, 1.5).unwrap();
+            assert!(partial["geometry"]["upright_transform"].is_null(), "{settings}: {partial}");
+            assert_eq!(unknown.iter().filter(|u| u.starts_with("Upright")).count(), 1, "{settings}: {unknown:?}");
+        }
+    }
+    let off = format!(r#"s = {{ PerspectiveUpright = 0, UprightVersion = 151388160, UprightTransform_1 = "{auto}" }}"#);
+    let (_, unknown) = mapped_settings(&off, crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
+    assert!(unknown.iter().all(|u| !u.starts_with("Upright")), "{unknown:?}");
+}
+
+/// The catalog's XMP column reports what it can't carry over too: Guided guides there used
+/// to import as Guided without guides and no word; a saved Upright in both the XMP and the
+/// develop settings is reported once.
+#[test]
+fn catalog_xmp_upright_and_guides_are_reported() {
+    let xmp = |fields: &str| {
+        format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+0.30" {fields}/></rdf:RDF></x:xmpmeta>"#
+        )
+    };
+    let guides = xmp(
+        r#"crs:PerspectiveUpright="5" crs:UprightFourSegmentsCount="2" crs:UprightFourSegments_0="0.2, 0.1, 0.25, 0.9" crs:UprightFourSegments_1="0.8, 0.1, 0.75, 0.9""#,
+    );
+    let auto = "1.010477639,-0.008540717,-0.006124940,0.014938050,1.011645918,-0.015359712,-0.007190889,-0.003396748,1.000000000";
+    let matrix =
+        xmp(&format!(r#"crs:PerspectiveUpright="1" crs:UprightVersion="151388160" crs:UprightTransformCount="6" crs:UprightTransform_1="{auto}""#));
+    let lua = format!(r#"s = {{ PerspectiveUpright = 1, UprightVersion = 151388160, UprightTransformCount = 6, UprightTransform_1 = "{auto}" }}"#);
+    for (packet, settings, mode) in [(guides, String::new(), lightcraft_develop::Upright::Guided), (matrix, lua, lightcraft_develop::Upright::Auto)] {
+        let mut data = sample();
+        data.photos.truncate(1);
+        data.photos[0].image.remove("masterImage");
+        data.photos[0].xmp = packet;
+        data.photos[0].settings = settings;
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, data, false).unwrap();
+        let p = s.catalog.photos().next().unwrap();
+        assert_eq!((p.develop.geometry.upright, p.develop.geometry.upright_transform), (mode, None));
+        let notes: Vec<String> = r["unmapped"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.values())
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .filter(|v| v.starts_with("Upright"))
+            .map(String::from)
+            .collect();
+        assert_eq!(notes.len(), 1, "{mode:?}: {r}");
+    }
 }
 
 #[test]
