@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". {kept} prévias existentes mantidas sem alterações",
   " ({} in Recently Deleted)": " ({} em Excluídos recentemente)",
   " · {skipped} skipped (file exists)": " · {skipped} ignorada(s) (arquivo existente)",
   " · {} duplicate{} skipped": " · {} duplicada(s) ignorada(s){:.0}",
@@ -101,7 +102,7 @@
   "the {n} selected photos": "as {n} fotos selecionadas",
   "the {} photos in view": "as {} fotos em exibição",
   "these {count} photos": "estas {count} fotos",
-  "{count} smart preview{} · {:.1} MB": "{count} pré-visualização(ões) inteligente(s){:.0} · {:.1} MB",
+  "{count} smart preview{} · {:.1} MiB": "{count} pré-visualização(ões) inteligente(s){:.0} · {:.1} MiB",
   "{f} folders (and their subfolders)": "{f} pastas (e suas subpastas)",
   "{label} Grading": "Graduação de {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} em cada foto selecionada",

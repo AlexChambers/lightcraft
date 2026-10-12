@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". Наявні прев'ю ({kept}) збережено без змін",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} із кількома схожими файлами: використайте «Знайти»)",
   " ({} in Recently Deleted)": " ({} у нещодавно видалених)",
   " · {:.0}% clipped": " · {:.0}% відсічено",
@@ -137,7 +138,7 @@
   "the {n} selected photos": "вибрані фото: {n}",
   "the {} photos in view": "фото в поданні: {}",
   "these {count} photos": "ці фото ({count})",
-  "{count} smart preview{} · {:.1} MB": "Смарт-переглядів: {count}{:.0} · {:.1} МБ",
+  "{count} smart preview{} · {:.1} MiB": "Смарт-переглядів: {count}{:.0} · {:.1} МБ",
   "{f} folders (and their subfolders)": "Тек: {f} (і їхніх вкладених тек)",
   "{label} Grading": "Колірне тонування: {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} на кожному вибраному фото",

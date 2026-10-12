@@ -58,6 +58,7 @@ pub fn fit_for_display(img: &Rgba8, max_w: usize, max_h: usize) -> Rgba8 {
 }
 
 pub struct RenderResult {
+    pub cache_generation: u64,
     pub request_id: u64,
     pub source_key: Option<Hash128>,
     pub photo: PhotoId,
@@ -179,6 +180,7 @@ impl RenderJob {
     /// This job's result when it fails with `e`.
     fn failed(&self, e: String) -> RenderResult {
         RenderResult {
+            cache_generation: self.cache_generation,
             request_id: self.request_id,
             source_key: self.source_key,
             photo: self.photo,
@@ -222,6 +224,7 @@ impl RenderJob {
             let image = Arc::unwrap_or_clone(img);
             let histogram = Histogram::of_srgb8(&image);
             return RenderResult {
+                cache_generation: self.cache_generation,
                 request_id: self.request_id,
                 source_key: self.source_key,
                 photo: self.photo,
@@ -306,6 +309,7 @@ impl RenderJob {
                     }
                 }
                 RenderResult {
+                    cache_generation: self.cache_generation,
                     request_id: self.request_id,
                     source_key: self.source_key,
                     photo: self.photo,

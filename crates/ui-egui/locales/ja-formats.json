@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". 既存のプレビュー {kept} 件を変更せず保持しました",
   " · {skipped} skipped (file exists)": "・{skipped}件は同名ファイルのためスキップ",
   " · {} duplicate{} skipped": "・重複{}枚をスキップ{:.0}",
   " · {} failed: {}": "・{}件失敗：{}",
@@ -79,7 +80,7 @@
   "the {n} selected photos": "選択中の{n}枚",
   "the {} photos in view": "表示中の{}枚",
   "these {count} photos": "この{count}枚の写真",
-  "{count} smart preview{} · {:.1} MB": "スマートプレビュー{count}枚{:.0}・{:.1}MB",
+  "{count} smart preview{} · {:.1} MiB": "スマートプレビュー{count}枚{:.0}・{:.1}MiB",
   "{f} folders (and their subfolders)": "{f}個のフォルダとそのサブフォルダ",
   "{label} Grading": "{label}のカラーグレーディング",
   "{label} {d:+} on every selected photo": "選択したすべての写真の{label}を{d:+}調整",

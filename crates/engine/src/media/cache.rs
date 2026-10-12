@@ -66,6 +66,7 @@ impl Default for MediaCache {
             preview_loader: None,
             file_bytes: None,
             smart_dir: None,
+            source_generation: 0,
             availability: Default::default(),
             scenes: Vec::new(),
             rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
@@ -305,6 +306,11 @@ impl MediaCache {
     }
 
     fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
+        let generation = self.rendered.generation();
+        if self.source_generation != generation {
+            self.clear_sources();
+            self.source_generation = generation;
+        }
         if cached && let Some(a) = self.get_source(p.id, level) {
             return SourceRef::Loaded(Box::new(a));
         }

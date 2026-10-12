@@ -378,6 +378,10 @@ impl LightcraftApp {
                         crate::i18n::tr_format!("Done ({what}): {done} photo{plural}", done = done, plural = plural, what = crate::i18n::tr(what))
                     }
                 };
+                let kept = b.kept.load(Ordering::Relaxed);
+                if kept > 0 {
+                    msg.push_str(&crate::i18n::tr_format!(". {kept} existing previews kept unchanged", kept = kept));
+                }
                 if failed > 0 {
                     msg.push_str(&crate::i18n::tr_format!(" · {failed} couldn't be rendered", failed = failed));
                 }

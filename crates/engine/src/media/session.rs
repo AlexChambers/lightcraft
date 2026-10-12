@@ -55,7 +55,8 @@ impl crate::Session {
             ^ (level as u64) << 60
             ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ content.rotate_left(17)
-            ^ salt;
+            ^ salt
+            ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93);
         let cache = thumb_bucket.map(|b| {
             let mut k = Hasher128::new();
             k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key());
@@ -92,7 +93,12 @@ impl crate::Session {
     pub fn preview_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, apply_crop: bool, settings: &DevelopSettings) -> Option<RenderJob> {
         let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
         job.settings = Arc::new(settings.clone());
-        job.key = settings.hash64() ^ ((max_w as u64) << 40) ^ ((max_h as u64) << 20) ^ (apply_crop as u64) ^ (job.level as u64) << 60;
+        job.key = settings.hash64()
+            ^ ((max_w as u64) << 40)
+            ^ ((max_h as u64) << 20)
+            ^ (apply_crop as u64)
+            ^ (job.level as u64) << 60
+            ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93);
         Some(job)
     }
 
@@ -130,7 +136,7 @@ impl crate::Session {
             info: source_info(&p),
             settings: Arc::new(settings.clone()),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
-            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
+            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93),
             cache: Some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
@@ -185,7 +191,7 @@ impl crate::Session {
             info: source_info(&p),
             settings: Arc::new(settings),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
-            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
+            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93),
             cache: Some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
@@ -368,7 +374,8 @@ impl crate::Session {
     /// Accept a finished job's loaded source into the cache. What the decode learnt about the file that the catalog
     /// has wrong is corrected too ([`Self::learn_as_shot_wb`]).
     pub fn accept(&mut self, r: &RenderResult) {
-        if let Some(src) = &r.loaded
+        if r.cache_generation == self.media.rendered.generation()
+            && let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == key))
         {
             if let Some(info) = &src.info {

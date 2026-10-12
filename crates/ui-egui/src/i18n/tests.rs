@@ -215,7 +215,7 @@ fn switching_language_translates_and_restores() {
 }
 
 fn assert_format_specs(language: &Locale) {
-    let text = tr_format!("{count} smart preview{} · {:.1} MB", "s", 12.345, count = 3);
+            let text = tr_format!("{count} smart preview{} · {:.1} MiB", "s", 12.345, count = 3);
     assert!(text.contains("12.3") && !text.contains("12.34"), "{language:?}: {text}");
     let merging = tr_format!("Merging… {stage} {:.0}%", 42.4, stage = "Aligning");
     assert!(merging.contains("42%"), "{language:?}: {merging}");

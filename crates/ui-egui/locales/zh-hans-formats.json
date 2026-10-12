@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". 已保留 {kept} 个现有预览，未作更改",
   " · {skipped} skipped (file exists)": " · 已跳过 {skipped} 个（文件已存在）",
   " · {} duplicate{} skipped": " · 已跳过 {0} 个重复项{1:.0}",
   " · {} failed: {}": " · {0} 个失败：{1}",
@@ -79,7 +80,7 @@
   "the {n} selected photos": "选中的 {n} 张照片",
   "the {} photos in view": "视图中的 {0} 张照片",
   "these {count} photos": "这 {count} 张照片",
-  "{count} smart preview{} · {:.1} MB": "{count} 个智能预览{0:.0} · {1:.1} MB",
+  "{count} smart preview{} · {:.1} MiB": "{count} 个智能预览{0:.0} · {1:.1} MiB",
   "{f} folders (and their subfolders)": "{f} 个文件夹（及其子文件夹）",
   "{label} Grading": "{label} 颜色分级",
   "{label} {d:+} on every selected photo": "每张选中照片的 {label} {d:+}",

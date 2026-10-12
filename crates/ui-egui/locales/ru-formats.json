@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". Существующие превью ({kept}) сохранены без изменений",
   " ({unsure} with several look-alike files: use Locate)": " (из них с несколькими похожими файлами: {unsure} — используйте «Найти фото»)",
   " ({} in Recently Deleted)": " ({} в «Недавно удалённых»)",
   " · {:.0}% clipped": " · обрезано: {:.0}%",
@@ -142,7 +143,7 @@
   "the {n} selected photos": "выбранные {n} фото",
   "the {} photos in view": "все {} фото в представлении",
   "these {count} photos": "эти {count} фото",
-  "{count} smart preview{} · {:.1} MB": "Смарт-просмотров: {count}{:.0} · {:.1} МБ",
+  "{count} smart preview{} · {:.1} MiB": "Смарт-просмотров: {count}{:.0} · {:.1} МБ",
   "{f} folders (and their subfolders)": "Папок: {f} (и их подпапок)",
   "{label} Grading": "Цветокоррекция: {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} для каждого выбранного фото",
