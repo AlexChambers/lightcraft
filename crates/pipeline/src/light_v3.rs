@@ -16,7 +16,8 @@
 //! The functions here port `Family.curve`, `Family.apply`, `Family.law` of
 //! `fit_pointwise.py` (the fitting tool) exactly; [`Fit::unpack`] is its `Family.unpack`. Each
 //! active operator is tabulated once per render ([`LUT_N`] entries over `v` in 0..1, interpolated
-//! linearly) and the CPU and GPU renderers read the same table ([`LightOps`]).
+//! linearly). High-bit-depth CPU exports and the GPU read these tables ([`LightOps`]); 8-bit CPU
+//! renders compose their encoding and channel operations over linear input ([`PreviewOps`]).
 
 use lightcraft_color::{Mat3, PROPHOTO, REC2020};
 use lightcraft_develop::{DevelopSettings, Process};
@@ -183,7 +184,16 @@ impl Operator {
             top = top.max(u.curve(a, v));
             *slot = srgb_decode(top) as f32;
         }
-        Some(Operator { mode: fit.mode, weight, lut })
+        // The negative Blacks fit rounds to exactly 1 in f32. Avoid calculating a luminance
+        // result that contributes nothing, on both CPU and GPU.
+        let mode = if weight == 1.0 {
+            Mode::PerChannel
+        } else if weight == 0.0 {
+            Mode::Luminance
+        } else {
+            Mode::Mix
+        };
+        Some(Operator { mode, weight, lut })
     }
 
     /// The table at encoded `v` (clamped to 0..=1), interpolated: linear output.
@@ -303,6 +313,127 @@ impl LightOps {
         }
         mul3(&self.from_pro, p)
     }
+}
+
+/// Number of intervals over linear input for 8-bit CPU renders. Deep exports retain [`LightOps`]
+/// with the exact sRGB encoder; this approximation is not used for U16 or F32 samples.
+const PREVIEW_INTERVALS: usize = 16_384;
+
+/// An operator with its sRGB encoding and decoding included in one linear-input table.
+struct LinearOperator {
+    mode: Mode,
+    weight: f32,
+    black: f32,
+    white: f32,
+    // Each linear interval stores [intercept, slope], so a lookup needs no integer-to-float
+    // conversion or subtraction of neighbouring samples in the pixel loop.
+    segments: Box<[[f32; 2]; PREVIEW_INTERVALS]>,
+}
+
+impl LinearOperator {
+    fn new(mode: Mode, weight: f32, channel: impl Fn(f32) -> f32) -> Self {
+        let black = channel(0.0);
+        let mut previous = black;
+        let mut segments = Box::new([[0.0; 2]; PREVIEW_INTERVALS]);
+        for (i, segment) in segments.iter_mut().enumerate() {
+            let next = channel((i + 1) as f32 / PREVIEW_INTERVALS as f32);
+            let slope = (next - previous) * PREVIEW_INTERVALS as f32;
+            let intercept = (previous as f64 - slope as f64 * (i as f64 / PREVIEW_INTERVALS as f64)) as f32;
+            *segment = [intercept, slope];
+            previous = next;
+        }
+        Self { mode, weight, black, white: previous, segments }
+    }
+
+    #[inline(always)]
+    fn channel(&self, x: f32) -> f32 {
+        if x >= 1.0 {
+            if x == 1.0 { self.white } else { x }
+        } else if x < 0.0 {
+            self.black + x
+        } else {
+            let f = x * PREVIEW_INTERVALS as f32;
+            let i = (f as u32).min(PREVIEW_INTERVALS as u32 - 1) as usize;
+            let [intercept, slope] = self.segments[i];
+            intercept + slope * x
+        }
+    }
+
+    #[inline]
+    fn luminance(&self, p: [f32; 3]) -> [f32; 3] {
+        let y = PRO_Y[0] * p[0] + PRO_Y[1] * p[1] + PRO_Y[2] * p[2];
+        if y.is_nan() || y <= 1e-6 || y > 1.0 {
+            return p;
+        }
+        let r = self.channel(y) / y;
+        p.map(|c| c * r)
+    }
+
+    #[inline]
+    fn apply(&self, p: [f32; 3]) -> [f32; 3] {
+        match self.mode {
+            Mode::PerChannel => p.map(|c| self.channel(c)),
+            Mode::Luminance => self.luminance(p),
+            Mode::Mix => {
+                let (a, b) = (p.map(|c| self.channel(c)), self.luminance(p));
+                std::array::from_fn(|k| self.weight * a[k] + (1.0 - self.weight) * b[k])
+            }
+        }
+    }
+}
+
+/// CPU preview tables, built once per render. Consecutive per-channel operators share one table;
+/// a genuine luminance mix keeps separate scalar tables and the original order of operations.
+pub(crate) struct PreviewOps {
+    ops: PreviewOperators,
+    to_pro: [[f32; 4]; 3],
+    from_pro: [[f32; 4]; 3],
+}
+
+enum PreviewOperators {
+    PerChannel(LinearOperator),
+    Separate(Vec<LinearOperator>),
+}
+
+impl PreviewOps {
+    pub(crate) fn new(exact: &LightOps, encode: &impl Fn(f32) -> f32) -> Self {
+        let ops = &exact.ops;
+        // A preceding black lift could carry a negative input across zero. Only fuse when
+        // preceding operators fix zero, so the composed negative extension remains F(0) + x.
+        // Contrast fixes zero and negative Blacks is per channel, so their usual pair fuses.
+        let fuse = ops.iter().all(|o| o.mode == Mode::PerChannel) && ops.iter().take(ops.len().saturating_sub(1)).all(|o| o.lut[0] == 0.0);
+        let ops = if fuse {
+            PreviewOperators::PerChannel(LinearOperator::new(Mode::PerChannel, 1.0, |x| ops.iter().fold(x, |x, o| o.channel(x, encode))))
+        } else {
+            PreviewOperators::Separate(ops.iter().map(|o| LinearOperator::new(o.mode, o.weight, |x| o.channel(x, encode))).collect())
+        };
+        let columns = |m: [[f32; 3]; 3]| std::array::from_fn(|i| [m[0][i], m[1][i], m[2][i], 0.0]);
+        Self { ops, to_pro: columns(exact.to_pro), from_pro: columns(exact.from_pro) }
+    }
+
+    // Keep the single-table path in the finish loop. An out-of-line call per pixel saves
+    // little code here but adds register spills to this otherwise small operation.
+    #[inline(always)]
+    pub(crate) fn apply(&self, d: [f32; 3]) -> [f32; 3] {
+        let mut p = mul_preview(&self.to_pro, d);
+        match &self.ops {
+            PreviewOperators::PerChannel(op) => p = [op.channel(p[0]), op.channel(p[1]), op.channel(p[2])],
+            PreviewOperators::Separate(ops) => {
+                for op in ops {
+                    p = op.apply(p);
+                }
+            }
+        }
+        mul_preview(&self.from_pro, p)
+    }
+}
+
+/// Padded columns let the compiler multiply the RGB rows together in vector registers.
+/// The fourth lane is unused; each RGB row keeps the same arithmetic order as `mul3`.
+#[inline(always)]
+fn mul_preview(m: &[[f32; 4]; 3], d: [f32; 3]) -> [f32; 3] {
+    let out: [f32; 4] = std::array::from_fn(|i| m[0][i] * d[0] + m[1][i] * d[1] + m[2][i] * d[2]);
+    [out[0], out[1], out[2]]
 }
 
 #[inline]

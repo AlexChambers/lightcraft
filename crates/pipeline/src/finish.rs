@@ -377,6 +377,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let aspect = vw / vh;
 
     let srgb = srgb_lut();
+    let preview_light = if exact { None } else { light.as_ref().map(|lo| crate::light_v3::PreviewOps::new(lo, &|v| encode_srgb(srgb, v))) };
     let peak = fp.peak;
     let hdr = peak > 1.0;
     let mut out = vec![T::default(); w * h];
@@ -420,8 +421,10 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
             }
 
             // --- process V3: calibrated Contrast, Blacks (ProPhoto with the sRGB transfer)
-            if let Some(lo) = light {
-                d = if exact { lo.apply(d, &linear_to_srgb) } else { lo.apply(d, &|v| encode_srgb(srgb, v)) };
+            if let Some(lo) = &preview_light {
+                d = lo.apply(d);
+            } else if let Some(lo) = light {
+                d = lo.apply(d, &linear_to_srgb);
             }
 
             // --- colour
@@ -764,7 +767,7 @@ pub fn srgb_lut() -> &'static [f32; SRGB_LUT_N + 1] {
 /// Linear → sRGB-encoded (clamped to 0..1) by an interpolated table: within 2e-5 of the exact
 /// curve (≪ one 8-bit or 10-bit step), several times faster than `powf`.
 #[inline]
-fn encode_srgb(lut: &[f32; SRGB_LUT_N + 1], v: f32) -> f32 {
+pub(crate) fn encode_srgb(lut: &[f32; SRGB_LUT_N + 1], v: f32) -> f32 {
     let f = v.clamp(0.0, 1.0) * SRGB_LUT_N as f32;
     let i = (f as usize).min(SRGB_LUT_N - 1);
     let t = f - i as f32;

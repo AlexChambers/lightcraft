@@ -6,13 +6,13 @@
 //! The values are fitted to black-box Lightroom exports of one person's Sony ILCE-7CR photos (the exports'
 //! pixels only: no Lightroom code, tables or files), each slider against the same photo's Neutral or another
 //! amount exported in the same batch, on the tune photos; the check photos were held out. The exports are
-//! private; the fits keep the coefficients and aggregate errors only. They are our own operator family's
+//! private; errors are published only with at least three contributing photos. These are our operator family's
 //! parameters (`docs/light-v3.md`), not Lightroom's.
 //!
 //! - Contrast: `tools/light_v3_fits/contrast.json` (fitted as `v2-contrast-pc.json`), mode `pc`; 155 tune pairs on 20 photos, 61 check pairs on 6 photos;
-//!   sha256 `ea925be4e7ae85f80a6bfa3a21700ac89ce55d3472c6ee4089b31c95a9b0f310`.
+//!   sha256 `2f04d078f1866ccb05fc279b493ccab545adbe2ac178b12df9ebc524c79c2ce1`.
 //! - Blacks: `tools/light_v3_fits/blacks.json` (fitted as `v2-blacks-mix.json`), mode `mix`; 148 tune pairs on 19 photos, 60 check pairs on 6 photos;
-//!   sha256 `1f8af577e836a98bd744a98991c95358b28043b17dcb2d444329ee3171246150`.
+//!   sha256 `b8ee89df8f632d9559649fcba917607ade1511ecaa2041f481dd5b73a318c090`.
 
 use crate::light_v3::{Fit, Mode};
 #[cfg(test)]

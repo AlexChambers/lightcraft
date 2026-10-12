@@ -9,12 +9,13 @@
         checkout must reproduce the committed file byte for byte: --check says whether it does, writing nothing.
     light_v3_constants.py sanitize FIT.json SLIDER [-o tools/light_v3_fits/SLIDER.json]
         Turn a result of the fitting tool (fit_pointwise.py, kept with the private fitting data) into the committed
-        form: the coefficients, the counts and aggregate errors only (median per amount, reference, size and split),
+        form: the coefficients, the counts and aggregate errors only (median per amount, reference, size and split).
+        Publish an error group or band only when at least three distinct photos contribute,
         with no photo names, paths or per-photo values. Swapping a fit is sanitizing the new one over the slider's
         file, then `rust`.
 
-The fitting data are private: black-box Lightroom exports of the owner's photos. The public way to measure LightCraft
-against Lightroom on your own exports is the render-fidelity tool (tools/render_fidelity.py, docs/render-fidelity.md).
+The fitting data are private: black-box Lightroom exports of the owner's photos. A public render-fidelity tool for
+measuring your own exports is proposed separately in #1181; it is not included in this checkout.
 
 Needs numpy only: tools/requirements-light-v3.txt.
 """
@@ -38,6 +39,7 @@ SLIDERS = {"contrast": "light.contrast", "blacks": "light.blacks"}
 MODES = {"pc": "PerChannel", "lum": "Luminance", "mix": "Mix"}
 KNOTS = [float(k) for k in FAMILY_KNOTS]
 BANDS = ["<.03", ".03-.10", ".10-.25", ".25-.50", ".50-.90", ">.90"]
+MIN_PHOTOS = 3
 # where the reference values are taken (encoded ProPhoto values, amounts, pixels)
 REF_V = [0.0, 0.004, 0.012, 0.03, 0.07, 0.11, 0.17, 0.25, 0.33, 0.45, 0.58, 0.7, 0.81, 0.9, 0.97, 1.0]
 REF_A = [-100.0, -63.0, -25.0, -4.0, -1.0, 1.0, 4.0, 25.0, 63.0, 100.0]
@@ -72,17 +74,24 @@ def sanitize(args):
             by[(r["a_tgt"], r["a_ref"], r["long_edge"])].append(r)
         rows = []
         for (a_tgt, a_ref, edge), g in sorted(by.items()):
+            photos = len({r["photo"] for r in g})
+            if photos < MIN_PHOTOS:
+                continue
+            band_photos = {b: len({r["photo"] for r in g if b in r["cells"]}) for b in BANDS}
+            band_photos = {b: n for b, n in band_photos.items() if n >= MIN_PHOTOS}
             bands = {b: float(np.median([r["cells"][b]["error"] for r in g if b in r["cells"]]))
-                     for b in BANDS if any(b in r["cells"] for r in g)}
+                     for b in band_photos}
             rows.append({"amount": a_tgt, "reference": a_ref, "long_edge": edge, "pairs": len(g),
-                         "encoded_error": float(np.median([r["encoded_error"] for r in g])), "band_error": bands})
+                         "photos": photos, "encoded_error": float(np.median([r["encoded_error"] for r in g])),
+                         "band_error": bands, "band_photos": band_photos})
         errors[split] = rows
     out = {
         "slider": fit["slider"], "mode": fit["mode"], "signed": signed,
         "knots": fit["knots"], "params": fit["params"], "amounts": fit.get("amounts"),
         "tune_pairs": fit.get("tune_pairs"), "tune_photos": fit.get("tune_photos"),
         "check_pairs": fit.get("check_pairs"), "check_photos": len({r["photo"] for r in fit.get("check", [])}),
-        "cost": fit.get("cost"), "status": fit.get("status"),
+        "cost": fit.get("cost") if len({r["photo"] for r in fit.get("tune", [])}) >= MIN_PHOTOS else None,
+        "status": fit.get("status"),
         "fitted_as": {"file": path.name, "sha256": hashlib.sha256(raw).hexdigest()},
         "median_errors": errors,
     }
@@ -148,7 +157,7 @@ def rust(args):
         "//! The values are fitted to black-box Lightroom exports of one person's Sony ILCE-7CR photos (the exports'",
         "//! pixels only: no Lightroom code, tables or files), each slider against the same photo's Neutral or another",
         "//! amount exported in the same batch, on the tune photos; the check photos were held out. The exports are",
-        "//! private; the fits keep the coefficients and aggregate errors only. They are our own operator family's",
+        "//! private; errors are published only with at least three contributing photos. These are our operator family's",
         "//! parameters (`docs/light-v3.md`), not Lightroom's.",
         "//!",
     ]

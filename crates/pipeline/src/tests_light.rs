@@ -145,6 +145,46 @@ fn the_shipped_fits_unpack_as_the_family_lays_them_out() {
     assert!(Operator::new(&short, 50.0).is_none());
 }
 
+#[test]
+fn exact_mix_endpoints_select_only_the_contributing_mode() {
+    assert_eq!(Operator::new(&fitted::BLACKS, -30.0).unwrap().mode, Mode::PerChannel);
+    assert_eq!(Operator::new(&fitted::BLACKS, 30.0).unwrap().mode, Mode::Mix);
+    // Synthetic logits also exercise a weight that rounds to exactly zero.
+    let mut params = fitted::BLACKS.params.to_vec();
+    *params.last_mut().unwrap() = -1000.0;
+    let fit = light_v3::Fit { params: Box::leak(params.into_boxed_slice()), ..fitted::BLACKS };
+    assert_eq!(Operator::new(&fit, -30.0).unwrap().mode, Mode::Luminance);
+}
+
+#[test]
+fn preview_tables_match_exact_operators_over_combined_amounts() {
+    let info = camera_look();
+    let encode = |v| crate::finish::encode_srgb(crate::finish::srgb_lut(), v);
+    let mut worst = 0.0f32;
+    for contrast in [-100.0, -60.0, -30.0, 0.0, 30.0, 60.0, 100.0] {
+        for blacks in [-100.0, -60.0, -30.0, 0.0, 30.0, 60.0, 100.0] {
+            let mut s = DevelopSettings::default();
+            s.light.contrast = contrast;
+            s.light.blacks = blacks;
+            let Some(exact) = LightOps::new(&s, &info) else { continue };
+            let preview = light_v3::PreviewOps::new(&exact, &encode);
+            for i in 0..=8192 {
+                let v = i as f32 / 8192.0;
+                for p in [[v; 3], [v, v * 0.1, v * 0.02], [v * 0.04, v, v * 0.2], [v * 0.1, v * 0.03, v], [v * 3.0, -v * 0.2, v]] {
+                    let a = exact.apply(p, &linear_to_srgb);
+                    let b = preview.apply(p);
+                    for (a, b) in a.into_iter().zip(b) {
+                        let error = (linear_to_srgb(a.clamp(0.0, 1.0)) - linear_to_srgb(b.clamp(0.0, 1.0))).abs() * 255.0;
+                        worst = worst.max(error);
+                        assert!(error <= 1.0, "Contrast {contrast}, Blacks {blacks}, input {p:?}: {error} levels");
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("Preview table maximum encoded error {worst:.6} of an 8-bit level");
+}
+
 /// The port against the family's own Python (`tools/light_v3_family.py`, through the generated
 /// references): `Family.curve` to the references' 12 digits, and `Family.apply` on pixels to the
 /// tables' interpolation.
