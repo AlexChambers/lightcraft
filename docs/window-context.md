@@ -63,7 +63,7 @@ Only the requested pixels leave the renderer, including float and 16-bit output.
 This uses the existing filters at their existing scale. A shared, reduced-size
 analysis image would change full-render pixels unless it reproduced those filters
 exactly. The work rectangle and its cached stages preserve V1 and V2 full renders byte
-for byte. Window airlight retains a scalar, and mask caches retain the alphas
+for byte. Window airlight retains a scalar and a bounded full preparation, and mask caches retain the alphas
 whose inputs still match. No new process version is introduced.
 
 The cost is extra sampled pixels and filter work, and larger stage caches. A warm
@@ -107,7 +107,7 @@ value because the blur's floating-point running sums start at different places.
 | Supplied mask mattes and segmentation grids | Existing frame-to-source coordinates |
 | Dehaze airlight | Full-output-resolution statistic on each renderer, including upstream processing and every-seventh-value selection |
 
-## Full-frame airlight and mask reuse (round 5)
+## Full-frame airlight and mask reuse
 
 Planning describes whether a window needs airlight and does no airlight pixel
 work. Rendering resolves a separate `window=None` plan at the requested full
@@ -116,15 +116,33 @@ Defringe, spots, red-eye corrections, noise reduction and dark-channel blur are
 the same as a full render. CPU and Metal compute their own scalar with their
 existing every-seventh-value selection and 99.5th percentile. A whole-frame work
 buffer can supply the statistic directly. A Metal full frame that exceeds its
-buffer limit uses the CPU statistic, matching the full-render fallback.
+buffer limit uses the bounded CPU statistic, matching the full-render fallback.
+That device-limit path keeps separate GPU window buffers; it does not share
+the full CPU preparation. The Metal measurements below fit the full buffers.
 
 Each renderer keeps two scalar entries keyed by source identity and the full
-linear-stage key. Panning, Exposure, Dehaze amount and downstream color edits
-reuse the scalar. Source, framing, output dimensions, white balance, retouching,
-noise reduction and relevant source metadata invalidate it. The source is held
-weakly by the scalar cache. Full-frame temporary pixels are released before the
-window stages are allocated. A first zoom can therefore cost a full-resolution
-upstream pass; it never substitutes a smaller statistic.
+linear-stage key. It also retains one full preparation, at most 1 GiB, with the
+sampled RGB, processed RGB and dark channel. A partial render copies its work
+rectangle from these buffers. It does not repeat white balance, noise reduction
+or the dark-channel blur for that rectangle. Pans use the same full preparation,
+so cache hits and fresh renders use the same floating-point arithmetic. A white
+balance or NR change can reuse the sampled RGB when the full geometry is unchanged.
+The stage byte counters include the retained full preparation.
+
+Frames above the retention budget release this preparation after copying their
+work pixels. A warm edit reuses its work stages; a new window must prepare the
+full frame again. Source, framing, output dimensions, white balance, retouching,
+noise reduction and relevant source metadata still invalidate the scalar.
+Exposure, Dehaze amount and downstream color edits preserve it.
+
+Before allocation, both renderers cap a window's work image, its exact
+Dehaze frame and the source sampled by that preparation at 67,108,864 pixels (64 Mi pixels). The full preparation also has
+a conservative 4 GiB temporary-storage estimate that includes NR scratch and
+work copies. The limit applies before Metal delegates a statistic to the CPU.
+An oversized request returns an actionable error through `pipeline::render`,
+`render_cached`, native render jobs and the web worker. It never substitutes a
+smaller statistic or truncates filter support. These APIs now return `Result`.
+Full renders (`window=None`) keep their existing operators and pixels.
 
 Native `Session::region_job_of` first calls `render_job` with the full frame's
 size and then adds the window. Source selection therefore matches the equivalent
@@ -156,12 +174,22 @@ do not change its alpha. Hidden and removed masks release their cached alphas.
 The imported dependency classifier conservatively treats supplied mattes like
 heuristics. A supplied Sky matte can therefore be rebuilt unnecessarily after
 Exposure changes. This does not affect the three-mask probe, which has no mattes.
-Refine Edges reuses coefficient buffers and releases its means and correlations
-after their last read. `gaussian_owned` consumes disposable inputs instead of
+Refine Edges blurs independent channels together, preserving each channel's
+scalar arithmetic, pass order and band origins. It reuses the guide's means
+when the image and radius are unchanged, and a geometric mask's blurred mean
+across WB/NR edits. Refinement intermediates have a 512 MiB limit per stage
+entry, at most two entries per view. They are counted, invalidated by their
+inputs and released with the stage cache. `gaussian_owned` consumes disposable inputs instead of
 cloning them. Its arithmetic and blur order are unchanged. Native sampling with
 no orientation, prefilter or transform shares the source Arc instead of caching
 a duplicate RGB buffer. `StageCache::bytes` counts owned chroma and alpha buffers
 and excludes this shared source, which belongs to the caller.
+
+The V2 median updates its sorted window in place instead of removing and
+reinserting an element, and copies transpose tiles in blocks of 32. Both changes
+preserve the selected float bits, including signed zero and NaN payloads. Tests
+compare each median with an independently sorted neighborhood. These operations
+were a large part of the expanded tone-base cost in the refined-mask case.
 
 ## Known limits
 
@@ -176,7 +204,70 @@ must recompute the Sky heuristic and its refinement because its alpha changes.
 Radial and Subject refined alphas remain reusable. Measurements below separate
 that remaining work from the resolved airlight mismatch.
 
-## Checks
+## Current validation (2026-10-12)
+
+The allocation regression executes a 400 by 300 window in a 48,000 by 32,000
+virtual frame under a 1 GiB allocation guard. On `8170b9dd`, it requested
+18,432,000,000 bytes and exited 77. It now returns a recoverable error on CPU
+and Metal before that allocation. Native and serialized worker jobs also test
+an error followed by a smaller successful request. A separate regression saw
+two upstream preparations per edit on `8170b9dd`; it now sees one.
+
+All 222 full-render hashes match fresh main `25ef65c8` and the preserved main
+references. The expanded matrix passes 490 partial windows and 98 whole-frame
+windows per renderer. The original matrix passes 288 partial windows and 32
+whole-frame windows per renderer. Every partial window is within 1 code value;
+every whole-frame window is exact. CPU/Metal parity retains max 2 in the expanded
+matrix and max 1 in the original matrix. Cache probes cover upstream edits,
+framing, source identity, supplied mattes and enabling/disabling Dehaze.
+
+The focused release run passed 261 tests, with three existing ignored tests.
+All 11 worker wire tests passed, including the oversized-request retry. Workspace
+tests reproduced exactly the 12 known failures. Formatting, clippy, HEIF, parity,
+layers, assets and all 28 WASM checks passed with the temporary #990/#997 patches,
+then those patches were restored byte for byte.
+
+The following timings are indicative shared-machine results on an Apple M3 Max
+(14 CPU cores, 36 GiB RAM), with two Rayon threads and nice level 15. The 24 MP
+procedural scene, viewport and snapped UI margin are the review probes'. Three
+serial interleaved process runs use fresh release builds. Values are medians of
+the run medians. Each cell lists main `25ef65c8`, `8170b9dd`, then this change.
+Times are milliseconds. Decode, display presentation and Draft feedback are excluded.
+
+| Case | Renderer | Zoom | Cold | Exposure | White balance |
+|---|---|---|---:|---:|---:|
+| Dehaze 15 | CPU | 1:1 | 453.2, 596.4, 492.1 | 334.3, 309.0, 307.4 | 412.9, 531.6, 457.0 |
+| Dehaze 15 | CPU | 2:1 | 226.8, 357.7, 310.8 | 171.5, 141.3, 141.8 | 205.5, 304.0, 267.2 |
+| Dehaze 15 | Metal | 1:1 | 113.8, 167.3, 121.4 | 40.9, 8.7, 8.9 | 57.5, 106.7, 63.3 |
+| Dehaze 15 | Metal | 2:1 | 96.1, 143.2, 106.2 | 37.0, 5.1, 5.2 | 45.7, 86.0, 48.9 |
+| One refined mask | CPU | 1:1 | 1539.4, 2130.1, 1728.2 | 769.3, 491.5, 485.4 | 1428.7, 2056.2, 1568.0 |
+| One refined mask | CPU | 2:1 | 689.7, 1171.0, 944.6 | 366.1, 229.6, 227.8 | 670.6, 1083.4, 841.2 |
+
+Median starting 1, 5 and 15 minute load averages across the typical runs were:
+
+| Revision | Load averages |
+|---|---|
+| main | 6.56 7.39 7.83 |
+| before | 6.57 7.39 7.82 |
+| head | 6.61 7.39 7.82 |
+
+The 1.2x-main target is not met in every case. CPU Dehaze and the refined mask
+still exceed it at 2:1. Full-frame NR and crop edits remain slower, even after
+sharing removes repeated preparation. In the added single-run 2:1 sequence,
+CPU NR is 324.5, 858.7 and 625.9 ms; Metal NR is 60.8, 171.7 and 100.4 ms.
+The exact statistic needs the full frame's upstream NR, including outside the
+requested window. Warm Exposure remains faster than main in the typical cases.
+
+The single-run 61 MP all-filters CPU case is 3,776, 13,910 and 15,272 ms cold,
+with sequence peaks of 2.09, 6.62 and 8.18 GiB. Grouped temporary buffers and
+retained refinement guidance add memory. This case still expands to the full
+frame and recomputes Sky refinement after Exposure changes. Direct Metal mask
+timings omit general Refine Edges and are diagnostic only; the native engine
+routes visible refined masks to CPU. Full tables include the peak footprint,
+pan, NR/crop, 61 MP cases and each run's before/after load averages in the
+implementation evidence. No counted performance run was paused by the disk guard.
+
+## Earlier checks
 
 Round 4 adds 168 windows per renderer at 2397 by 1598, including odd origins,
 frame edges, repeating detail, hidden/empty masks, local Clarity, isolated tone
@@ -366,8 +457,8 @@ footprint falls by 1.37 GiB from round 4, but remains 3.16x main. Cold time is
 Exposure edit the radial and Subject alphas remain cached; the Sky alpha and
 its full-resolution refinement change and must run again. A concrete memory
 follow-up is to share scratch buffers between these sequential mask blur passes;
-a further speed follow-up is to retain the refinement guide's means and variance
-across edits, with an explicit cache budget. Neither requires truncating support.
+round 6 retains the refinement guide's means with an explicit cache budget.
+Neither change requires truncating support.
 
 The separate 61 MP Dehaze-only run measured 962.8 ms cold, 340.3 ms warm and
 2.836 GiB peak footprint, with loads 7.64 7.03 6.68 before and 7.64 7.03 6.68

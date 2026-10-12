@@ -501,7 +501,7 @@ mod tests {
         let (s, _) = settings();
         let img = lightcraft_scenes::demo_library()[0].render(96, 64);
         let render = |d: &DevelopSettings| {
-            lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).image.data
+            lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).unwrap().image.data
         };
         assert_ne!(render(&DevelopSettings { light: s.light, ..Default::default() }), render(&s), "the masks change the picture");
     }
@@ -733,7 +733,7 @@ mod tests {
         let s = DevelopSettings::default().merged(&partial).unwrap();
         let img = lightcraft_scenes::demo_library()[0].render(96, 64);
         let render = |d: &DevelopSettings| {
-            lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).image.data
+            lightcraft_pipeline::render(&img, &Default::default(), d, &lightcraft_pipeline::RenderRequest::fit(96, 64)).unwrap().image.data
         };
         assert_ne!(render(&DevelopSettings { light: s.light, ..Default::default() }), render(&s), "the spots change the picture");
     }

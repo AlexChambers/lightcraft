@@ -173,7 +173,12 @@ full-render preservation and benchmark (issue #1146).
   reads pre-exposure luminance; the engine uses the CPU for visible refined masks.
 - Dehaze windows cache each renderer's full-resolution full-frame airlight statistic. The
   statistic includes the same upstream stages and every-seventh-value dark-channel selection
-  as `window=None`. A whole-frame work buffer supplies it directly. See
+  as `window=None`. A whole-frame work buffer supplies it directly. Partial windows
+  copy their upstream pixels and dark channel from one full preparation, retained
+  up to 1 GiB and counted in stage bytes. The source upload and unchanged full-frame
+  sampling are reused. CPU and GPU enforce the same input and temporary-storage
+  limits before the statistic allocates, including on the CPU fallback. Over-budget
+  windows return an error through the native job or web worker. See
   [window context](window-context.md) for invalidation rules, measurements and remaining costs.
 - Dehaze reads back sampled dark-channel values when computing airlight. The full-frame statistic
   has its own command encoder. Dropped buffers are recycled (exact size, ≤ 2 GB pool) once the

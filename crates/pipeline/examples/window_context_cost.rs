@@ -79,7 +79,7 @@ fn bench(mode: &str) {
     for i in 0..6 {
         s.light.exposure = i as f64 * 0.01;
         let now = Instant::now();
-        let r = lightcraft_pipeline::render_cached(&src, &info, &s, &req, &cache);
+        let r = lightcraft_pipeline::render_cached(&src, &info, &s, &req, &cache).unwrap();
         std::hint::black_box(&r);
         let ms = now.elapsed().as_secs_f64() * 1000.;
         println!("TIME i={i} ms={ms:.3}");

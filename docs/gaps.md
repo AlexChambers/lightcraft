@@ -77,6 +77,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | LR-VIEW-ZOOM: bound exact preparation, share upstream pixels and reuse refinement intermediates; status unchanged |
 | 2026-10-12 | minor | Gap 4: supplied mattes and hidden masks skip unused context; inactive-mask tone bases keep their support when Clarity reads them, Defringe gets context, and window finishing is limited to requested pixels; sampling-grid and airlight differences remain, along with overlay and soft-proof gaps |
 | 2026-10-12 | minor | LR-VIEW-ZOOM round 4: CPU/GPU reduced planes keep the full-frame sampling scale and origin; airlight and rounding limits remain; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM round 5: full-resolution airlight for windows, cached mask alphas and corrected memory accounting; status unchanged |

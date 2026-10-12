@@ -264,56 +264,56 @@ fn main() {
     let view = RenderRequest::fit(1920, 1280);
     let draft = RenderRequest { quality: Quality::Draft, ..RenderRequest::fit(1152, 768) };
     if gpu {
-        let c = develop(&preview, &info, &s, &view, None, false).image;
-        let g = develop(&preview, &info, &s, &view, None, true).image;
+        let c = develop(&preview, &info, &s, &view, None, false).unwrap().image;
+        let g = develop(&preview, &info, &s, &view, None, true).unwrap().image;
         let (max, mean) = diff(&c, &g);
         println!("gpu vs cpu, loupe 1920×1280 typical: max {max} LSB, mean {mean:.4} LSB");
     }
 
     if run("cold") {
         // a new photo: no cached stages (the GPU also uploads the preview)
-        row("loupe 1920×1280 cold:", &mut |g| drop(develop(&preview, &info, &s, &view, None, g)));
-        row("loupe draft 1152×768 cold:", &mut |g| drop(develop(&preview, &info, &s, &draft, None, g)));
+        row("loupe 1920×1280 cold:", &mut |g| drop(develop(&preview, &info, &s, &view, None, g).unwrap()));
+        row("loupe draft 1152×768 cold:", &mut |g| drop(develop(&preview, &info, &s, &draft, None, g).unwrap()));
     }
     let caches = [StageCache::default(), StageCache::default()];
     let mut k = 0.0;
     if run("drag") {
         for g in backends {
-            drop(develop(&preview, &info, &s, &view, Some(&caches[*g as usize]), *g));
+            drop(develop(&preview, &info, &s, &view, Some(&caches[*g as usize]), *g).unwrap());
         }
         row("loupe 1920×1280 exposure drag (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.light.contrast = k % 50.0;
             t.light.exposure = 0.3 + k * 0.01;
-            drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g));
+            drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g).unwrap());
         });
         for g in backends {
-            drop(develop(&preview, &info, &s, &draft, Some(&caches[*g as usize]), *g));
+            drop(develop(&preview, &info, &s, &draft, Some(&caches[*g as usize]), *g).unwrap());
         }
         row("loupe draft highlights drag (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.light.highlights = -40.0 + k % 50.0;
-            drop(develop(&preview, &info, &t, &draft, Some(&caches[g as usize]), g));
+            drop(develop(&preview, &info, &t, &draft, Some(&caches[g as usize]), g).unwrap());
         });
         row("loupe draft clarity drag (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.effects.clarity = 15.0 + k % 50.0;
-            drop(develop(&preview, &info, &t, &draft, Some(&caches[g as usize]), g));
+            drop(develop(&preview, &info, &t, &draft, Some(&caches[g as usize]), g).unwrap());
         });
         row("loupe draft NR drag (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.detail.nr_luminance = 30.0 + k % 50.0;
-            drop(develop(&preview, &info, &t, &draft, Some(&caches[g as usize]), g));
+            drop(develop(&preview, &info, &t, &draft, Some(&caches[g as usize]), g).unwrap());
         });
         row("loupe 1920×1280 NR drag (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.detail.nr_luminance = 30.0 + k % 50.0;
-            drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g));
+            drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g).unwrap());
         });
     }
     if run("window") {
@@ -387,19 +387,19 @@ fn main() {
             let caches = [StageCache::default(), StageCache::default()];
             for (req, size) in [(&view, "loupe 1920×1280"), (&draft, "draft 1152×768")] {
                 for g in backends {
-                    drop(develop(&preview, &info, &m, req, Some(&caches[*g as usize]), *g));
+                    drop(develop(&preview, &info, &m, req, Some(&caches[*g as usize]), *g).unwrap());
                 }
                 row(&format!("{size} exposure drag, {what}:"), &mut |g| {
                     let mut t = m.clone();
                     k += 1.0;
                     t.light.exposure = 0.3 + (k % 50.0) * 0.01;
-                    drop(develop(&preview, &info, &t, req, Some(&caches[g as usize]), g));
+                    drop(develop(&preview, &info, &t, req, Some(&caches[g as usize]), g).unwrap());
                 });
                 row(&format!("{size} mask exposure drag, {what}:"), &mut |g| {
                     let mut t = m.clone();
                     k += 1.0;
                     t.masks[0].adjust.exposure = 0.5 + (k % 50.0) * 0.01;
-                    drop(develop(&preview, &info, &t, req, Some(&caches[g as usize]), g));
+                    drop(develop(&preview, &info, &t, req, Some(&caches[g as usize]), g).unwrap());
                 });
             }
         }
@@ -427,12 +427,12 @@ fn main() {
             let mut t = s.clone();
             f(&mut t);
             for g in backends {
-                drop(develop(&preview, &info, &t, &view, Some(&caches[*g as usize]), *g));
+                drop(develop(&preview, &info, &t, &view, Some(&caches[*g as usize]), *g).unwrap());
             }
             row(&format!("finish 1920×1280 {name}"), &mut |g| {
                 k += 1.0;
                 t.light.exposure = 0.3 + k * 0.001;
-                drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g));
+                drop(develop(&preview, &info, &t, &view, Some(&caches[g as usize]), g).unwrap());
             });
         }
     }
@@ -463,7 +463,7 @@ fn main() {
         let cols: Vec<String> = backends
             .iter()
             .map(|&g| {
-                let ms = best(ne, || img = Some(develop(&full, &info, &s, &big, None, g).image));
+                let ms = best(ne, || img = Some(develop(&full, &info, &s, &big, None, g).unwrap().image));
                 format!("{ms}")
             })
             .collect();
@@ -474,7 +474,7 @@ fn main() {
             cols.get(1).map(|g| format!("  |  gpu: {g}")).unwrap_or_default()
         );
         if gpu {
-            let c = develop(&full, &info, &s, &big, None, false).image;
+            let c = develop(&full, &info, &s, &big, None, false).unwrap().image;
             let (max, mean) = diff(&c, img.as_ref().expect("rendered"));
             println!("gpu vs cpu, export {}×{} typical: max {max} LSB, mean {mean:.4} LSB", full.width, full.height);
         }

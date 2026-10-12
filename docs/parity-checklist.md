@@ -797,6 +797,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | LR-VIEW-ZOOM: bound exact preparation, share upstream pixels and reuse refinement intermediates; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: supplied mattes and hidden masks avoid unused context, Defringe support includes spot reads, and CPU/GPU finishing uses requested pixels; remaining sampling and airlight limits documented; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM round 4: CPU/GPU reduced planes keep the full-frame sampling scale and origin; airlight and rounding limits remain; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM round 5: full-resolution airlight for windows, cached mask alphas and corrected memory accounting; status unchanged |

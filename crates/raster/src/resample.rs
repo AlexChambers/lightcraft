@@ -101,6 +101,16 @@ impl Pixel for f32 {
     }
 }
 
+impl Pixel for [f32; 2] {
+    fn zero() -> Self {
+        [0.0; 2]
+    }
+    #[inline]
+    fn madd(self, o: Self, w: f32) -> Self {
+        [self[0] + o[0] * w, self[1] + o[1] * w]
+    }
+}
+
 impl Pixel for [f32; 3] {
     fn zero() -> Self {
         [0.0; 3]

@@ -52,7 +52,7 @@ fn full_clarity_with_hidden_or_empty_tone_masks_matches_main() {
         for local_clarity in [false, true] {
             for empty in [false, true] {
                 let s = settings(process, empty, local_clarity);
-                let full = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(1200, 800)).image;
+                let full = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(1200, 800)).unwrap().image;
                 // FNV-1a over RGBA bytes, independent of Rust's default hasher.
                 let hash = full.data.iter().flatten().fold(0xcbf29ce484222325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
                 eprintln!("{process:?} local_clarity={local_clarity} empty={empty}: {hash:016x}");
@@ -89,8 +89,8 @@ fn clarity_windows_include_hidden_or_empty_tone_base_support() {
         for local_clarity in [false, true] {
             for empty in [false, true] {
                 let s = settings(process, empty, local_clarity);
-                let full = render(&src, &info, &s, &req).image.crop(at.x, at.y, at.w, at.h);
-                let window = render(&src, &info, &s, &window_req).image;
+                let full = render(&src, &info, &s, &req).unwrap().image.crop(at.x, at.y, at.w, at.h);
+                let window = render(&src, &info, &s, &window_req).unwrap().image;
                 let max = full.data.iter().flatten().zip(window.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
                 assert!(max <= 1, "{process:?} local_clarity={local_clarity} empty={empty}: max={max}");
                 let p = plan(&src, &info, &s, &window_req);

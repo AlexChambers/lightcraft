@@ -199,7 +199,7 @@ impl WorkerCore {
                 lightcraft_engine::pipeline::render_cached(&src.image, &info, &job.settings, &job.request(), &st)
             }
             None => lightcraft_engine::pipeline::render(&src.image, &info, &job.settings, &job.request()),
-        };
+        }?;
         // an HDR edit's histogram shows its HDR range (as on native)
         if let Some(h) = lightcraft_engine::pipeline::hdr_histogram(&src.image, &info, &job.settings, &job.request()) {
             rendered.histogram = h;
@@ -423,6 +423,33 @@ mod tests {
         // stays within docs/gpu-pipeline.md's bound (≤ 3 LSB per channel) rather than bit-exact
         let max = a.image.data.iter().zip(&b.image.data).flat_map(|(p, q)| (0..3).map(move |c| p[c].abs_diff(q[c]))).max();
         assert!(max.is_some_and(|m| m <= 3), "max channel difference {max:?}");
+    }
+
+    #[test]
+    fn oversized_dehaze_jobs_report_errors_and_allow_a_smaller_retry() {
+        use lightcraft_engine::pipeline::PixelWindow;
+        let mut session = Session::with_demo();
+        let id = session.visible_cloned()[0];
+        let win = PixelWindow { x: 20000, y: 12000, w: 400, h: 300 };
+        let mut job = session.region_job(id, 1920, 1280, win, false).unwrap();
+        Arc::make_mut(&mut job.settings).effects.dehaze = 100.0;
+        job.request.max_w = 48000;
+        job.request.max_h = 32000;
+        let mut wire = WireJob::from_job(&job, false, "Region");
+        wire.max_edge = 600;
+        let mut wire: WireJob = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+        let mut core = WorkerCore::default();
+        let error = core.render(&wire, None).err().expect("worker memory-budget error");
+        assert!(error.contains("memory budget"), "{error}");
+        let error = job.clone().run().rendered.err().expect("native memory-budget error");
+        assert!(error.contains("memory budget"), "{error}");
+        wire.max_w = 600;
+        wire.max_h = 400;
+        wire.window = Some([16, 16, 121, 83]);
+        let rendered = core.render(&wire, None).unwrap();
+        assert_eq!((rendered.image.width, rendered.image.height), (121, 83));
+        job.request = wire.request();
+        assert!(job.run().rendered.is_ok());
     }
 
     // a job from before windows existed has none

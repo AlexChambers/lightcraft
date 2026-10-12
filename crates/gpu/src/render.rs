@@ -22,6 +22,7 @@ use crate::params::{Present, finish_block};
 #[derive(Default)]
 pub struct GpuStages {
     airlight: lightcraft_pipeline::airlight::AirlightCache,
+    airlight_frame: lightcraft_pipeline::airlight::FrameCache<AirlightFrame>,
     entries: Mutex<Vec<Entry>>,
     /// The uploaded source (a view renders one photo at several sizes).
     source: Mutex<Option<(Arc<Rgb32f>, Arc<Buf>)>>,
@@ -35,6 +36,7 @@ struct Entry {
     geo: u64,
     sampled: Arc<Buf>,
     lin: Option<(u64, Arc<Buf>)>,
+    full_airlight: Option<u64>,
     planes: Planes,
     /// Alphas of the last render's masks, as [`lightcraft_pipeline::masks::AlphaCache`] keeps them
     /// on the CPU (same keys).
@@ -100,6 +102,11 @@ impl GpuStages {
                 total += b.len * 4;
             }
         };
+        if let Some(full) = self.airlight_frame.value() {
+            add(&full.sampled);
+            add(&full.lin);
+            add(&full.dark);
+        }
         for e in self.lock().iter() {
             add(&e.sampled);
             if let Some((_, b)) = &e.lin {
@@ -124,6 +131,7 @@ impl GpuStages {
     pub fn clear(&self) {
         self.lock().clear();
         self.airlight.clear();
+        self.airlight_frame.clear();
         *self.source.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -205,6 +213,18 @@ impl<'a> Cx<'a> {
         let enc = self.enc.get_or_insert_with(|| self.gpu.encoder());
         enc.copy_buffer_to_buffer(b.raw(), 0, out.raw(), 0, (b.len * 4) as u64);
         out
+    }
+
+    /// Copy a rectangular set of rows without resampling or reading it back.
+    fn crop(&mut self, b: &Buf, width: usize, nc: usize, rect: PixelWindow) -> Arc<Buf> {
+        let out = self.gpu.buffer(rect.w * rect.h * nc);
+        let enc = self.enc.get_or_insert_with(|| self.gpu.encoder());
+        for y in 0..rect.h {
+            let src_offset = ((rect.y + y) * width + rect.x) * nc * 4;
+            let dst_offset = y * rect.w * nc * 4;
+            enc.copy_buffer_to_buffer(b.raw(), src_offset as u64, out.raw(), dst_offset as u64, (rect.w * nc * 4) as u64);
+        }
+        Arc::new(out)
     }
 
     /// `len` values of `b` from `offset` (both in 32-bit words), as a new buffer (recorded).
@@ -646,25 +666,66 @@ pub fn render(
         return None;
     }
     let full = plan.needs_airlight.then(|| lightcraft_pipeline::plan(src, info, s, &RenderRequest { window: None, ..*req }));
-    // Finish the full statistic before allocating the window's device buffers.
-    let fixed_air = full.as_ref().filter(|full| full.lin_key != plan.lin_key).map(|full| {
-        let compute = || frame_airlight(gpu, src, info, full);
-        match stages {
-            Some(stages) => stages.airlight.get_or_compute(src, full.lin_key, compute),
-            None => compute(),
+    if req.window.is_some()
+        && let Err(why) = lightcraft_pipeline::airlight::check_pixels(w, h)
+    {
+        fail(FailKind::Limit, why);
+        return None;
+    }
+    let cached = stages.and_then(|c| c.get(src, plan.geo)).filter(|e| e.full_airlight.is_some() == plan.needs_airlight);
+    let mut prepared_work = None;
+    let fixed_air = if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
+        let ready = cached
+            .as_ref()
+            .filter(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
+            .and_then(|_| stages.and_then(|cache| cache.airlight.get(src, full.lin_key)));
+        if let Some(air) = ready {
+            Some(air)
+        } else {
+            let saved = stages.and_then(|c| c.airlight_frame.get(src));
+            let prepared = match saved {
+                Some((key, value)) if key == full.lin_key => Ok((value.air, Some(value))),
+                other => {
+                    let sampled = other.filter(|(_, data)| data.geo == full.geo).map(|(_, data)| data.sampled.clone());
+                    if let Some(cache) = stages {
+                        cache.airlight_frame.clear();
+                    }
+                    frame_airlight(gpu, src, info, full, &plan, stages, sampled).map(|(air, data)| {
+                        let data = data.map(Arc::new);
+                        if let (Some(cache), Some(data)) = (stages, &data) {
+                            cache.airlight_frame.put(src, full.lin_key, data.clone(), data.bytes());
+                        }
+                        (air, data)
+                    })
+                }
+            };
+            let (air, prepared) = match prepared {
+                Ok(value) => value,
+                Err(why) => {
+                    fail(FailKind::Limit, why);
+                    return None;
+                }
+            };
+            prepared_work = prepared.map(|data| data.window(gpu, &plan));
+            if let Some(cache) = stages {
+                cache.airlight.remember(src, full.lin_key, air);
+            }
+            Some(air)
         }
-    });
+    } else {
+        None
+    };
     let s = &*plan.settings;
-    let cached = stages.and_then(|c| c.get(src, plan.geo));
     let mut host = Host::default();
     let mut cx = Cx::new(gpu);
     lap("plan", &mut t, &mut cx);
 
     // 1. geometry (on the CPU when the source exceeds the device's buffer limit)
-    let sampled = match &cached {
-        Some(e) => e.sampled.clone(),
+    let sampled = match (&prepared_work, &cached) {
+        (Some(work), _) => work.sampled.clone(),
+        (_, Some(e)) => e.sampled.clone(),
         // (a WarpRectilinear2 chain also goes to the CPU: its degree-14 polynomial needs f64)
-        None if gpu.fits(src.data.len() * 3) && !plan.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) => {
+        _ if gpu.fits(src.data.len() * 3) && !plan.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) => {
             let upload = || gpu.upload(rgb_words(src));
             // (a source too big for a view's stages to keep is the one shared copy: a window is
             // cut from the photo's own pixels, and what its stages keep is its own sampled pixels)
@@ -675,7 +736,7 @@ pub fn render(
             };
             sample(&mut cx, src, src_buf, &plan)
         }
-        None => {
+        _ => {
             let img = plan.frame.sample(src, w, h);
             let b = Arc::new(gpu.upload(rgb_words(&img)));
             host.sampled = Some(img);
@@ -685,7 +746,11 @@ pub fn render(
     lap("sample", &mut t, &mut cx);
 
     // 2. white balance, defringe, spots, noise reduction
-    let lin = match cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == plan.lin_key) {
+    let lin = match prepared_work
+        .as_ref()
+        .map(|work| (plan.lin_key, work.lin.clone()))
+        .or_else(|| cached.as_ref().and_then(|e| e.lin.clone()).filter(|(k, _)| *k == plan.lin_key))
+    {
         Some((_, b)) => b,
         None => Arc::new(linear(&mut cx, &sampled, info, &plan, &mut host)),
     };
@@ -697,6 +762,10 @@ pub fn render(
         Some(p) if p.key == plan.lin_key => p,
         _ => Planes { key: plan.lin_key, ..Default::default() },
     };
+    if let Some(work) = prepared_work.take() {
+        let sigma = (0.02 * plan.px_per_long as f32).max(1.0);
+        planes.dark = Some((sigma.to_bits(), work.dark, fixed_air.unwrap_or(1.0)));
+    }
     let mut prep = prepare(&mut cx, &lin, &plan, req, &mut planes);
     // a window dehazes with the whole frame's airlight
     if let Some(stages) = stages
@@ -714,7 +783,15 @@ pub fn render(
     let (masks, terms) = masks(&mut cx, &lin, &prep, &plan, &mut host, &mut alphas);
     lap("masks", &mut t, &mut cx);
     if let Some(c) = stages {
-        c.put(Entry { src: src.clone(), geo: plan.geo, sampled, lin: Some((plan.lin_key, lin.clone())), planes, masks: alphas });
+        c.put(Entry {
+            src: src.clone(),
+            geo: plan.geo,
+            sampled,
+            lin: Some((plan.lin_key, lin.clone())),
+            planes,
+            masks: alphas,
+            full_airlight: full.as_ref().map(|p| p.lin_key),
+        });
     }
 
     // 5. per-pixel stage
@@ -911,31 +988,80 @@ struct Prep {
 
 /// Use the same geometry, linear stages, dark-channel kernel and sample selection as a
 /// full GPU render. If that frame exceeds device limits, its reference is the CPU fallback.
-fn frame_airlight(gpu: &Gpu, src: &Arc<Rgb32f>, info: &SourceInfo, full: &Plan<'_>) -> f32 {
+struct AirlightWork {
+    sampled: Arc<Buf>,
+    lin: Arc<Buf>,
+    dark: Arc<Buf>,
+}
+struct AirlightFrame {
+    geo: u64,
+    w: usize,
+    sampled: Arc<Buf>,
+    lin: Arc<Buf>,
+    dark: Arc<Buf>,
+    air: f32,
+}
+impl AirlightFrame {
+    fn window(&self, gpu: &Gpu, plan: &Plan<'_>) -> AirlightWork {
+        let (x, y) = plan.frame.view.map_or((0, 0), |v| (v.x as usize, v.y as usize));
+        let r = PixelWindow { x, y, w: plan.w, h: plan.h };
+        let mut cx = Cx::new(gpu);
+        let work = AirlightWork {
+            sampled: cx.crop(&self.sampled, self.w, 3, r),
+            lin: cx.crop(&self.lin, self.w, 3, r),
+            dark: cx.crop(&self.dark, self.w, 1, r),
+        };
+        cx.flush();
+        work
+    }
+    fn bytes(&self) -> usize {
+        (self.sampled.len + self.lin.len + self.dark.len) * 4
+    }
+}
+
+fn frame_airlight(
+    gpu: &Gpu,
+    src: &Arc<Rgb32f>,
+    info: &SourceInfo,
+    full: &Plan<'_>,
+    plan: &Plan<'_>,
+    stages: Option<&GpuStages>,
+    sampled: Option<Arc<Buf>>,
+) -> Result<(f32, Option<AirlightFrame>), String> {
+    lightcraft_pipeline::airlight::check_prepare(full, Some(plan))?;
+    lightcraft_pipeline::airlight::check_pixels(src.width, src.height)?;
     let (w, h) = (full.w, full.h);
     let n = w * h;
     if !gpu.fits(n * 3) {
-        return lightcraft_pipeline::airlight::compute(src, info, full);
+        return lightcraft_pipeline::airlight::compute(src, info, full).map(|air| (air, None));
     }
     let mut cx = Cx::new(gpu);
     let mut host = Host::default();
-    let sampled = if gpu.fits(src.data.len() * 3) && !full.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) {
-        sample(&mut cx, src, Arc::new(gpu.upload(rgb_words(src))), full)
+    let sampled = if let Some(sampled) = sampled {
+        sampled
+    } else if gpu.fits(src.data.len() * 3) && !full.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) {
+        let upload = || gpu.upload(rgb_words(src));
+        let source = match stages {
+            Some(c) if src.data.len() * 12 <= RETAIN_SOURCE_BYTES => c.source(src, upload),
+            Some(_) => shared_source(src, upload),
+            None => Arc::new(upload()),
+        };
+        sample(&mut cx, src, source, full)
     } else {
         let img = full.frame.sample(src, w, h);
         let b = Arc::new(gpu.upload(rgb_words(&img)));
         host.sampled = Some(img);
         b
     };
-    let lin = linear(&mut cx, &sampled, info, full, &mut host);
-    drop(sampled);
+    let lin = Arc::new(linear(&mut cx, &sampled, info, full, &mut host));
     let d0 = cx.gpu.buffer(n);
     map(&mut cx, "dark_k", n, &[], [Some(&lin), None, None], &d0);
     let dark = gaussian(&mut cx, &d0, w, h, 1, (0.02 * full.px_per_long as f32).max(1.0));
     let m = n.div_ceil(local::AIRLIGHT_STEP);
     let sub = cx.gpu.buffer(m);
     map(&mut cx, "subsample", m, &[local::AIRLIGHT_STEP as u32], [Some(&dark), None, None], &sub);
-    local::airlight_of(cx.read(&sub, m))
+    let air = local::airlight_of(cx.read(&sub, m));
+    Ok((air, Some(AirlightFrame { geo: full.geo, w, sampled, lin, dark: Arc::new(dark), air })))
 }
 
 /// The spatial planes (`local::prepare`), reusing those in `planes`.
