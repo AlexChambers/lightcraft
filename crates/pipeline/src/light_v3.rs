@@ -17,7 +17,8 @@
 //! `fit_pointwise.py` (the fitting tool) exactly; [`Fit::unpack`] is its `Family.unpack`. Each
 //! active operator is tabulated once per render ([`LUT_N`] entries over `v` in 0..1, interpolated
 //! linearly). High-bit-depth CPU exports and the GPU read these tables ([`LightOps`]); 8-bit CPU
-//! renders compose their encoding and channel operations over linear input ([`PreviewOps`]).
+//! renders compose per-channel operations over linear input ([`PreviewOps`]). Luminance operations
+//! retain the original evaluation, including any preceding per-channel operation.
 
 use lightcraft_color::{Mat3, PROPHOTO, REC2020};
 use lightcraft_develop::{DevelopSettings, Process};
@@ -321,8 +322,6 @@ const PREVIEW_INTERVALS: usize = 16_384;
 
 /// An operator with its sRGB encoding and decoding included in one linear-input table.
 struct LinearOperator {
-    mode: Mode,
-    weight: f32,
     black: f32,
     white: f32,
     // Each linear interval stores [intercept, slope], so a lookup needs no integer-to-float
@@ -331,7 +330,7 @@ struct LinearOperator {
 }
 
 impl LinearOperator {
-    fn new(mode: Mode, weight: f32, channel: impl Fn(f32) -> f32) -> Self {
+    fn new(channel: impl Fn(f32) -> f32) -> Self {
         let black = channel(0.0);
         let mut previous = black;
         let mut segments = Box::new([[0.0; 2]; PREVIEW_INTERVALS]);
@@ -342,7 +341,7 @@ impl LinearOperator {
             *segment = [intercept, slope];
             previous = next;
         }
-        Self { mode, weight, black, white: previous, segments }
+        Self { black, white: previous, segments }
     }
 
     #[inline(always)]
@@ -358,32 +357,10 @@ impl LinearOperator {
             intercept + slope * x
         }
     }
-
-    #[inline]
-    fn luminance(&self, p: [f32; 3]) -> [f32; 3] {
-        let y = PRO_Y[0] * p[0] + PRO_Y[1] * p[1] + PRO_Y[2] * p[2];
-        if y.is_nan() || y <= 1e-6 || y > 1.0 {
-            return p;
-        }
-        let r = self.channel(y) / y;
-        p.map(|c| c * r)
-    }
-
-    #[inline]
-    fn apply(&self, p: [f32; 3]) -> [f32; 3] {
-        match self.mode {
-            Mode::PerChannel => p.map(|c| self.channel(c)),
-            Mode::Luminance => self.luminance(p),
-            Mode::Mix => {
-                let (a, b) = (p.map(|c| self.channel(c)), self.luminance(p));
-                std::array::from_fn(|k| self.weight * a[k] + (1.0 - self.weight) * b[k])
-            }
-        }
-    }
 }
 
-/// CPU preview tables, built once per render. Consecutive per-channel operators share one table;
-/// a genuine luminance mix keeps separate scalar tables and the original order of operations.
+/// CPU preview tables for per-channel operations, built once per render. Luminance operations
+/// use [`LightOps`] instead, so interpolation cannot change a nearly cancelling luminance sum.
 pub(crate) struct PreviewOps {
     ops: PreviewOperators,
     to_pro: [[f32; 4]; 3],
@@ -396,19 +373,24 @@ enum PreviewOperators {
 }
 
 impl PreviewOps {
-    pub(crate) fn new(exact: &LightOps, encode: &impl Fn(f32) -> f32) -> Self {
+    pub(crate) fn new(exact: &LightOps, encode: &impl Fn(f32) -> f32) -> Option<Self> {
         let ops = &exact.ops;
+        // Small per-channel errors can cross the luminance cutoff at 1e-6, or be amplified
+        // by F(Y) / Y. Keep every preceding operation exact too, including Contrast.
+        if ops.iter().any(|o| o.mode != Mode::PerChannel) {
+            return None;
+        }
         // A preceding black lift could carry a negative input across zero. Only fuse when
         // preceding operators fix zero, so the composed negative extension remains F(0) + x.
         // Contrast fixes zero and negative Blacks is per channel, so their usual pair fuses.
-        let fuse = ops.iter().all(|o| o.mode == Mode::PerChannel) && ops.iter().take(ops.len().saturating_sub(1)).all(|o| o.lut[0] == 0.0);
+        let fuse = ops.iter().take(ops.len().saturating_sub(1)).all(|o| o.lut[0] == 0.0);
         let ops = if fuse {
-            PreviewOperators::PerChannel(LinearOperator::new(Mode::PerChannel, 1.0, |x| ops.iter().fold(x, |x, o| o.channel(x, encode))))
+            PreviewOperators::PerChannel(LinearOperator::new(|x| ops.iter().fold(x, |x, o| o.channel(x, encode))))
         } else {
-            PreviewOperators::Separate(ops.iter().map(|o| LinearOperator::new(o.mode, o.weight, |x| o.channel(x, encode))).collect())
+            PreviewOperators::Separate(ops.iter().map(|o| LinearOperator::new(|x| o.channel(x, encode))).collect())
         };
         let columns = |m: [[f32; 3]; 3]| std::array::from_fn(|i| [m[0][i], m[1][i], m[2][i], 0.0]);
-        Self { ops, to_pro: columns(exact.to_pro), from_pro: columns(exact.from_pro) }
+        Some(Self { ops, to_pro: columns(exact.to_pro), from_pro: columns(exact.from_pro) })
     }
 
     // Keep the single-table path in the finish loop. An out-of-line call per pixel saves
@@ -420,7 +402,7 @@ impl PreviewOps {
             PreviewOperators::PerChannel(op) => p = [op.channel(p[0]), op.channel(p[1]), op.channel(p[2])],
             PreviewOperators::Separate(ops) => {
                 for op in ops {
-                    p = op.apply(p);
+                    p = p.map(|c| op.channel(c));
                 }
             }
         }

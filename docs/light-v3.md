@@ -1,6 +1,6 @@
 # Calibrated Contrast and Blacks
 
-> **Last updated:** 2026-10-13 · **Change:** minor (composed CPU preview tables and aggregate publication threshold)
+> **Last updated:** 2026-10-13 · **Change:** minor (preserve exact evaluation for luminance mixes)
 
 Process V3 calibrates global Contrast and Blacks on the camera-look path: a raw with
 `SourceInfo::camera_tone`. Contrast acts per channel. Blacks blends a per-channel result with
@@ -29,8 +29,8 @@ Combined edits use V2 Whites before the two calibrated operators.
 The operators convert linear Rec.2020 to linear ProPhoto RGB (D50, with Bradford white-point
 adaptation), encode values with the sRGB transfer curve, apply the fitted curves, and convert
 back. The matrices come from `RgbSpace::to_space`. CPU `finish.rs` and GPU `finish.wgsl` use
-the same matrices and operator tables. CPU previews compose the encoding and operator
-lookups into tables indexed by linear input. The computation is pointwise, so a render window needs
+the same matrices and operator tables. CPU previews compose per-channel operations into
+tables indexed by linear input. The computation is pointwise, so a render window needs
 no whole-photo measurement.
 
 ## Operator family
@@ -57,9 +57,18 @@ skipped, and finite amounts are clamped to the slider range.
 When the resolved per-channel weight is exactly one or zero in f32, the renderer selects
 only the per-channel or luminance operation. In particular, negative Blacks is per channel.
 For 8-bit CPU renders, per-channel Contrast and Blacks share one table with 16,384 intervals
-over linear input. With a genuine luminance mix, each operator has a separate linear-input
-table and the renderer preserves their order. U16 and F32 exports retain the original
-operator tables and exact sRGB encoding. Metal retains the original tables too.
+over linear input. If any operator uses luminance, the renderer retains the original
+evaluation for every operator, including Contrast before positive Blacks. Preview renders
+use the existing sRGB encoding table and the source operator tables without the additional
+linear-input approximation. U16 and F32 exports retain the original operator tables and
+exact sRGB encoding. Metal retains the original tables too.
+
+Camera chroma scaling can create mixed-sign ProPhoto components from nonnegative source
+pixels. Their luminance terms can nearly cancel. A small Contrast approximation error can
+then cross the `1e-6` luminance cutoff or be amplified by `F(Y) / Y`. A scalar interpolation
+error bound does not bound the rendered error after this scaling. Exact evaluation avoids
+introducing this disagreement with the earlier CPU path and Metal. It retains their
+pre-existing rounding differences near the cutoff.
 
 ### HDR and gamut limits
 
@@ -132,25 +141,36 @@ adjustments and sources without a camera curve have no new calibration.
 ## Cost and stability
 
 Each active operator has a 4 KiB source table, at most 8 KiB for both. CPU previews also
-build one composed table of 128 KiB, or two such tables when Blacks uses a genuine luminance
-mix. Each of its 16,384 intervals stores an intercept and slope. The composed per-channel
-path uses three lookups per pixel and two colour matrix multiplications. A luminance mix
-also computes luminance scaling and a blend.
+build one composed table of 128 KiB when all active operators are per channel. Each of its
+16,384 intervals stores an intercept and slope. The composed per-channel path uses three
+lookups per pixel and two colour matrix multiplications. A luminance mix builds no composed
+table. It evaluates the original encoding and source tables, luminance scaling and blend.
 There is no extra image pass, source read, per-photo state or statistic. Zero Contrast and
 Blacks skip the new work. Metal and high-bit-depth CPU exports allocate only the source tables.
 
 Release measurements on an M3 Max used two Rayon threads and nine interleaved samples per
-case against main `701f78ea` and the original V3 commit `344bf75b`. With Contrast +40 and
-Blacks -30, cached CPU renders took 1.20 to 1.25 times main across Sony ILCE-7M3 and Nikon D750
-fit views, 1:1 windows and full frames. The original V3 took 1.98 to 2.06 times main in the
-same run. Full-frame CPU medians fell from 1535 to 927 ms for Sony and from 1567 to 960 ms
-for Nikon. Fit and window output was 1920 by 1280; full frames were about 24 MP. These
-measurements exclude decoding, cache preparation and file encoding.
+case against main `701f78ea` and round 2 `41074392`. The two public raw files were from a
+Sony ILCE-7M3 and Nikon D750. Fit used a 2560-pixel source preview in a 1920 by 1280 viewport;
+1:1 windows used native source pixels in that viewport. Each worker decoded once and warmed
+its cache; every timed sample changed exposure. Decode, cache preparation and file encoding
+are excluded.
 
-Metal medians were 3.07 to 4.76 ms for fit and window views and 18.24 to 22.83 ms for full
-frames. The initial Nikon window median rose from 3.67 to 4.76 ms; a 27-sample interleaved
-confirmation measured 3.92 ms for the original V3 and 3.91 ms for this version. Other work
-on the shared machine was not controlled. These samples do not establish tail latency.
+With Contrast +40 and Blacks -30, CPU wall times were 1.22 to 1.28 times main and 1.01 to
+1.024 times round 2. A 27-sample confirmation of the slowest Nikon window case measured
+75.33 ms on main, 94.76 ms on round 2 and 96.45 ms here. Its ratio is 1.28 times main and
+1.018 times round 2. The fused path remains, with a small measured cost increase in this run.
+
+With Contrast +40 and Blacks +30, CPU wall times were 1.97 to 2.02 times main and 1.20 to
+1.28 times round 2. Blacks +30 alone took 1.61 to 1.64 times main and 1.17 to 1.19 times
+round 2. These positive-Blacks cases exceed the approximate 1.25-times-main cost target.
+They need the original operator evaluation because the extra preview interpolation can
+change the luminance cutoff result or have its error amplified by luminance scaling.
+
+Metal medians for these settings were 3.25 to 4.97 ms, with the original GPU operators.
+CPU neutral controls were 0.99 to 1.00 times main. The general `cargo xtask bench` run also
+completed before and after the fix, with no CPU-time regression above its 20% threshold.
+Other work on the shared machine was not controlled. These measurements do not establish
+tail latency or performance on other GPU backends.
 
 V1 and V2 keep their rendering and persistent cache keys. Persistent keys from process V3
 on include the process this build actually renders with, so saved settings from a newer
@@ -162,5 +182,6 @@ Current Process remains one undoable settings change and never downgrades a futu
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Preserve the original evaluation for luminance mixes, including preceding Contrast, and cover two uniform cutoff regressions |
 | 2026-10-13 | minor | Compose CPU preview lookups, preserve exact deep exports, and require three distinct photos per published error aggregate |
 | 2026-10-12 | new | Split Contrast and Blacks calibration, preserve V2 Whites and legacy rendering |
