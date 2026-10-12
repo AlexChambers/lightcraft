@@ -105,6 +105,11 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+    /// Values without changing their recency, for shared-allocation accounting.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.map.values().map(|(value, _, _)| value)
+    }
+
     pub fn cost(&self) -> usize {
         self.cost
     }

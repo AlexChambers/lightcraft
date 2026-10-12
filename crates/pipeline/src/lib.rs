@@ -318,34 +318,35 @@ impl StageCache {
     }
 
     fn image_bytes(&self, include_sources: bool) -> usize {
-        fn size<T>(i: &lightcraft_raster::Image<T>) -> usize {
-            i.data.len() * std::mem::size_of::<T>()
-        }
-        let mut seen: Vec<usize> = Vec::new();
-        let mut total: usize = 0;
-        let mut add = |p: usize, n: usize| {
-            if !seen.contains(&p) {
-                seen.push(p);
-                total = total.saturating_add(n);
-            }
-        };
+        let mut live = budget::LiveImages::default();
+        self.count_images(&mut live, include_sources);
+        live.bytes().min(usize::MAX as u64) as usize
+    }
+
+    /// Add retained CPU allocations to a census shared with other caches and
+    /// their caller. An Arc in two views still owns just one image allocation.
+    pub fn count_retained_images(&self, live: &mut budget::LiveImages) {
+        self.count_images(live, true);
+    }
+
+    fn count_images(&self, live: &mut budget::LiveImages, include_sources: bool) {
         if let Some(full) = self.airlight_frame.value() {
-            add(Arc::as_ptr(&full.sampled) as usize, size(&full.sampled));
-            add(Arc::as_ptr(&full.lin) as usize, size(&full.lin));
-            add(Arc::as_ptr(&full.dark) as usize, size(&full.dark));
+            live.image(&full.sampled);
+            live.image(&full.lin);
+            live.image(&full.dark);
         }
         for e in self.lock().iter() {
             if include_sources {
-                add(Arc::as_ptr(&e.src) as usize, e.src.data.capacity().saturating_mul(12));
+                live.image(&e.src);
                 if let Some(mattes) = e.masks.mattes() {
-                    add(Arc::as_ptr(mattes) as usize, mattes.bytes());
+                    live.mattes(mattes);
                 }
             }
             if !Arc::ptr_eq(&e.sampled, &e.src) {
-                add(Arc::as_ptr(&e.sampled) as usize, size(&e.sampled));
+                live.image(&e.sampled);
             }
             if let Some((_, l)) = &e.lin {
-                add(Arc::as_ptr(l) as usize, size(l));
+                live.image(l);
             }
             let pl = &e.planes;
             let planes = pl.log_l.iter().chain(pl.base.iter().map(|x| &x.1)).chain(pl.clarity.iter().map(|x| &x.1));
@@ -355,13 +356,12 @@ impl StageCache {
                 .chain(e.masks.planes())
                 .chain(e.masks.refinement_planes())
             {
-                add(Arc::as_ptr(p) as usize, size(p));
+                live.image(p);
             }
             if let Some((_, c)) = &pl.chroma {
-                add(Arc::as_ptr(c) as usize, size(c));
+                live.image(c);
             }
         }
-        total
     }
 
     /// Number of cached output sizes.
@@ -444,6 +444,12 @@ pub struct Plan<'a> {
 
 /// Resolve `s` against `src` for `req` (see [`Plan`]).
 pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &RenderRequest) -> Plan<'a> {
+    plan_window(src, info, s, req, false)
+}
+
+// The web fallback uses main's requested window plus its bounded spot reads.
+// Native and all admitted exact renders keep the complete filter context.
+fn plan_window<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &RenderRequest, approximate: bool) -> Plan<'a> {
     let mut settings: Cow<'a, DevelopSettings> = match profiles::effective(s) {
         Cow::Borrowed(b) => upright::resolve(src, info, b),
         Cow::Owned(o) => Cow::Owned(upright::resolve(src, info, &o).into_owned()),
@@ -451,7 +457,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     visualize::adjust_settings(req.overlay, &mut settings);
     // a window must not choose a spot's source from the pixels it happens to hold: fix them
     // from a fixed-size render of the whole frame first
-    if req.window.is_some() && settings.spots.iter().any(|sp| sp.source_offset.is_none()) {
+    if !approximate && req.window.is_some() && settings.spots.iter().any(|sp| sp.source_offset.is_none()) {
         let picked: Vec<Option<lightcraft_geom::Point>> =
             settings.spots.iter().map(|sp| sp.source_offset.or_else(|| spots::pick_source(src, info, &settings, sp, None))).collect();
         for (sp, o) in settings.to_mut().spots.iter_mut().zip(picked) {
@@ -463,23 +469,32 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let (full_w, full_h) = frame.fit(req.max_w, req.max_h);
     // sizes and scale are those of the whole output; a window only narrows what is drawn
     let px_per_long = frame.px_per_long(full_w);
-    let needs_airlight = req.window.is_some() && local::context_plane_sigmas(s, px_per_long, req.quality).dark.is_some();
+    let needs_airlight = req.window.is_some()
+        && if approximate {
+            s.section_enabled("effects") && (s.effects.dehaze != 0.0 || s.masks.iter().any(|m| m.adjust.dehaze != 0.0))
+        } else {
+            local::context_plane_sigmas(s, px_per_long, req.quality).dark.is_some()
+        };
     let mut keep = None;
     let (frame, w, h) = match req.window {
         Some(win) => {
             let win = win.clamped(full_w, full_h);
-            let margin = window::margin(s, px_per_long, src.width.max(src.height), full_w.max(full_h), req.quality, info.mattes.as_deref());
-            let work = window::expand(win, full_w, full_h, margin);
-            // Spots upstream of the filters must supply the expanded context too.
-            let work = spots::window_for_reads_checked(s, &frame, full_w, full_h, px_per_long, work).unwrap_or(PixelWindow {
-                x: 0,
-                y: 0,
-                w: full_w,
-                h: full_h,
-            });
-            // Defringe precedes spots, so its neighbourhood must also surround
-            // every source patch that the spots read, before NR and local planes.
-            let work = window::expand(work, full_w, full_h, optics::defringe_radius(s, px_per_long / optics::DEFRINGE_REF_LONG));
+            let work = if approximate {
+                if req.depth == OutputDepth::U8 { spots::window_for_reads(s, &frame, full_w, full_h, px_per_long, win) } else { win }
+            } else {
+                let margin = window::margin(s, px_per_long, src.width.max(src.height), full_w.max(full_h), req.quality, info.mattes.as_deref());
+                let work = window::expand(win, full_w, full_h, margin);
+                // Spots upstream of the filters must supply the expanded context too.
+                let work = spots::window_for_reads_checked(s, &frame, full_w, full_h, px_per_long, work).unwrap_or(PixelWindow {
+                    x: 0,
+                    y: 0,
+                    w: full_w,
+                    h: full_h,
+                });
+                // Defringe precedes spots, so its neighbourhood must also surround
+                // every source patch that the spots read, before NR and local planes.
+                window::expand(work, full_w, full_h, optics::defringe_radius(s, px_per_long / optics::DEFRINGE_REF_LONG))
+            };
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -497,6 +512,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         cache_frame.view = None;
     }
     let geo = hash_of((format!("{cache_frame:?}"), w, h));
+    let geo = if approximate { hash_of((geo, "web approximate window")) } else { geo };
     let (wb_t, wb_tint) = local::effective_wb(info, s);
     let eyes = redeye::resolve(src, &s.red_eye, s.orientation, &frame, w, h, px_per_long);
     let d = &s.detail;
@@ -588,13 +604,42 @@ pub fn hdr_histogram(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: 
 /// Render `src` with settings `s`. Oversized windows return a memory-budget error
 /// before allocating their work image or full-frame Dehaze preparation.
 pub fn render(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> Result<Rendered, String> {
-    render_impl(Src::Borrowed(src), info, s, req, None)
+    render_impl(Src::Borrowed(src), info, s, req, None, cfg!(target_arch = "wasm32").then_some(0), false)
 }
 
 /// [`render`], reusing (and refreshing) the intermediate results in `cache`. The output is
-/// identical to [`render`]'s.
+/// identical to [`render`]'s when both use the exact plan. On wasm32, memory
+/// pressure can select the approximate window policy described in `docs/web.md`.
 pub fn render_cached(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: &StageCache) -> Result<Rendered, String> {
-    render_impl(Src::Shared(src), info, s, req, Some(cache))
+    let retained = if cfg!(target_arch = "wasm32") {
+        let mut live = budget::LiveImages::default();
+        live.source(src, info);
+        let source_bytes = live.bytes();
+        cache.count_retained_images(&mut live);
+        let mut retained = live.bytes().saturating_sub(source_bytes);
+        if budget::estimate_wasm_render(src, info, s, req, true).saturating_add(retained) > budget::WASM_RENDER_BYTES {
+            cache.clear();
+            retained = 0;
+        }
+        Some(retained)
+    } else {
+        None
+    };
+    render_impl(Src::Shared(src), info, s, req, Some(cache), retained, false)
+}
+
+/// Worker entry point, including native tests of the web policy. `retained`
+/// counts other live allocations after source deduplication, including `cache`.
+pub fn render_web(
+    src: &Arc<Rgb32f>,
+    info: &SourceInfo,
+    s: &DevelopSettings,
+    req: &RenderRequest,
+    cache: Option<&StageCache>,
+    retained: u64,
+) -> Result<Rendered, String> {
+    let source = if cache.is_some() { Src::Shared(src) } else { Src::Borrowed(src) };
+    render_impl(source, info, s, req, cache, Some(retained), false)
 }
 
 enum Src<'a> {
@@ -602,7 +647,15 @@ enum Src<'a> {
     Shared(&'a Arc<Rgb32f>),
 }
 
-fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: Option<&StageCache>) -> Result<Rendered, String> {
+fn render_impl(
+    src: Src<'_>,
+    info: &SourceInfo,
+    s: &DevelopSettings,
+    req: &RenderRequest,
+    cache: Option<&StageCache>,
+    web_retained: Option<u64>,
+    approximate_only: bool,
+) -> Result<Rendered, String> {
     // sections switched off with their eye render as if at their defaults (issue #316)
     let effective = s.effective();
     let edit: &DevelopSettings = &effective;
@@ -621,19 +674,33 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Src::Shared(a) => a,
     };
     let plan = plan(src_img, info, s, req);
-    if req.window.is_some() {
-        airlight::check_pixels(plan.w, plan.h)?;
-    }
     let full = plan.needs_airlight.then(|| self::plan(src_img, info, s, &RenderRequest { window: None, ..*req }));
-    #[cfg(target_arch = "wasm32")]
-    budget::check_wasm_render(src_img, info, edit, req, cache.map_or(0, |c| c.retained_bytes() as u64))?;
+    let (plan, full, approximate) = match web_retained {
+        Some(retained) => budget::select(src_img, info, s, edit, req, cache.is_some(), retained, approximate_only, plan, full)?,
+        None => {
+            if req.window.is_some() {
+                airlight::check_pixels(plan.w, plan.h)?;
+            }
+            (plan, full, false)
+        }
+    };
+    // A nested HDR overlay keeps the outer render's storage live. It must use
+    // the same fallback policy that admission estimated for the pair.
+    let nested_retained = web_retained.filter(|_| req.overlay == Overlay::HdrRange && edit.hdr.enabled).map(|retained| {
+        retained.saturating_add(
+            budget::estimate(src_img, info, &plan, full.as_ref(), req, cache.is_some(), approximate)
+                .saturating_sub(budget::source_bytes(src_img, info)),
+        )
+    });
     let shared = match (&src, cache) {
         (Src::Shared(a), Some(c)) => Some((*a, c)),
         _ => None,
     };
-    let cached = shared.and_then(|(a, c)| c.get(a, plan.geo)).filter(|e| e.full_airlight.is_some() == plan.needs_airlight);
+    let cached = shared.and_then(|(a, c)| c.get(a, plan.geo)).filter(|e| e.full_airlight.is_some() == (plan.needs_airlight && !approximate));
     let mut prepared_work = None;
-    let fixed_air = if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
+    let fixed_air = if approximate && plan.needs_airlight {
+        Some(budget::approximate_airlight(src_img, info, &plan.settings, req))
+    } else if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
         // A valid work entry already contains this full statistic and its work pixels.
         let ready = cached
             .as_ref()
@@ -771,7 +838,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     if req.overlay == Overlay::HdrRange && edit.hdr.enabled {
         // the HDR rendition of the same request says how far above SDR white each pixel goes
         let hreq = RenderRequest { depth: OutputDepth::F32Hdr, overlay: Overlay::None, proof: None, ..*req };
-        if let Some(hdr) = render(src_img, info, edit, &hreq)?.deep {
+        if let Some(hdr) = render_impl(Src::Borrowed(src_img), info, edit, &hreq, None, nested_retained, approximate)?.deep {
             visualize::hdr_range(&mut image, &hdr, req.space.luma());
         }
         lap("visualize hdr", &mut t);

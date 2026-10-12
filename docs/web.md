@@ -190,3 +190,21 @@ lightcraft-bench {"first_frame_ms":…,"thumbs_done_ms":…,"slider_draft_ms":[�
 - `slider_draft_ms`: time from the `develop.set` command until the new loupe texture is ready.
 - `slider_job_ms`: the pipeline's share of that time.
 - `release_full_ms`: the full-quality render after the drag ends.
+
+## Render memory and large zoom windows
+
+The CPU renderer estimates the peak live image storage of the requested plan
+before it allocates work images. It counts sampling copies only when needed,
+active filters, output depth, and the largest allocation phase. The worker
+counts shared sources and stage buffers once across its caches and can release
+those caches before rendering. Admission leaves 64 MiB of the wasm32 address
+space for the runtime and allocator. Decoding, encoded input and browser memory
+availability remain separate limits.
+
+A zoom window normally includes all spatial filter support and exact full-frame
+Dehaze preparation. If that plan exceeds the web memory budget, the renderer
+uses the earlier window policy: the requested rectangle with bounded spot reads,
+and a white-balanced 384 px Dehaze proxy. These extreme web windows are
+approximate. Full renders keep the exact plan. If neither window plan fits, the
+renderer returns a recoverable error and accepts smaller subsequent requests.
+Native rendering keeps its existing exact-plan limits.
