@@ -291,6 +291,7 @@ impl Workers {
             w.worker.terminate();
             if let Some(b) = w.busy.take() {
                 let r = RenderResult {
+                    cache_generation: u64::MAX,
                     request_id: b.request_id,
                     source_key: None,
                     photo: b.photo,
@@ -382,6 +383,7 @@ impl Workers {
         g.done.push((
             b.slot,
             RenderResult {
+                cache_generation: u64::MAX,
                 request_id: b.request_id,
                 source_key: None,
                 photo: b.photo,
@@ -436,6 +438,7 @@ impl RenderOffload for Workers {
             let image = Arc::unwrap_or_clone(img);
             let histogram = Histogram::of_srgb8(&image);
             let r = RenderResult {
+                cache_generation: job.cache_generation,
                 request_id: job.request_id,
                 source_key: job.source_key,
                 photo: job.photo,

@@ -357,6 +357,7 @@ pub struct MediaCache {
     pub file_bytes: Option<crate::merge::ByteReader>,
     /// The library's smart previews folder (originals offline: render from the proxy).
     pub smart_dir: Option<std::path::PathBuf>,
+    source_generation: u64,
     /// Whether originals (and smart previews) are on disk: cached and checked off the UI thread
     /// in the app (see [`crate::availability`]).
     pub availability: crate::availability::Availability,
@@ -430,6 +431,7 @@ impl Default for MediaCache {
             preview_loader: None,
             file_bytes: None,
             smart_dir: None,
+            source_generation: 0,
             availability: Default::default(),
             scenes: Vec::new(),
             rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
@@ -669,6 +671,11 @@ impl MediaCache {
     }
 
     fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
+        let generation = self.rendered.generation();
+        if self.source_generation != generation {
+            self.clear_sources();
+            self.source_generation = generation;
+        }
         if cached && let Some(a) = self.get_source(p.id, level) {
             return SourceRef::Loaded(Box::new(a));
         }
@@ -764,6 +771,7 @@ pub struct RenderJob {
 }
 
 pub struct RenderResult {
+    pub cache_generation: u64,
     pub request_id: u64,
     pub source_key: Option<Hash128>,
     pub photo: PhotoId,
@@ -877,6 +885,7 @@ impl RenderJob {
     /// This job's result when it fails with `e`.
     fn failed(&self, e: String) -> RenderResult {
         RenderResult {
+            cache_generation: self.cache_generation,
             request_id: self.request_id,
             source_key: self.source_key,
             photo: self.photo,
@@ -920,6 +929,7 @@ impl RenderJob {
             let image = Arc::unwrap_or_clone(img);
             let histogram = Histogram::of_srgb8(&image);
             return RenderResult {
+                cache_generation: self.cache_generation,
                 request_id: self.request_id,
                 source_key: self.source_key,
                 photo: self.photo,
@@ -995,6 +1005,7 @@ impl RenderJob {
                     cache.put_deferred_at(self.cache_generation, *key, Arc::new(srgb.unwrap_or_else(|| rendered.image.clone())));
                 }
                 RenderResult {
+                    cache_generation: self.cache_generation,
                     request_id: self.request_id,
                     source_key: self.source_key,
                     photo: self.photo,
@@ -1100,6 +1111,7 @@ impl QuickJob {
     pub fn run(self) -> RenderResult {
         let (request_id, photo, key) = (self.request_id, self.photo, self.key);
         crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult {
+            cache_generation: u64::MAX,
             request_id,
             source_key: None,
             photo,
@@ -1117,6 +1129,7 @@ impl QuickJob {
         let (photo, key) = (self.photo, self.key);
         let request_id = self.request_id;
         let done = |rendered: Result<Rendered, String>, quick| RenderResult {
+            cache_generation: u64::MAX,
             request_id,
             source_key: None,
             photo,
@@ -1238,7 +1251,8 @@ impl crate::Session {
             ^ (level as u64) << 60
             ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ content.rotate_left(17)
-            ^ salt;
+            ^ salt
+            ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93);
         let cache = thumb_bucket.map(|b| {
             let mut k = Hasher128::new();
             k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION).u64(crate::camera_profiles::cache_key());
@@ -1274,7 +1288,12 @@ impl crate::Session {
     pub fn preview_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, apply_crop: bool, settings: &DevelopSettings) -> Option<RenderJob> {
         let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
         job.settings = Arc::new(settings.clone());
-        job.key = settings.hash64() ^ ((max_w as u64) << 40) ^ ((max_h as u64) << 20) ^ (apply_crop as u64) ^ (job.level as u64) << 60;
+        job.key = settings.hash64()
+            ^ ((max_w as u64) << 40)
+            ^ ((max_h as u64) << 20)
+            ^ (apply_crop as u64)
+            ^ (job.level as u64) << 60
+            ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93);
         Some(job)
     }
 
@@ -1312,7 +1331,7 @@ impl crate::Session {
             info: source_info(&p),
             settings: Arc::new(settings.clone()),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
-            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
+            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93),
             cache: Some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
@@ -1366,7 +1385,7 @@ impl crate::Session {
             info: source_info(&p),
             settings: Arc::new(settings),
             request: RenderRequest { apply_crop: true, ..RenderRequest::fit(edge, edge) },
-            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64),
+            key: (ck.0 as u64) ^ ((ck.0 >> 64) as u64) ^ self.media.rendered.generation().wrapping_mul(0xd6e8_feb8_6659_fd93),
             cache: Some((self.media.rendered.clone(), ck)),
             stages: None,
             view_cache: None,
@@ -1548,7 +1567,8 @@ impl crate::Session {
     /// Accept a finished job's loaded source into the cache. What the decode learnt about the file that the catalog
     /// has wrong is corrected too ([`Self::learn_as_shot_wb`]).
     pub fn accept(&mut self, r: &RenderResult) {
-        if let Some(src) = &r.loaded
+        if r.cache_generation == self.media.rendered.generation()
+            && let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == key))
         {
             if let Some(info) = &src.info {

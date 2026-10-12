@@ -1,10 +1,9 @@
-//! Smart previews: a compact proxy of each photo (its decoded preview-size source, about 1 MB)
-//! kept in the library, so photos stay editable — and exportable at proxy size — while their
-//! originals are offline (an unplugged drive). The proxy is the scene-linear source scaled into
-//! 0..1 by a stored factor, sRGB-encoded and saved as a JPEG after a one-line header. The header
-//! also keeps the decoder's file-local camera tone curve (Sony ARW camera look), which is applied
-//! at render time and is not baked into the pixels.
+//! Smart previews store a reduced scene-linear working RGB source for offline editing.
+//! Compact JPEG (LCSP1) remains the default. Optional lossless float TIFF (LCSP2) preserves
+//! source precision and highlight range. Camera tone and chroma curves stay in the header
+//! and apply at render time. See docs/smart-previews.md.
 
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,6 +11,11 @@ use lightcraft_catalog::Photo;
 use lightcraft_color::transfer::linear_to_srgb;
 use lightcraft_pipeline::tone::CameraTone;
 use lightcraft_raster::{Rgb32f, Rgba8};
+
+mod format;
+#[cfg(test)]
+mod tests_lossless;
+pub use format::Format;
 
 const MAGIC: &[u8] = b"LCSP1\n";
 
@@ -48,7 +52,7 @@ pub fn existing_file_path(dir: &Path, sharded: PathBuf) -> PathBuf {
     if legacy.exists() { legacy } else { sharded }
 }
 
-/// The most header [`is_valid`] reads (the JSON line before the JPEG).
+/// The most header [`is_valid`] reads (the magic and JSON line before the pixels).
 const HEADER_MAX: u64 = 4096;
 
 /// The header field that records which version of the camera-look fit (`camera_preview::LOOK_VERSION`)
@@ -67,7 +71,8 @@ const JPEG_QUALITY: u8 = 97;
 
 /// The header field that records which version of this module's own encoding wrote a proxy's pixels
 /// (the source mapping above and [`JPEG_QUALITY`]). Not to be confused with [`LOOK_FIELD`], which
-/// tracks the camera-look fit that is baked into those pixels.
+/// tracks the camera-look fit that is baked into those pixels. Lossless (LCSP2) headers use the same
+/// field for their own format-local version, so [`ENCODE_VERSION`] applies to Compact proxies only.
 const ENC_FIELD: &str = "enc";
 
 /// The value of [`ENC_FIELD`] this build writes. Bump it whenever [`encode`]'s mapping or JPEG
@@ -79,6 +84,10 @@ pub(crate) const ENCODE_VERSION: u64 = 2;
 
 /// Encode a source image (and the decoder's camera tone curve, if any) as a smart preview.
 pub fn encode(img: &Rgb32f, tone: Option<&CameraTone>) -> Result<Vec<u8>, String> {
+    format::dimensions(&serde_json::json!({"w": img.width, "h": img.height}))?;
+    if img.width.checked_mul(img.height) != Some(img.data.len()) || img.data.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("invalid smart preview source pixels".into());
+    }
     // scale so all but the brightest 0.05 % fit into 0..1
     let mut lum: Vec<f32> = img.data.iter().map(|c| c[0].max(c[1]).max(c[2])).filter(|v| v.is_finite()).collect();
     let scale = if lum.is_empty() {
@@ -125,16 +134,78 @@ pub fn encode(img: &Rgb32f, tone: Option<&CameraTone>) -> Result<Vec<u8>, String
 /// Decode a smart preview back into a source image and its stored camera tone curve (an invalid
 /// curve is ignored, like a missing one).
 pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>), String> {
-    let rest = bytes.strip_prefix(MAGIC).ok_or("not a smart preview")?;
-    let nl = rest.iter().position(|b| *b == b'\n').ok_or("bad smart preview")?;
-    let head: serde_json::Value = serde_json::from_slice(&rest[..nl]).map_err(|e| e.to_string())?;
-    let scale = head["scale"].as_f64().unwrap_or(1.0) as f32;
+    if bytes.len() as u64 > format::MAX_BYTES {
+        return Err("smart preview file exceeds the limit".into());
+    }
+    let (storage, head, body) = format::split(bytes)?;
+    let (w, h) = format::dimensions(&head)?;
     let tone = head.get("tone").and_then(|t| serde_json::from_value::<CameraTone>(t.clone()).ok());
-    let d = lightcraft_codecs::decode(&rest[nl + 1..], Default::default()).map_err(|e| e.to_string())?;
-    // the decoder undoes the sRGB encoding; the values are the source's own primaries
+    let payload = if storage == Format::Lossless { format::payload(&head, body)? } else { body };
+    let d = lightcraft_codecs::decode(payload, lightcraft_codecs::DecodeOptions { max_pixels: (w as u64) * (h as u64), ..Default::default() })
+        .map_err(|e| e.to_string())?;
+    if (d.image.width, d.image.height) != (w, h) {
+        return Err("smart preview dimensions do not match its pixels".into());
+    }
+    if storage == Format::Lossless
+        && (d.format != lightcraft_codecs::Format::Tiff || !d.float || d.bit_depth != 32 || d.has_alpha || d.grayscale || d.cmyk || d.icc.is_some())
+    {
+        return Err("lossless smart preview needs untagged float RGB TIFF pixels".into());
+    }
     let mut img = d.image;
-    img.data.iter_mut().for_each(|c| *c = c.map(|v| v * scale));
+    if storage == Format::Compact {
+        let scale = head.get("scale").map_or(Some(1.0), Value::as_f64).ok_or("invalid smart preview scale")? as f32;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("invalid smart preview scale".into());
+        }
+        img.data.iter_mut().for_each(|c| *c = c.map(|v| v * scale));
+    }
+    if img.data.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("invalid smart preview pixels".into());
+    }
     Ok((img, tone))
+}
+
+/// Encode the chosen format. Existing callers retain compact JPEG through [`encode`].
+pub fn encode_format(img: &Rgb32f, tone: Option<&CameraTone>, storage: Format) -> Result<Vec<u8>, String> {
+    match storage {
+        Format::Compact => encode(img, tone),
+        Format::Lossless => format::encode(img, tone),
+    }
+}
+
+/// Read just the bounded header. Unknown fields remain available to header migrations.
+pub fn header(path: &Path) -> Option<(Format, Value)> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    f.take(HEADER_MAX).read_to_end(&mut bytes).ok()?;
+    format::split(&bytes).ok().map(|(storage, head, _)| (storage, head))
+}
+
+/// Carry future metadata through a rebuild or format migration. The current writer owns only
+/// these pixel fields and the tone fields it understands. In particular, an unknown white_stat
+/// inside tone survives until the camera-tone implementation learns to write it itself.
+pub fn preserve_header(bytes: &[u8], previous: &Value) -> Result<Vec<u8>, String> {
+    let (storage, mut head, body) = format::split(bytes)?;
+    let known = ["w", "h", "scale", "look_version", "enc", "format", "payload_bytes", "payload_hash", "tone"];
+    if let (Some(old), Some(new)) = (previous.as_object(), head.as_object_mut()) {
+        for (key, value) in old {
+            if !known.contains(&key.as_str()) {
+                new.entry(key).or_insert_with(|| value.clone());
+            }
+        }
+        if let Some(old) = old.get("tone").and_then(Value::as_object) {
+            for (key, value) in old {
+                if !["knots", "chroma"].contains(&key.as_str()) {
+                    let tone = new.entry("tone").or_insert_with(|| serde_json::json!({}));
+                    if let Some(tone) = tone.as_object_mut() {
+                        tone.entry(key).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+    }
+    format::pack(storage, &head, body)
 }
 
 /// Where a library keeps its smart previews.
@@ -242,8 +313,12 @@ pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
                 // Create only the shard, never missing parent directories on an unplugged drive.
                 let prepare = if parent.is_dir() { Ok(()) } else { std::fs::create_dir(parent) };
                 prepare.and_then(|()| {
-                    if is_valid(&dst) {
-                        // named by content: the complete copy already there is the same preview
+                    if is_valid(&dst)
+                        && (!is_valid(&src)
+                            || header(&dst).map(|h| h.0) == header(&src).map(|h| h.0)
+                            || header(&dst).is_some_and(|h| h.0 == Format::Lossless))
+                    {
+                        // Keep a valid destination of the same or higher precision.
                         std::fs::remove_file(&src)
                     } else {
                         // across drives: copied atomically (never a partial proxy at the new place)
@@ -264,9 +339,9 @@ pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
     (done, failed)
 }
 
-/// A cheap check that the smart preview at `path` is complete: our header, then a JPEG from its
-/// start marker to its end marker. A file cut short by a crash, a full drive or an unplugged one
-/// fails it (and is then rebuilt by Build Smart Previews, not counted as there).
+/// A cheap completeness check using the header and format's end marker. Lossless files also
+/// require the declared payload length. Full decoding checks the payload checksum. A file cut
+/// short by a crash or full drive fails this check and is rebuilt by Build Smart Previews.
 pub fn is_valid(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else { return false };
@@ -274,13 +349,16 @@ pub fn is_valid(path: &Path) -> bool {
     if (&mut f).take(HEADER_MAX).read_to_end(&mut head).is_err() {
         return false;
     }
-    let Some(rest) = head.strip_prefix(MAGIC) else { return false };
-    let Some(nl) = rest.iter().position(|b| *b == b'\n') else { return false };
-    let size_ok = rest
-        .get(..nl)
-        .and_then(|h| serde_json::from_slice::<serde_json::Value>(h).ok())
-        .is_some_and(|h| h["w"].as_u64().is_some_and(|w| w > 0) && h["h"].as_u64().is_some_and(|h| h > 0));
-    if !size_ok || rest.get(nl + 1..nl + 3) != Some(&[0xFF, 0xD8][..]) {
+    let Ok((storage, parsed, body)) = format::split(&head) else { return false };
+    let offset = (head.len() - body.len()) as u64;
+    let mut start = [0u8; 4];
+    if f.seek(SeekFrom::Start(offset)).is_err() || f.read_exact(&mut start).is_err() {
+        return false;
+    }
+    if storage == Format::Lossless {
+        return start == *b"II\x2a\x00" && format::complete(&parsed, offset, &mut f);
+    }
+    if !start.starts_with(&[0xFF, 0xD8]) || f.metadata().map_or(true, |m| m.len() > format::MAX_BYTES) {
         return false;
     }
     let mut end = [0u8; 2];
@@ -301,24 +379,17 @@ fn header_encode_version(head: &serde_json::Value) -> u64 {
 
 /// Whether the complete proxy at `path` is out of date for this build: written by an older
 /// camera-look fit than this build's (so its stored curve, and the colour baked into its pixels, are
-/// out of date), or by an older encoding of its own pixels ([`ENCODE_VERSION`], i.e. a lower JPEG
-/// quality). A proxy from a newer build is left alone (rebuilding it here would only undo that
+/// out of date), or, for a Compact proxy, by an older encoding of its own pixels ([`ENCODE_VERSION`],
+/// i.e. a lower JPEG quality). A proxy from a newer build is left alone (rebuilding it here would only undo that
 /// build's work), as is one that can't be read: those are [`is_valid`]'s business.
 pub fn is_stale(path: &Path) -> bool {
-    use std::io::Read;
-    if !is_valid(path) {
-        return false;
-    }
-    let Ok(f) = std::fs::File::open(path) else { return false };
-    let mut head = Vec::with_capacity(1024);
-    if f.take(HEADER_MAX).read_to_end(&mut head).is_err() {
-        return false;
-    }
-    let Some(rest) = head.strip_prefix(MAGIC) else { return false };
-    let Some(nl) = rest.iter().position(|b| *b == b'\n') else { return false };
-    rest.get(..nl)
-        .and_then(|h| serde_json::from_slice::<serde_json::Value>(h).ok())
-        .is_some_and(|h| header_look_version(&h) < u64::from(crate::camera_preview::LOOK_VERSION) || header_encode_version(&h) < ENCODE_VERSION)
+    // The encode version is Compact's own (its JPEG settings): a Lossless header uses the same
+    // field for its format-local encoding version, which reading it checks.
+    is_valid(path)
+        && header(path).is_some_and(|(storage, h)| {
+            header_look_version(&h) < u64::from(crate::camera_preview::LOOK_VERSION)
+                || (storage == Format::Compact && header_encode_version(&h) < ENCODE_VERSION)
+        })
 }
 
 /// The marker file in a smart previews folder: the camera-look fit version and encode version its
@@ -355,7 +426,10 @@ pub fn mark_look_checked(dir: &Path) -> Result<(), String> {
 
 /// Load the proxy at `path`.
 pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
-    let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut b = Vec::new();
+    f.take(format::MAX_BYTES + 1).read_to_end(&mut b).map_err(|e| e.to_string())?;
     decode(&b).map(|(image, camera_tone)| crate::media::DecodedSource { image: Arc::new(image), info: None, camera_tone, denoised: None })
 }
 
@@ -363,7 +437,7 @@ pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
 mod tests {
     use super::*;
 
-    fn temp(tag: &str) -> PathBuf {
+    pub(super) fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lc-smart-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();

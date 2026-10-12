@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". Se conservaron {kept} previsualizaciones existentes sin cambios",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} con varios archivos parecidos: usar Localizar)",
   " ({} in Recently Deleted)": " ({} en Eliminadas recientemente)",
   " · {:.0}% clipped": " · {:.0}% recortado",
@@ -137,7 +138,7 @@
   "the {n} selected photos": "las {n} fotos seleccionadas",
   "the {} photos in view": "las {} fotos de la vista",
   "these {count} photos": "estas {count} fotos",
-  "{count} smart preview{} · {:.1} MB": "{count} vista{0} previa{0} inteligente{0} · {1:.1} MB",
+  "{count} smart preview{} · {:.1} MiB": "{count} vista{0} previa{0} inteligente{0} · {1:.1} MiB",
   "{f} folders (and their subfolders)": "{f} carpetas (y sus subcarpetas)",
   "{label} Grading": "Gradación de {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} en cada foto seleccionada",

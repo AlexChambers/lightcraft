@@ -27,6 +27,8 @@ pub struct PreviewBuild {
     pub finished: AtomicBool,
     /// Damaged smart previews rebuilt (Build Smart Previews only).
     pub repaired: AtomicUsize,
+    /// Existing proxies kept because the original could not be read or the replacement written.
+    pub kept: AtomicUsize,
     /// What is built ("" = previews; "smart previews" — Build Smart Previews runs the same way).
     pub what: &'static str,
     /// Why the whole build failed (e.g. the smart previews folder isn't there).
@@ -43,6 +45,7 @@ impl PreviewBuild {
             "cancelled": self.cancel.load(Ordering::Relaxed),
             "what": if self.what.is_empty() { "previews" } else { self.what },
             "repaired": self.repaired.load(Ordering::Relaxed),
+            "kept": self.kept.load(Ordering::Relaxed),
             "error": self.error(),
         })
     }
@@ -228,8 +231,11 @@ fn smart_run(
     discard: bool,
     jobs: Vec<SmartJob>,
     state: Option<(&PreviewBuild, &TaskGuard)>,
+    format: Option<crate::smart::Format>,
+    cache: &lightcraft_preview::PreviewCache,
 ) -> std::result::Result<SmartCounts, String> {
     let mut n = SmartCounts::default();
+    let mut changed = false;
     if !discard {
         // a chosen folder on another drive must be there: never recreate it on this one
         if custom {
@@ -249,13 +255,17 @@ fn smart_run(
         if discard {
             if std::fs::remove_file(&path).is_ok() {
                 n.removed += 1;
+                changed = true;
             }
         } else {
             // a complete, current proxy is kept; a missing or damaged one (cut short by a crash or a
             // full drive) is (re)built, and so is one written by an older camera-look fit (see
             // `camera_preview::LOOK_VERSION`) when its original can be read
             let damaged = path.exists();
-            let stale = look && damaged && crate::smart::is_stale(&path);
+            let previous = crate::smart::header(&path);
+            let storage = format.or_else(|| previous.as_ref().map(|(f, _)| *f)).unwrap_or_default();
+            let stale = (look && damaged && crate::smart::is_stale(&path))
+                || (crate::smart::is_valid(&path) && previous.as_ref().is_some_and(|(f, _)| *f != storage));
             if damaged && !stale && crate::smart::is_valid(&path) {
                 n.built += 1;
             } else {
@@ -265,10 +275,14 @@ fn smart_run(
                 // atomic: a failed write leaves no partial proxy that would pass for a built one;
                 // and synced (issue #134): built so the photo can be edited while its original
                 // is offline, when it is the only copy — the sync is small next to the decode
-                let r = source
-                    .ok_or_else(|| "nothing to build from".to_string())
-                    .and_then(|s| s.load_source())
-                    .and_then(|src| crate::smart::encode(&src.image, src.info_or(Default::default()).camera_tone.as_ref()))
+                let loaded = source.ok_or_else(|| "nothing to build from".to_string()).and_then(|s| s.load_source());
+                let unavailable = loaded.is_err();
+                let r = loaded
+                    .and_then(|src| crate::smart::encode_format(&src.image, src.info_or(Default::default()).camera_tone.as_ref(), storage))
+                    .and_then(|bytes| match &previous {
+                        Some((_, head)) => crate::smart::preserve_header(&bytes, head),
+                        None => Ok(bytes),
+                    })
                     .and_then(|b| {
                         let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
                         // Only create the leaf shard: do not recreate a missing external drive.
@@ -279,6 +293,7 @@ fn smart_run(
                     });
                 match r {
                     Ok(()) => {
+                        changed = true;
                         n.built += 1;
                         if stale {
                             n.refreshed += 1;
@@ -294,6 +309,15 @@ fn smart_run(
                         log::info!("smart preview {} keeps its older look: {e}", path.display());
                         n.built += 1;
                         n.stale_kept += 1;
+                        if !unavailable {
+                            n.failed.push(json!([id.0, e]));
+                            if let Some((st, _)) = state {
+                                st.failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        if let Some((st, _)) = state {
+                            st.kept.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     Err(e) => {
                         n.failed.push(json!([id.0, e]));
@@ -309,6 +333,9 @@ fn smart_run(
             task.progress(done as u64, st.total as u64);
         }
     }
+    if changed {
+        cache.clear();
+    }
     Ok(n)
 }
 
@@ -321,7 +348,11 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
     let discard = p.get("discard").and_then(Value::as_bool).unwrap_or(false);
     let background = p.get("background").and_then(Value::as_bool).unwrap_or(false);
-    if background && s.preview_build.as_ref().is_some_and(|b| !b.finished.load(Ordering::Relaxed)) {
+    let format = match p.get("format") {
+        Some(v) => v.as_str().and_then(crate::smart::Format::parse).ok_or_else(|| bad(C, "format must be compact or lossless"))?,
+        None => s.smart_previews_format,
+    };
+    if s.preview_build.as_ref().is_some_and(|b| !b.finished.load(Ordering::Relaxed)) {
         return Err(bad(C, "a preview build is already running"));
     }
     let ids = if p.get("ids").is_some() || !s.selection.ids.is_empty() { s.targets(p)? } else { s.visible_cloned() };
@@ -332,10 +363,11 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let path = crate::smart::sharded_file_path(&dir, &ph);
-        let source = (!discard).then(|| s.media.source_ref(&ph, crate::media::SourceLevel::Preview));
+        let source = (!discard).then(|| s.media.origin_ref(&ph.source, crate::media::SourceLevel::Preview.max_edge()));
         jobs.push((id, path, source, ph.fitted_look()));
     }
     let custom = s.smart_previews_dir.is_some();
+    let cache = s.media.rendered.clone();
     if background {
         let what = if discard { "discarding smart previews" } else { "smart previews" };
         let state = Arc::new(PreviewBuild { total: jobs.len(), what, ..Default::default() });
@@ -345,7 +377,7 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
         std::thread::Builder::new()
             .name("lc-smart-previews".into())
             .spawn(move || {
-                if let Err(e) = smart_run(&dir, custom, discard, jobs, Some((&st, &task))) {
+                if let Err(e) = smart_run(&dir, custom, discard, jobs, Some((&st, &task)), Some(format), &cache) {
                     log::warn!("{C}: {e}");
                     *st.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                 }
@@ -354,7 +386,7 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
             .map_err(|e| bad(C, format!("could not start: {e}")))?;
         return Ok(state.json());
     }
-    let r = smart_run(&dir, custom, discard, jobs, None).map_err(|e| bad(C, e))?;
+    let r = smart_run(&dir, custom, discard, jobs, None, Some(format), &cache).map_err(|e| bad(C, e))?;
     Ok(
         json!({"built": r.built, "repaired": r.repaired, "refreshed": r.refreshed, "staleKept": r.stale_kept, "removed": r.removed, "failed": r.failed}),
     )
@@ -378,16 +410,17 @@ pub(crate) fn refresh_stale_smart_previews(s: &mut Session) -> Option<std::threa
     let photos: Vec<_> = s.catalog.photos().filter(|p| matches!(p.source, lightcraft_catalog::Source::File { .. }) && p.fitted_look()).collect();
     let jobs: Vec<SmartJob> =
         photos.iter().map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge)), true)).collect();
+    let cache = s.media.rendered.clone();
     std::thread::Builder::new()
         .name("lc-smart-look".into())
-        .spawn(move || refresh_stale(&dir, jobs))
+        .spawn(move || refresh_stale(&dir, jobs, &cache))
         .map_err(|e| log::warn!("smart previews: could not start the look refresh: {e}"))
         .ok()
 }
 
 /// The body of [`refresh_stale_smart_previews`]: rebuild the stale proxies among `jobs`.
 #[cfg(not(target_arch = "wasm32"))]
-fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>) {
+fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>, cache: &lightcraft_preview::PreviewCache) {
     let stale: Vec<SmartJob> = jobs
         .into_iter()
         .map(|(id, path, source, look)| (id, crate::smart::existing_file_path(dir, path), source, look))
@@ -395,7 +428,7 @@ fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>) {
         .collect();
     if !stale.is_empty() {
         // `custom`: the folder is there already, and must not be recreated if it went away since
-        match smart_run(dir, true, false, stale, None) {
+        match smart_run(dir, true, false, stale, None, None, cache) {
             Ok(n) => log::info!("smart previews: {} refreshed to the current camera look, {} kept (original offline)", n.refreshed, n.stale_kept),
             Err(e) => {
                 // not marked: the next opening tries again
@@ -465,11 +498,32 @@ fn smart_location(s: &mut Session, p: &Value) -> Result<Value> {
     let (moved, failed) = crate::smart::migrate(&current, &new_dir, existing);
     s.smart_previews_dir = custom;
     s.media.smart_dir = Some(new_dir);
+    s.media.rendered.clear();
+    s.media.clear_sources();
     s.save_prefs()?;
     let mut r = location_json(s);
     r["handled"] = json!(moved);
     r["failed"] = json!(failed);
     Ok(r)
+}
+
+/// Choose the default for future builds. Changing it never discards an offline proxy.
+#[cfg(not(target_arch = "wasm32"))]
+fn smart_format(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "library.smartPreviewsFormat";
+    if s.media.smart_dir.is_none() {
+        return Err(bad(C, "smart previews need a library on disk"));
+    }
+    if let Some(value) = p.get("format") {
+        let format = value.as_str().and_then(crate::smart::Format::parse).ok_or_else(|| bad(C, "format must be compact or lossless"))?;
+        let previous = s.smart_previews_format;
+        s.smart_previews_format = format;
+        if let Err(e) = s.save_prefs() {
+            s.smart_previews_format = previous;
+            return Err(e);
+        }
+    }
+    Ok(json!({"format": s.smart_previews_format}))
 }
 
 /// Whether photo `id` has a smart preview.
@@ -484,11 +538,21 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         #[cfg(not(target_arch = "wasm32"))]
         cmd!(
+            "library.smartPreviewsFormat",
+            "Smart Preview Format",
+            [],
+            None,
+            "{format?: compact|lossless}. Read or set this library's default. Existing previews keep working; Build Smart Previews converts them from available originals.",
+            always,
+            smart_format
+        ),
+        #[cfg(not(target_arch = "wasm32"))]
+        cmd!(
             "library.smartPreviews",
             "Build Smart Previews",
             [],
             None,
-            "{ids?, discard?: bool, background?: bool} — build (or discard) the smart previews of the selected photos (else all in view): compact proxies in the library that keep photos editable and exportable (at proxy size) while their originals are offline; a damaged proxy (cut short) is rebuilt → {built, repaired, removed, failed}; with background (the app's menu) the files are read and written on a worker thread → {total, done, failed, repaired, running, what} like library.buildPreviews (progress: library.previewProgress, stop: library.cancelPreviews)",
+            "{ids?, discard?: bool, background?: bool, format?: compact|lossless}. Build or discard smart previews for selected photos, or all in view. Uses the library format unless overridden. Converts existing previews only from available originals. Returns {built, repaired, refreshed, staleKept, removed, failed}. Background builds return progress, including kept previews; use library.previewProgress and library.cancelPreviews.",
             always,
             smart
         ),

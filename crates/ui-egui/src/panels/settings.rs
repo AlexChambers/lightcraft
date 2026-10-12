@@ -506,6 +506,38 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         return;
     }
     heading(ui, t, crate::i18n::tr("Smart previews"));
+    let mut format = app.session.smart_previews_format;
+    row(ui, t, crate::i18n::tr("Format for new builds"), |ui| {
+        if choices(
+            ui,
+            "settingsSmartFormat",
+            &[(lightcraft_engine::smart::Format::Compact, "Compact (JPEG)"), (lightcraft_engine::smart::Format::Lossless, "Lossless (32-bit TIFF)")],
+            &mut format,
+        ) && let Err(e) = app.run("library.smartPreviewsFormat", json!({"format": format}))
+        {
+            app.toast(ui.ctx(), e);
+        }
+    });
+    hint(ui, t, crate::i18n::tr("Compact uses about 1 MB per photo. Lossless preserves source precision and can use 40 to 50 MB per photo."));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Build Smart Previews converts existing previews from available originals. Offline previews stay as they are until you build again with the drive connected.",
+        ),
+    );
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_W);
+        let running = app.session.preview_build.as_ref().is_some_and(|b| !b.finished.load(std::sync::atomic::Ordering::Relaxed));
+        let r = ui.add_enabled(!running, egui::Button::new(crate::i18n::tr("Build for All Photos")));
+        register(ui.ctx(), "button:settingsSmartBuild", r.rect);
+        if r.clicked() {
+            let ids: Vec<_> = app.session.catalog.photos().map(|p| p.id.0).collect();
+            if let Err(e) = app.run("library.smartPreviews", json!({"ids": ids, "background": true})) {
+                app.toast(ui.ctx(), e);
+            }
+        }
+    });
     let path = loc["path"].as_str().unwrap_or_default().to_string();
     let available = loc["available"].as_bool().unwrap_or(true);
     let custom = loc["custom"].as_bool().unwrap_or(false);
@@ -519,7 +551,7 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             ui,
             t,
             &crate::i18n::tr_format!(
-                "{count} smart preview{} · {:.1} MB",
+                "{count} smart preview{} · {:.1} MiB",
                 if count == 1 { "" } else { "s" },
                 bytes as f64 / 1048576.0,
                 count = count
@@ -579,7 +611,7 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             Err(e) => app.toast(ui.ctx(), e),
         }
     }
-    hint(ui, t, crate::i18n::tr("Keep it on a drive with room: smart previews are about 1 MB per photo. The thumbnail cache stays in the library."));
+    hint(ui, t, crate::i18n::tr("Keep smart previews on a drive with enough free space. The thumbnail cache stays in the library."));
 }
 
 // ---------------------------------------------------------------------------------- Interface

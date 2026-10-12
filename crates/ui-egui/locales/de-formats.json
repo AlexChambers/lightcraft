@@ -1,4 +1,5 @@
 {
+  ". {kept} existing previews kept unchanged": ". {kept} vorhandene Vorschauen wurden unverändert beibehalten",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} mit mehreren ähnlichen Dateien: „Fehlende Datei suchen“ verwenden)",
   " ({} in Recently Deleted)": " ({} in „Zuletzt gelöscht“)",
   " · {:.0}% clipped": " · {:.0}% beschnitten",
@@ -137,7 +138,7 @@
   "the {n} selected photos": "die {n} ausgewählten Fotos",
   "the {} photos in view": "die {} Fotos in der Ansicht",
   "these {count} photos": "diese {count} Fotos",
-  "{count} smart preview{} · {:.1} MB": "Smart-Vorschauen: {count}{0:.0} · {1:.1} MB",
+  "{count} smart preview{} · {:.1} MiB": "Smart-Vorschauen: {count}{0:.0} · {1:.1} MiB",
   "{f} folders (and their subfolders)": "{f} Ordner (und ihre Unterordner)",
   "{label} Grading": "Farbtonung: {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} für jedes ausgewählte Foto",
