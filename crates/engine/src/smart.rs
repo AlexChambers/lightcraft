@@ -52,7 +52,7 @@ pub fn existing_file_path(dir: &Path, sharded: PathBuf) -> PathBuf {
     if legacy.exists() { legacy } else { sharded }
 }
 
-/// The most header [`is_valid`] reads (the magic and JSON line before the pixels).
+/// The most header [`is_complete`] reads (the magic and JSON line before the pixels).
 const HEADER_MAX: u64 = 4096;
 
 /// The header field that records which version of the camera-look fit (`camera_preview::LOOK_VERSION`)
@@ -313,20 +313,21 @@ pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
                 // Create only the shard, never missing parent directories on an unplugged drive.
                 let prepare = if parent.is_dir() { Ok(()) } else { std::fs::create_dir(parent) };
                 prepare.and_then(|()| {
-                    if is_valid(&dst)
-                        && (!is_valid(&src)
+                    if is_usable(&dst)
+                        && (!is_usable(&src)
                             || header(&dst).map(|h| h.0) == header(&src).map(|h| h.0)
                             || header(&dst).is_some_and(|h| h.0 == Format::Lossless))
                     {
                         // Keep a valid destination of the same or higher precision.
                         std::fs::remove_file(&src)
                     } else {
-                        // across drives: copied atomically (never a partial proxy at the new place)
-                        std::fs::rename(&src, &dst).or_else(|_| {
-                            std::fs::read(&src)
-                                .and_then(|b| lightcraft_catalog::safe_file::write_atomic(&dst, &b))
-                                .and_then(|()| std::fs::remove_file(&src))
-                        })
+                        // Verify before replacing anything, then verify the atomic destination
+                        // before removing the source. This also works across drives.
+                        let bytes = read(&src).map_err(std::io::Error::other)?;
+                        decode(&bytes).map_err(std::io::Error::other)?;
+                        lightcraft_catalog::safe_file::write_atomic(&dst, &bytes)?;
+                        load(&dst).map_err(std::io::Error::other)?;
+                        std::fs::remove_file(&src)
                     }
                 })
             }
@@ -339,10 +340,10 @@ pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
     (done, failed)
 }
 
-/// A cheap completeness check using the header and format's end marker. Lossless files also
-/// require the declared payload length. Full decoding checks the payload checksum. A file cut
-/// short by a crash or full drive fails this check and is rebuilt by Build Smart Previews.
-pub fn is_valid(path: &Path) -> bool {
+/// A cheap structural hint using the bounded header, payload length and end marker.
+/// This does not verify pixel integrity. Use [`is_usable`] before keeping a destination,
+/// deleting another copy, or skipping a rebuild.
+pub fn is_complete(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else { return false };
     let mut head = Vec::with_capacity(1024);
@@ -365,6 +366,12 @@ pub fn is_valid(path: &Path) -> bool {
     f.seek(SeekFrom::End(-2)).is_ok() && f.read_exact(&mut end).is_ok() && end == [0xFF, 0xD9]
 }
 
+/// Whether a bounded read decodes successfully, including the LCSP2 payload checksum.
+/// Use this for decisions that keep a proxy instead of rebuilding it or retaining another copy.
+pub fn is_usable(path: &Path) -> bool {
+    load(path).is_ok()
+}
+
 /// The fit version a header records: a missing, negative, fractional or otherwise malformed value
 /// counts as 0 (older than any real version).
 fn header_look_version(head: &serde_json::Value) -> u64 {
@@ -380,12 +387,13 @@ fn header_encode_version(head: &serde_json::Value) -> u64 {
 /// Whether the complete proxy at `path` is out of date for this build: written by an older
 /// camera-look fit than this build's (so its stored curve, and the colour baked into its pixels, are
 /// out of date), or, for a Compact proxy, by an older encoding of its own pixels ([`ENCODE_VERSION`],
-/// i.e. a lower JPEG quality). A proxy from a newer build is left alone (rebuilding it here would only undo that
-/// build's work), as is one that can't be read: those are [`is_valid`]'s business.
+/// i.e. a lower JPEG quality). A proxy from a newer build is left alone (rebuilding it here would
+/// only undo that build's work), as is one that is structurally incomplete. This is only a
+/// staleness hint, not an integrity check.
 pub fn is_stale(path: &Path) -> bool {
     // The encode version is Compact's own (its JPEG settings): a Lossless header uses the same
     // field for its format-local encoding version, which reading it checks.
-    is_valid(path)
+    is_complete(path)
         && header(path).is_some_and(|(storage, h)| {
             header_look_version(&h) < u64::from(crate::camera_preview::LOOK_VERSION)
                 || (storage == Format::Compact && header_encode_version(&h) < ENCODE_VERSION)
@@ -426,11 +434,15 @@ pub fn mark_look_checked(dir: &Path) -> Result<(), String> {
 
 /// Load the proxy at `path`.
 pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
+    decode(&read(path)?).map(|(image, camera_tone)| crate::media::DecodedSource { image: Arc::new(image), info: None, camera_tone, denoised: None })
+}
+
+fn read(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut b = Vec::new();
     f.take(format::MAX_BYTES + 1).read_to_end(&mut b).map_err(|e| e.to_string())?;
-    decode(&b).map(|(image, camera_tone)| crate::media::DecodedSource { image: Arc::new(image), info: None, camera_tone, denoised: None })
+    Ok(b)
 }
 
 #[cfg(test)]
@@ -461,9 +473,10 @@ mod tests {
         let (a, b) = (base.join("a"), base.join("b"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
-        std::fs::write(a.join("1.lcsp"), b"one").unwrap();
+        let proxy = encode(&Rgb32f::new(2, 2), None).unwrap();
+        std::fs::write(a.join("1.lcsp"), &proxy).unwrap();
         std::fs::write(a.join("note.txt"), b"keep").unwrap();
-        assert_eq!(stats(&a), (1, 3));
+        assert_eq!(stats(&a), (1, proxy.len() as u64));
         assert_eq!(migrate(&a, &b, Existing::Leave).0, 0);
         assert_eq!(stats(&a).0, 1);
         assert_eq!(migrate(&a, &b, Existing::Move).0, 1);
@@ -483,17 +496,18 @@ mod tests {
         std::fs::create_dir(&to).unwrap();
         let old = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2.lcsp";
         let new = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1.lcsp";
-        std::fs::write(from.join(old), b"legacy").unwrap();
-        std::fs::write(from.join("a1").join(new), b"sharded").unwrap();
+        let proxy = encode(&Rgb32f::new(2, 2), None).unwrap();
+        std::fs::write(from.join(old), &proxy).unwrap();
+        std::fs::write(from.join("a1").join(new), &proxy).unwrap();
         std::fs::write(from.join("a1").join("notes.txt"), b"user file").unwrap();
         std::fs::write(from.join("notes.lcsp.txt"), b"keep").unwrap();
-        assert_eq!(stats(&from), (2, 13));
+        assert_eq!(stats(&from), (2, 2 * proxy.len() as u64));
         let (moved, failed) = migrate(&from, &to, Existing::Move);
         assert_eq!((moved, failed), (2, Vec::<String>::new()));
         assert_eq!(stats(&from), (0, 0));
-        assert_eq!(stats(&to), (2, 13));
-        assert_eq!(std::fs::read(to.join("b2").join(old)).unwrap(), b"legacy");
-        assert_eq!(std::fs::read(to.join("a1").join(new)).unwrap(), b"sharded");
+        assert_eq!(stats(&to), (2, 2 * proxy.len() as u64));
+        assert_eq!(std::fs::read(to.join("b2").join(old)).unwrap(), proxy);
+        assert_eq!(std::fs::read(to.join("a1").join(new)).unwrap(), proxy);
         assert!(from.join("a1").join("notes.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -507,12 +521,12 @@ mod tests {
         let img = lightcraft_scenes::demo_library()[0].render(64, 40);
         let good = encode(&img, None).unwrap();
         std::fs::write(a.join("1.lcsp"), &good).unwrap();
-        assert!(is_valid(&a.join("1.lcsp")));
+        assert!(is_complete(&a.join("1.lcsp")));
         for cut in [good.len() - 1, good.len() / 2, 10, 0] {
             std::fs::write(b.join("1.lcsp"), &good[..cut]).unwrap();
-            assert!(!is_valid(&b.join("1.lcsp")), "cut at {cut}");
+            assert!(!is_complete(&b.join("1.lcsp")), "cut at {cut}");
         }
-        assert!(!is_valid(&b.join("missing.lcsp")));
+        assert!(!is_complete(&b.join("missing.lcsp")));
         // moving onto a damaged copy replaces it instead of deleting the good one
         assert_eq!(migrate(&a, &b, Existing::Move).0, 1);
         assert_eq!(std::fs::read(b.join("1.lcsp")).unwrap(), good);
@@ -533,7 +547,7 @@ mod tests {
         let path = dir.join("t.lcsp");
         std::fs::write(&path, &bytes).unwrap();
         // the longer header is still read by the validity check, and the curve by `load`
-        assert!(is_valid(&path));
+        assert!(is_complete(&path));
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.camera_tone, Some(tone));
         let header = lightcraft_pipeline::SourceInfo { raw: true, ..Default::default() };
@@ -741,7 +755,7 @@ mod tests {
         old.extend_from_slice(serde_json::Value::Object(older).to_string().as_bytes());
         old.extend_from_slice(&bytes[nl..]);
         std::fs::write(&path, &old).unwrap();
-        assert!(is_valid(&path), "losing the field keeps the file readable");
+        assert!(is_usable(&path), "losing the field keeps the file readable");
         assert!(is_stale(&path), "an older encoding is rebuilt");
         // the marker records both versions, and one from before the encode version forces a scan
         assert!(!look_checked(&dir));

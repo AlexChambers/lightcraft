@@ -1,4 +1,8 @@
 {
+  "Photos: {count}": "Photos: {count}",
+  "Estimated total size: {size}": "Estimated total size: {size}",
+  "Destination: {path}": "Destination: {path}",
+  "Free space: {size}": "Free space: {size}",
   ". {kept} existing previews kept unchanged": ". {kept} vorhandene Vorschauen wurden unverändert beibehalten",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} mit mehreren ähnlichen Dateien: „Fehlende Datei suchen“ verwenden)",
   " ({} in Recently Deleted)": " ({} in „Zuletzt gelöscht“)",

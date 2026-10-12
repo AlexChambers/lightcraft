@@ -1,4 +1,8 @@
 {
+  "Photos: {count}": "Photos: {count}",
+  "Estimated total size: {size}": "Estimated total size: {size}",
+  "Destination: {path}": "Destination: {path}",
+  "Free space: {size}": "Free space: {size}",
   ". {kept} existing previews kept unchanged": ". 已保留 {kept} 個現有預覽，未作變更",
   " · {skipped} skipped (file exists)": " · 已略過 {skipped} 個（檔案已存在）",
   " · {} duplicate{} skipped": " · 已略過 {} 張重複照片{:.0}",

@@ -264,9 +264,9 @@ fn smart_run(
             let damaged = path.exists();
             let previous = crate::smart::header(&path);
             let storage = format.or_else(|| previous.as_ref().map(|(f, _)| *f)).unwrap_or_default();
-            let stale = (look && damaged && crate::smart::is_stale(&path))
-                || (crate::smart::is_valid(&path) && previous.as_ref().is_some_and(|(f, _)| *f != storage));
-            if damaged && !stale && crate::smart::is_valid(&path) {
+            let usable = crate::smart::is_usable(&path);
+            let stale = usable && ((look && crate::smart::is_stale(&path)) || previous.as_ref().is_some_and(|(f, _)| *f != storage));
+            if usable && !stale {
                 n.built += 1;
             } else {
                 // a stale proxy is rebuilt from the original only: never from itself (the file
@@ -529,7 +529,7 @@ fn smart_format(s: &mut Session, p: &Value) -> Result<Value> {
 /// Whether photo `id` has a smart preview.
 pub fn has_smart_preview(s: &Session, id: lightcraft_catalog::PhotoId) -> bool {
     match (&s.media.smart_dir, s.catalog.photo(id)) {
-        (Some(dir), Some(p)) => crate::smart::is_valid(&crate::smart::file_path(dir, p)),
+        (Some(dir), Some(p)) => crate::smart::is_usable(&crate::smart::file_path(dir, p)),
         _ => false,
     }
 }

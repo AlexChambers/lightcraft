@@ -1,4 +1,8 @@
 {
+  "Photos: {count}": "Photos: {count}",
+  "Estimated total size: {size}": "Estimated total size: {size}",
+  "Destination: {path}": "Destination: {path}",
+  "Free space: {size}": "Free space: {size}",
   ". {kept} existing previews kept unchanged": ". 既存のプレビュー {kept} 件を変更せず保持しました",
   " · {skipped} skipped (file exists)": "・{skipped}件は同名ファイルのためスキップ",
   " · {} duplicate{} skipped": "・重複{}枚をスキップ{:.0}",
