@@ -374,6 +374,8 @@ pub struct Session {
     /// Where smart previews are kept when not in the library folder (persisted in prefs.json).
     pub smart_previews_dir: Option<std::path::PathBuf>,
     pub smart_previews_format: crate::smart::Format,
+    /// Persistent thumbnail namespace, saved atomically with the smart preview folder.
+    pub(crate) smart_previews_cache_generation: u64,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) smart_migration: Option<cmd::previews::location::Migration>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -498,6 +500,7 @@ impl Session {
             slide_backdrop: Default::default(),
             smart_previews_dir: None,
             smart_previews_format: Default::default(),
+            smart_previews_cache_generation: 0,
             #[cfg(not(target_arch = "wasm32"))]
             smart_migration: None,
             #[cfg(not(target_arch = "wasm32"))]

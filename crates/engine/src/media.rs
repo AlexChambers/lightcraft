@@ -461,12 +461,22 @@ impl MediaCache {
         self.invalidation.clone()
     }
 
-    /// Keep rendered thumbnails on disk in `dir` as well. The cache this replaces is retired
+    /// Keep rendered thumbnails on disk in `dir` as well. A cache in the same namespace is retired
     /// (its files stay): render jobs still holding it can't write through it any more, even
     /// into a directory a later clear emptied (`dir` may be the same one).
     pub fn attach_disk_cache(&mut self, dir: &std::path::Path, disk_bytes: u64) {
-        self.rendered.retire();
-        self.rendered = Arc::new(PreviewCache::with_disk(rendered_budget(self.budget), dir, disk_bytes));
+        self.attach_disk_cache_namespace(dir, disk_bytes, 0);
+    }
+
+    /// Folder switches and reopening use the namespace saved with the library preferences.
+    /// This replaces memory state only; cache files are read or pruned by render workers.
+    pub(crate) fn attach_disk_cache_namespace(&mut self, dir: &std::path::Path, disk_bytes: u64, namespace: u64) {
+        // A different namespace isolates late disk writes without waiting for their I/O.
+        // Session::accept and the UI also compare cache identity before accepting results.
+        if !self.rendered.disk().is_some_and(|disk| disk.dir() == dir && disk.namespace() != namespace) {
+            self.rendered.retire();
+        }
+        self.rendered = Arc::new(PreviewCache::with_disk_namespace(rendered_budget(self.budget), dir, disk_bytes, namespace));
         self.invalidation = Invalidation::for_disk(dir, self.rendered.clone());
         self.clear_sources();
     }

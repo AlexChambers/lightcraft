@@ -46,7 +46,7 @@ pub(crate) fn intercept(app: &mut LightcraftApp, command: &str, params: &Value) 
     };
     #[cfg(not(target_arch = "wasm32"))]
     if let Err(e) = std::thread::Builder::new().name("lc-smart-space".into()).spawn(probe) {
-        return Some(Err(format!("could not check smart preview storage: {e}")));
+        return Some(Err(crate::i18n::tr_format!("could not check smart preview storage: {e}", e = e)));
     }
     #[cfg(target_arch = "wasm32")]
     probe();
@@ -64,7 +64,7 @@ fn available_space(path: &std::path::Path, custom: bool) -> Result<u64, String> 
         fs4::available_space(folder).map_err(|e| format!("{}: {e}", folder.display()))
     }
     #[cfg(not(any(unix, windows)))]
-    Err(format!("free space is unavailable for {} on this platform", folder.display()))
+    Err(crate::i18n::tr_format!("free space is unavailable for {path} on this platform", path = folder.display()))
 }
 
 pub(crate) fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
@@ -80,7 +80,6 @@ pub(crate) fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                 let count = result["failed"].as_array().map_or(0, Vec::len);
                 match count {
                     0 => crate::i18n::tr("Smart preview folder changed.").to_string(),
-                    1 => crate::i18n::tr("Smart preview folder changed. One source file could not be removed.").to_string(),
                     _ => crate::i18n::tr_format!("Smart preview folder changed. {count} source files could not be removed.", count = count),
                 }
             }
@@ -99,7 +98,7 @@ pub(crate) fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
-        Err(_) => Err("the free-space check stopped unexpectedly".into()),
+        Err(_) => Err(crate::i18n::tr("the free-space check stopped unexpectedly").to_string()),
     };
     *checking = false;
     match result {
@@ -119,7 +118,7 @@ fn size(bytes: u64) -> String {
 
 pub(crate) fn body(ui: &mut egui::Ui, dialog: &Dialog) {
     let Dialog::BuildSmartPreviews { path, count, estimated_bytes, checking, free_bytes, space_error, .. } = dialog else { return };
-    ui.label(crate::i18n::tr_format!("Photos: {count}", count = count));
+    ui.label(crate::i18n::tr_format!("Photos: {count}", count = *count));
     ui.label(crate::i18n::tr_format!("Estimated total size: {size}", size = size(*estimated_bytes)));
     ui.label(crate::i18n::tr(
         "About 39.5 MB per photo, measured on an A7CR proxy. Actual sizes vary; existing previews may reduce the space needed.",
@@ -148,12 +147,14 @@ pub(crate) fn body(ui: &mut egui::Ui, dialog: &Dialog) {
 }
 
 pub(crate) fn confirm(app: &mut LightcraftApp, dialog: &Dialog) -> Result<Value, String> {
-    let Dialog::BuildSmartPreviews { params, path, checking, .. } = dialog else { return Err("no smart preview build to confirm".into()) };
+    let Dialog::BuildSmartPreviews { params, path, checking, .. } = dialog else {
+        return Err(crate::i18n::tr("no smart preview build to confirm").to_string());
+    };
     if *checking {
-        return Err("wait for the free-space check to finish".into());
+        return Err(crate::i18n::tr("wait for the free-space check to finish").to_string());
     }
     if app.session.media.smart_dir.as_ref() != Some(path) {
-        return Err("the smart preview folder changed; start the build again to check its free space".into());
+        return Err(crate::i18n::tr("the smart preview folder changed; start the build again to check its free space").to_string());
     }
     app.session.execute("library.smartPreviews", params).map_err(|e| e.to_string())
 }
@@ -233,6 +234,66 @@ mod tests {
         assert!(intercept(&mut app, "library.smartPreviews", &json!({})).is_none(), "Compact stays immediate");
         assert!(intercept(&mut app, "library.smartPreviews", &json!({"discard": true, "format": "lossless"})).is_none());
         assert!(available_space(&dir.join("missing/volume"), true).is_err(), "never report the system drive for a missing custom folder");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lossless_storage_dialog_translations_fit_small_and_large_windows() {
+        let (mut app, dir) = app("localized-layout");
+        app.ui.settings.gpu = false;
+        app.run("library.smartPreviews", json!({"ids": [1, 2]})).unwrap();
+        finish_check(&mut app);
+        if let Some(Dialog::BuildSmartPreviews { free_bytes, .. }) = &mut app.ui.dialog {
+            *free_bytes = Some(1);
+        }
+        let mut h = crate::headless::Headless::new(app, [800.0, 600.0], 1.0);
+        for locale in crate::i18n::Locale::ALL {
+            h.app.ui.language = *locale;
+            for (w, height) in [(800.0, 600.0), (1600.0, 1000.0)] {
+                h.size = egui::vec2(w, height);
+                h.settle(std::time::Duration::from_secs(10));
+                let text = h.painted_text().join("\n");
+                for key in [
+                    "Build Lossless Smart Previews",
+                    "Build Anyway",
+                    "Previews are rebuilt from available originals. Offline originals keep their existing previews.",
+                ] {
+                    let translated = locale.tr(key);
+                    if *locale != crate::i18n::Locale::En {
+                        assert_ne!(translated, key, "{locale:?}: missing translation");
+                    }
+                    assert!(text.contains(translated), "{locale:?}: missing {translated:?} in {text}");
+                }
+                fn check_title(shape: &egui::epaint::Shape, title: &str) {
+                    match shape {
+                        egui::epaint::Shape::Text(text) if text.galley.job.text == title => {
+                            assert!(!text.galley.elided, "dialog title was cut short: {title}");
+                        }
+                        egui::epaint::Shape::Vec(shapes) => shapes.iter().for_each(|shape| check_title(shape, title)),
+                        _ => {}
+                    }
+                }
+                for shape in &h.view.shapes {
+                    check_title(&shape.shape, locale.tr("Build Lossless Smart Previews"));
+                }
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, h.size);
+                for id in ["dialog:window", "button:dialogOk", "button:dialogCancel"] {
+                    let rect = h.app.widgets.iter().find(|(key, _)| key == id).unwrap().1;
+                    assert!(screen.contains_rect(rect), "{locale:?}: {id} outside {screen:?}: {rect:?}");
+                }
+                if let Some(output) = std::env::var_os("LC_SMART_SCREENSHOTS") {
+                    let pixels = h.view.paint(&Default::default());
+                    let image = lightcraft_raster::Rgba8 {
+                        width: pixels.size[0],
+                        height: pixels.size[1],
+                        data: pixels.pixels.iter().map(|p| p.to_array()).collect(),
+                    };
+                    let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&image), &Default::default()).unwrap();
+                    std::fs::write(std::path::PathBuf::from(output).join(format!("storage-{}-{w}.png", locale.code())), bytes).unwrap();
+                }
+            }
+        }
+        crate::i18n::set_language(crate::i18n::Locale::En);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -19,6 +19,8 @@ pub(crate) mod migration;
 mod tests_lossless;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_round3;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod tests_round4;
 pub use format::Format;
 
 const MAGIC: &[u8] = b"LCSP1\n";
