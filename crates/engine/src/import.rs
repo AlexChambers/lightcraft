@@ -359,9 +359,7 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
     match preset {
         Some(pr) => {
             // a preset carries no Upright correction (an old one may still hold one: not this photo's)
-            let mut look = pr.apply(&base, 1.0);
-            crate::upright_transfer::settle(p, &base, &mut look, &pr.settings, None);
-            let look = std::sync::Arc::new(look);
+            let look = std::sync::Arc::new(crate::upright_transfer::apply_preset(p, &base, pr, 1.0));
             p.develop = look.clone();
             p.import_look = (*look != base).then_some(look);
         }
@@ -1446,9 +1444,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
                 if let Some(preset) = &opts.preset {
                     // after the sidecar: the photo keeps the Upright correction it was given
-                    let mut d = preset.apply(&p.develop, 1.0);
-                    crate::upright_transfer::settle(&p, &p.develop, &mut d, &preset.settings, None);
-                    let d = std::sync::Arc::new(d);
+                    let d = std::sync::Arc::new(crate::upright_transfer::apply_preset(&p, &p.develop, preset, 1.0));
                     let label = format!("Preset: {}", preset.name);
                     p.develop = d.clone();
                     p.edited = Some(now.clone());

@@ -443,7 +443,13 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
                 );
             }
         }
-        Some(false) => put(o, "crop.geometry", json!({"rect": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}, "angle": 0.0})),
+        Some(false) => {
+            // "no crop": the edges Lightroom keeps writing beside it are read, not lost adjustments
+            for k in ["Left", "Top", "Right", "Bottom", "Angle"] {
+                note(&format!("crs:Crop{k}"));
+            }
+            put(o, "crop.geometry", json!({"rect": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}, "angle": 0.0}))
+        }
         None => {}
     }
     out

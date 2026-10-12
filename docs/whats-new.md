@@ -386,12 +386,13 @@
   says so.
 - Rotate Left and Rotate Right turn an Upright correction with the photo. It used to stay as it was, so the photo
   came out skewed after a turn. Settings JSON that changes the rotation (Apply Settings JSON, MCP `set_develop`, the
-  CLI) turns it the same way.
+  CLI) turns it the same way, also when the settings are sent back whole.
 - An Upright correction stays with its photo: it is the analysis of that one image. Paste, Sync and Auto Sync give a
-  virtual copy the correction turned its way. Other photos get the Upright mode and the Transform sliders and keep
-  their own correction, or work out their own when the mode changes, as Lightroom does when it syncs the Upright
-  mode. Presets keep the mode, never a correction. LightCraft used to copy its own correction to other photos as it
-  was, which applied one scene's correction to another.
+  virtual copy the correction turned its way. Other photos get the rest of the Geometry settings (the Upright mode,
+  the Transform sliders, guides) and keep their own correction, or work out their own when the mode changes; Lightroom
+  community experts report that Lightroom's Sync with only Upright Mode checked works out each photo too. Presets keep
+  the mode, never a correction. LightCraft used to copy its own correction to other photos as it was, which applied
+  one scene's correction to another.
 - A crop read from an XMP sidecar now lands where Lightroom put it on photos shown on their side (portrait raws),
   and straightened crops keep Lightroom's frame. A portrait crop used to cut the wrong side of the photo.
   Synchronize Folder reads sidecars the same way, and its report lists what a sidecar couldn't carry over.

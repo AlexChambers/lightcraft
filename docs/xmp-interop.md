@@ -183,20 +183,26 @@ correction for that scene, in the frame that photo is shown in. So when settings
 - **Paste, Paste from Previous, Sync, Auto Sync** with the Geometry group:
   - Between a photo and its virtual copies (the same file), the correction moves, turned to each one's Rotate
     Left / Right.
-  - Between different files, only the Upright mode and the Transform sliders move. A target whose mode stays the
-    same keeps its own correction; one whose mode changes solves its own. This is what Lightroom does when it syncs
-    the Upright mode. Lightroom's separate option to copy the computed Upright transforms (identical geometry
-    across brackets) isn't offered.
+  - Between different files, everything in the Geometry group moves except the correction itself: the Upright
+    mode, the Transform sliders, Guided Upright's guides and Constrain Crop. A target whose mode stays the same
+    keeps its own correction; one whose mode changes solves its own. Lightroom community experts report the same
+    for Lightroom's Synchronize and Copy Settings with only Upright Mode checked, which recompute each photo;
+    Adobe's documentation doesn't say, and reports about Auto Sync conflict. Lightroom recomputes even a target
+    whose mode stays the same: LightCraft keeps that target's stored correction, which goes stale if the same Sync
+    changes its lens corrections (choose the Upright mode again then). Lightroom's separate option to copy the
+    computed Upright transforms (identical geometry across brackets) isn't offered.
   - LightCraft used to copy its own solved correction verbatim to other files, applying one scene's correction to
     another. That is no longer done.
 - **A crop paste** carries the Rotate Left / Right with it, and the target's own correction turns with it.
-- **Presets** keep the Upright mode and the Transform sliders, never a correction. A preset made before this,
-  which still holds one, has it ignored in the same way.
+- **Presets** keep the Upright mode, the Transform sliders and the rest of the Geometry group, never a correction. A
+  preset made before this, which still holds one, has it ignored in the same way, on Apply, as an import preset and
+  in the Presets panel's preview.
 - **Rotate Left / Right** turns the correction with the photo.
 - **Settings JSON** (`develop.merge`, MCP `set_develop`, the CLI):
-  - A change of rotation alone turns the correction the photo keeps, as Rotate does.
+  - A change of rotation turns the correction the photo keeps, as Rotate does, also when the settings are sent
+    back whole (as `develop.get` returned them, the photo's own correction in them unchanged).
   - A change of Upright mode drops the correction, to be solved again.
-  - A correction stated in the JSON is taken as given.
+  - A different correction stated in the JSON is taken as given.
 
 Not measured yet: the Transform sliders (Vertical, Horizontal, Rotate, Aspect, Scale, X / Y Offset) together with a
 saved Upright (LightCraft applies its own slider mapping on top, as with its own Upright), Level, Vertical and Full

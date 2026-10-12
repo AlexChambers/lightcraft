@@ -188,7 +188,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
         tool(
             "set_develop",
             "Set develop settings",
-            "Edit a photo (one undo step each for values and settings). `values` sets sliders by control id (see list_controls), e.g. {\"light.exposure\": 0.7, \"light.contrast\": 20}. `settings` deep-merges a partial develop-settings JSON (as returned by get_develop).",
+            "Edit a photo (one undo step each for values and settings). `values` sets sliders by control id (see list_controls), e.g. {\"light.exposure\": 0.7, \"light.contrast\": 20}. `settings` deep-merges a partial develop-settings JSON (as returned by get_develop). A change of `orientation` turns the photo's Upright correction with it, also when the settings are sent back whole; only a different `geometry.upright_transform` replaces it.",
             json!({
                 "id": photo_id,
                 "values": {"type": "object", "additionalProperties": {"type": "number"}, "description": "controlId → value"},

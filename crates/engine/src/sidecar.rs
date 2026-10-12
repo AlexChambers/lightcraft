@@ -150,11 +150,23 @@ impl StoredFrame {
     }
 }
 
-/// The stored image of the file at `path` as it is now, read from the file (never recorded: a
-/// file can change): `None` when it can't be read.
-pub fn probe_frame(path: &str) -> Option<StoredFrame> {
-    let bytes = std::fs::read(path).ok()?;
-    crate::files::probe_bytes(path, &bytes).ok()?.stored_frame()
+/// Whether partial settings `v` hold a crop that depends on the frame it is read in: anything but
+/// "no crop" (the whole image, not straightened), which is the same in every orientation.
+fn crop_needs_frame(v: &Value) -> bool {
+    let Some(g) = v.pointer("/crop/geometry") else { return false };
+    let at = |k: &str, want: f64| g.pointer(k).and_then(Value::as_f64).is_some_and(|x| x == want);
+    !(at("/rect/x0", 0.0)
+        && at("/rect/y0", 0.0)
+        && at("/rect/x1", 1.0)
+        && at("/rect/y1", 1.0)
+        && g.get("angle").and_then(Value::as_f64).is_none_or(|a| a == 0.0))
+}
+
+/// The stored image of the file at `path` as it is now, through the session's file probe `probe`
+/// (the one import uses, inside its memory budget; never recorded: a file can change): `None` when
+/// it can't be read.
+pub fn probe_frame(probe: Option<&crate::media::FileProbe>, path: &str) -> Option<StoredFrame> {
+    probe?(path).ok()?.stored_frame()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -355,22 +367,24 @@ impl SidecarData {
         self.placed_upright.is_some()
     }
 
-    /// Whether the packet's crop or saved Upright needs the photo's stored frame.
+    /// Whether the packet's crop or saved Upright needs the photo's stored frame. "No crop" (the
+    /// whole image, not straightened) is the same in every frame.
     pub fn needs_frame(&self) -> bool {
-        self.upright.is_some() || matches!(&self.develop, Some(DevelopPatch::Partial(v)) if v.pointer("/crop/geometry").is_some())
+        self.upright.is_some() || matches!(&self.develop, Some(DevelopPatch::Partial(v)) if crop_needs_frame(v))
     }
 
     /// For a photo already in the library whose file's orientation can't be learnt: leave its crop
     /// as it is rather than take Lightroom's crop edges in an unknown frame, and say so. Returns
-    /// whether a crop was held.
-    pub fn hold_unframed_crop(&mut self) -> bool {
+    /// the crop held (as the packet wrote it).
+    pub fn hold_unframed_crop(&mut self) -> Option<Value> {
         if self.frame.is_some() {
-            return false;
+            return None;
         }
-        let Some(DevelopPatch::Partial(Value::Object(partial))) = self.develop.as_mut() else { return false };
-        if partial.remove("crop").is_none() {
-            return false;
+        let Some(DevelopPatch::Partial(partial)) = self.develop.as_mut() else { return None };
+        if !crop_needs_frame(partial) {
+            return None;
         }
+        let held = partial.as_object_mut()?.remove("crop")?;
         self.warnings.push(crate::import::ImportWarning {
             path: String::new(),
             code: crate::import::ImportWarningCode::UnmappedXmp,
@@ -378,7 +392,7 @@ impl SidecarData {
             mode: None,
             fields: vec!["Crop (the file's orientation couldn't be read)".into()],
         });
-        true
+        Some(held)
     }
 
     /// Read the label through the catalog's label names: other editors write the label's name

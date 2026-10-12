@@ -916,7 +916,7 @@ impl Session {
             }
         }
         // an Upright correction moves only between entries of the same file
-        let source = self.catalog.photo(id).map(|p| crate::upright_transfer::source_of(p, new));
+        let source = self.catalog.photo(id).map(|p| crate::upright_transfer::source_of(p, new, &self.library_identity));
         self.selection
             .ids
             .iter()
@@ -930,6 +930,13 @@ impl Session {
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
             })
             .collect()
+    }
+
+    /// What `preset` at `amount` makes of photo `id`'s settings, as Apply Preset stores it (its
+    /// Upright correction settled: [`crate::upright_transfer::apply_preset`]); for previews too.
+    pub fn preset_look(&self, id: PhotoId, preset: &lightcraft_develop::Preset, amount: f64) -> Option<DevelopSettings> {
+        let p = self.catalog.photo(id)?;
+        Some(crate::upright_transfer::apply_preset(p, &p.develop, preset, amount))
     }
 
     /// The op that sets a photo's develop settings and appends a History entry (for batches).
