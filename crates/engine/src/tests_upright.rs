@@ -667,3 +667,166 @@ fn guided_upright_guides_that_are_not_read_are_reported() {
     assert_eq!(crate::crs::upright_at_risk(&none), None);
     let _ = std::fs::remove_dir_all(&src);
 }
+
+// ------------------------------------------------------------------ settings moved between photos
+
+fn dev(s: &Session, id: lightcraft_catalog::PhotoId) -> DevelopSettings {
+    (*s.catalog.photo(id).unwrap().develop).clone()
+}
+
+fn same(a: Option<Homography>, b: Homography) -> bool {
+    a.is_some_and(|a| a.0.iter().zip(b.0).all(|(x, y)| (x - y).abs() < 1e-12))
+}
+
+/// A 60 × 40 JPEG `name` with EXIF `exif` (and, with `sidecar`, that XMP next to it), imported.
+fn import_jpeg(s: &mut Session, dir: &Path, name: &str, exif: u16, sidecar: Option<&str>) -> lightcraft_catalog::PhotoId {
+    let photo = dir.join(format!("{name}.jpg"));
+    write_jpeg(&photo, 60, 40, exif);
+    if let Some(x) = sidecar {
+        std::fs::write(dir.join(format!("{name}.xmp")), x).unwrap();
+    }
+    s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
+    s.catalog.photos().find(|p| p.file_name == format!("{name}.jpg")).unwrap().id
+}
+
+/// Paste, Sync and Paste from Previous carry an Upright correction into the target photo's frame:
+/// a virtual copy turned a quarter right gets the original's correction turned with it (the
+/// transferred matrix used to keep the original's frame: about 15 px off at 3200 × 4800).
+#[test]
+fn transferred_upright_lands_in_the_target_photo_frame() {
+    for command in ["develop.paste", "develop.sync", "develop.pastePrevious"] {
+        let src = temp_dir(&format!("upright-transfer-{}", command.replace('.', "-")));
+        let mut s = Session::new().with_fs();
+        let id = import_jpeg(&mut s, &src, "hall", 1, Some(&lightroom(1)));
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        let copy = lightcraft_catalog::PhotoId(s.execute("photo.virtualCopy", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+        s.execute("library.select", &json!({"ids": [copy.0]})).unwrap();
+        s.execute("photo.rotateRight", &json!({})).unwrap();
+        let turned = placed(1, Orientation::Rotate90, 60.0, 40.0);
+        assert!(same(dev(&s, copy).geometry.upright_transform, turned));
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        s.execute("develop.copy", &json!({"groups": ["geometry"]})).unwrap();
+        if command == "develop.sync" {
+            s.selection = crate::Selection { ids: vec![id, copy], active: Some(id) };
+        } else {
+            s.execute("library.select", &json!({"ids": [copy.0]})).unwrap();
+        }
+        s.execute(command, &json!({"groups": ["geometry"]})).unwrap();
+        assert!(same(dev(&s, copy).geometry.upright_transform, turned), "{command}: {:?}", dev(&s, copy).geometry.upright_transform);
+        assert!(same(dev(&s, id).geometry.upright_transform, placed(1, Orientation::Normal, 60.0, 40.0)), "{command}: the source is untouched");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
+/// Between files with different orientations the correction goes through the stored image, as
+/// Lightroom keeps it: into an EXIF-8 photo, and into an EXIF-6 photo the user turned right.
+#[test]
+fn transferred_upright_follows_each_files_orientation() {
+    let src = temp_dir("upright-transfer-exif");
+    let mut s = Session::new().with_fs();
+    let a = import_jpeg(&mut s, &src, "a", 1, Some(&lightroom(1)));
+    let b = import_jpeg(&mut s, &src, "b", 8, None);
+    let c = import_jpeg(&mut s, &src, "c", 6, None);
+    s.execute("library.select", &json!({"ids": [c.0]})).unwrap();
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
+    s.execute("develop.copy", &json!({"groups": ["geometry"]})).unwrap();
+    s.execute("library.select", &json!({"ids": [b.0, c.0]})).unwrap();
+    s.execute("develop.paste", &json!({})).unwrap();
+    assert!(same(dev(&s, b).geometry.upright_transform, placed(1, Orientation::Rotate270, 60.0, 40.0)), "EXIF 8: {:?}", dev(&s, b).geometry);
+    let c_frame = Orientation::Rotate90.then(Orientation::Rotate90);
+    assert!(same(dev(&s, c).geometry.upright_transform, placed(1, c_frame, 60.0, 40.0)), "EXIF 6 turned right: {:?}", dev(&s, c).geometry);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// A crop paste carries the source's rotation: the target's own Upright correction turns with it.
+#[test]
+fn a_crop_paste_that_turns_the_photo_turns_its_upright() {
+    let src = temp_dir("upright-crop-paste");
+    let mut s = Session::new().with_fs();
+    let id = import_jpeg(&mut s, &src, "tower", 1, Some(&lightroom(1)));
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let copy = lightcraft_catalog::PhotoId(s.execute("photo.virtualCopy", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+    s.execute("library.select", &json!({"ids": [copy.0]})).unwrap();
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("develop.copy", &json!({"groups": ["crop"]})).unwrap();
+    s.execute("library.select", &json!({"ids": [copy.0]})).unwrap();
+    s.execute("develop.paste", &json!({})).unwrap();
+    let d = dev(&s, copy);
+    assert_eq!(d.orientation, Orientation::Normal);
+    assert!(same(d.geometry.upright_transform, placed(1, Orientation::Normal, 60.0, 40.0)), "{:?}", d.geometry);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Auto Sync carries an edit of the correction into each selected photo's own frame.
+#[test]
+fn auto_sync_carries_upright_into_each_photos_frame() {
+    let src = temp_dir("upright-auto-sync");
+    let mut s = Session::new().with_fs();
+    let id = import_jpeg(&mut s, &src, "nave", 1, Some(&lightroom(1)));
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let copy = lightcraft_catalog::PhotoId(s.execute("photo.virtualCopy", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+    s.execute("library.select", &json!({"ids": [copy.0]})).unwrap();
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    s.selection = crate::Selection { ids: vec![id, copy], active: Some(id) };
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    let full = placed(2, Orientation::Normal, 60.0, 40.0);
+    s.execute("develop.merge", &json!({"settings": {"geometry": {"upright": "full", "upright_transform": full}}})).unwrap();
+    assert!(same(dev(&s, id).geometry.upright_transform, full));
+    assert!(same(dev(&s, copy).geometry.upright_transform, placed(2, Orientation::Rotate90, 60.0, 40.0)), "{:?}", dev(&s, copy).geometry);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+// ------------------------------------------------------------------ Synchronize Folder
+
+fn bump(path: &Path, seconds: u64) {
+    let f = std::fs::File::options().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(seconds)).unwrap();
+}
+
+/// Synchronize Folder reads a sidecar in the photo's frame, as import does: an unchanged packet
+/// (only its time moved) changes nothing; a real change keeps the crop and the saved Upright where
+/// import put them; what can't be kept is reported (it used to undo import's conversion silently).
+#[test]
+fn synchronize_folder_reads_sidecars_in_the_photo_frame() {
+    let src = temp_dir("upright-folder-sync");
+    let mut s = Session::new().with_fs();
+    let crop = r#"crs:HasCrop="True" crs:CropLeft="0.206655" crs:CropTop="0" crs:CropRight="1" crs:CropBottom="1" crs:CropAngle="0""#;
+    let packet = |exposure: &str| lightroom(1).replace(r#"crs:Exposure2012="+0.30""#, &format!(r#"crs:Exposure2012="{exposure}" {crop}"#));
+    let id = import_jpeg(&mut s, &src, "portrait", 8, Some(&packet("+0.30")));
+    let before = dev(&s, id);
+    let r = [before.crop.geometry.rect.x0, before.crop.geometry.rect.y0, before.crop.geometry.rect.x1, before.crop.geometry.rect.y1];
+    assert_eq!(r.map(|v| (v * 1e6).round() / 1e6), [0.0, 0.0, 1.0, 0.793345]);
+    assert!(same(before.geometry.upright_transform, placed(1, Orientation::Rotate270, 60.0, 40.0)));
+    let dir = src.to_string_lossy().to_string();
+    let sidecar = src.join("portrait.xmp");
+    let sync = |s: &mut Session| s.execute("folder.synchronize", &json!({"path": dir, "readMetadata": true, "importNew": false})).unwrap();
+
+    bump(&sidecar, 5);
+    let r = sync(&mut s);
+    assert_eq!(dev(&s, id), before, "an unchanged packet changed the photo: {r}");
+
+    std::fs::write(&sidecar, packet("+0.80")).unwrap();
+    bump(&sidecar, 10);
+    let r = sync(&mut s);
+    let after = dev(&s, id);
+    assert_eq!(after.light.exposure, 0.8, "{r}");
+    assert_eq!(after.crop.geometry, before.crop.geometry, "{r}");
+    assert_eq!(after.geometry.upright_transform, before.geometry.upright_transform, "{r}");
+
+    // Guided guides can't be read: the synchronize report says so
+    std::fs::write(
+        &sidecar,
+        packet("+0.80").replace(r#"crs:PerspectiveUpright="1""#, r#"crs:PerspectiveUpright="5""#).replace(
+            r#"crs:UprightFourSegmentsCount="0""#,
+            r#"crs:UprightFourSegmentsCount="2" crs:UprightFourSegments_0="0.2, 0.1, 0.25, 0.9" crs:UprightFourSegments_1="0.8, 0.1, 0.75, 0.9""#,
+        ),
+    )
+    .unwrap();
+    bump(&sidecar, 15);
+    let r = sync(&mut s);
+    let warned = r["warnings"].as_array().into_iter().flatten().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "guided");
+    assert!(warned, "{r}");
+    let _ = std::fs::remove_dir_all(&src);
+}

@@ -1680,10 +1680,7 @@ impl ProbeInfo {
     /// The stored image's frame: its orientation and its size before that orientation, when both
     /// are known (see [`crate::sidecar::SidecarData::set_frame`]).
     pub fn stored_frame(&self) -> Option<crate::sidecar::StoredFrame> {
-        let orientation = self.orientation?;
-        let (w, h) = (f64::from(self.width), f64::from(self.height));
-        let (width, height) = if orientation.swaps_axes() { (h, w) } else { (w, h) };
-        (w > 0.0 && h > 0.0).then_some(crate::sidecar::StoredFrame { orientation, width, height })
+        crate::sidecar::StoredFrame::of_shown(self.orientation?, f64::from(self.width), f64::from(self.height))
     }
 }
 

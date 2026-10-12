@@ -673,14 +673,28 @@ fn centred_to_normalized(ow: f64, oh: f64) -> Homography {
 /// image). `orientation` turns the stored image, `stored_w × stored_h` (any unit; only the aspect
 /// matters), into LightCraft's oriented image. `None` for a frame without a finite, positive size.
 pub fn upright_in_frame(saved: &SavedUpright, orientation: Orientation, stored_w: f64, stored_h: f64) -> Option<Homography> {
+    let a = centred_to_stored(orientation, stored_w, stored_h)?;
+    normalized(a.inverse()?.mul(&Homography(saved.matrix)).mul(&a))
+}
+
+/// The inverse of [`upright_in_frame`]: a correction in LightCraft's frame, as a matrix on the
+/// stored image (Lightroom's convention), so it can be put in another photo's frame.
+pub fn upright_on_stored(h: &Homography, orientation: Orientation, stored_w: f64, stored_h: f64) -> Option<[f64; 9]> {
+    let a = centred_to_stored(orientation, stored_w, stored_h)?;
+    normalized(a.mul(h).mul(&a.inverse()?)).map(|n| n.0)
+}
+
+/// Centred coordinates of the oriented image → normalized coordinates of the stored image.
+fn centred_to_stored(orientation: Orientation, stored_w: f64, stored_h: f64) -> Option<Homography> {
     if !(stored_w.is_finite() && stored_h.is_finite() && stored_w > 0.0 && stored_h > 0.0) {
         return None;
     }
     let (ow, oh) = if orientation.swaps_axes() { (stored_h, stored_w) } else { (stored_w, stored_h) };
-    let turn = orientation_homography(orientation);
-    let oriented = turn.mul(&Homography(saved.matrix)).mul(&turn.inverse()?);
-    let c = centred_to_normalized(ow, oh);
-    let h = c.inverse()?.mul(&oriented).mul(&c);
+    Some(orientation_homography(orientation).inverse()?.mul(&centred_to_normalized(ow, oh)))
+}
+
+/// `h` scaled so its last element is 1, when that leaves it finite.
+fn normalized(h: Homography) -> Option<Homography> {
     let last = h.0[8];
     let h = Homography(h.0.map(|v| v / last));
     h.0.iter().all(|v| v.is_finite()).then_some(h)

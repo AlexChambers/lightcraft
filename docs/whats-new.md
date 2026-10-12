@@ -376,14 +376,20 @@
 ## 2026-10-12
 
 ### Lightroom Upright comes across
-- Photos edited in Lightroom with Upright Auto, Full, Level or Vertical now open framed as they are in Lightroom
-  (issue #205). LightCraft keeps the correction Lightroom saved with the edit instead of analysing the photo again.
-  This works for XMP sidecars and DNG files with the edit inside; photos imported earlier get it with Photo ▸ Read
-  Metadata from File. Lightroom Classic catalogs still have it worked out again for now, and the import says so.
+- Photos edited in Lightroom with Upright Auto, Full, Level or Vertical now keep the correction Lightroom saved
+  with the edit instead of being analysed again (issue #205), so they open framed as they are in Lightroom. Upright
+  Auto matches Lightroom's exports to under a pixel; Full, Level and Vertical use the same saved correction but
+  haven't been compared with exports yet. Not covered yet: Transform sliders or a straightened crop on top of
+  Upright, and Lightroom's lens profile corrections (details in docs/xmp-interop.md, *Saved Upright geometry*).
+  This works for XMP sidecars and DNG files with the edit inside, on import, with Photo ▸ Read Metadata from File
+  and with Synchronize Folder. Lightroom Classic catalogs still have it worked out again for now, and the import
+  says so.
 - Rotate Left and Rotate Right turn an Upright correction with the photo. It used to stay as it was, so the photo
-  came out skewed after a turn.
+  came out skewed after a turn. Paste, Paste from Previous, Sync and Auto Sync now put a copied Upright correction
+  the right way round for each photo, for example on a turned virtual copy or a photo shot in portrait.
 - A crop read from an XMP sidecar now lands where Lightroom put it on photos shown on their side (portrait raws),
   and straightened crops keep Lightroom's frame. A portrait crop used to cut the wrong side of the photo.
+  Synchronize Folder reads sidecars the same way, and its report lists what a sidecar couldn't carry over.
 - Lightroom's Upright values 2, 3 and 4 now read as Full, Level and Vertical. They used to come in as Level,
   Vertical and Full.
 - Guided Upright doesn't come across yet (Lightroom's guides aren't read), and the import report says so. The

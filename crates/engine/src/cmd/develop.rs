@@ -795,6 +795,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let d = s.develop_of(id).unwrap_or_default();
                 s.clipboard = Some(lightcraft_develop::extract_groups(&d, &s.copy_groups));
+                s.clipboard_frame = s.catalog.photo(id).and_then(|p| crate::upright_frames::frame_of(p, &d));
                 Ok(json!({"groups": s.copy_groups}))
             }
         ),
@@ -812,10 +813,13 @@ pub fn specs() -> Vec<CommandSpec> {
                 let groups = groups_param(p, c)?.unwrap_or_else(|| s.copy_groups.clone());
                 let partial = lightcraft_develop::extract_groups(&s.develop_of(prev).unwrap_or_default(), &groups);
                 let ids: Vec<PhotoId> = s.targets(p)?.into_iter().filter(|id| *id != prev).collect();
+                let source = s.catalog.photo(prev).and_then(|ph| crate::upright_frames::frame_of(ph, &ph.develop));
                 let ops = ids
                     .iter()
-                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lightcraft_develop::apply_partial(&d, &partial, 1.0), "Paste from Previous"))
+                    .filter_map(|id| {
+                        s.catalog.photo(*id).map(|ph| (*id, crate::upright_frames::transferred(ph, &ph.develop, &partial, source.as_ref())))
+                    })
+                    .filter_map(|(id, d)| s.develop_op(id, d, "Paste from Previous"))
                     .collect::<Vec<_>>();
                 let n = ops.len();
                 s.commit("Paste from Previous", Op::Batch { ops })?;
@@ -839,10 +843,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     clip = lightcraft_develop::extract_groups(&full, &only);
                 }
                 let ids = s.targets(p)?;
+                let source = s.clipboard_frame;
                 let ops = ids
                     .iter()
-                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                    .filter_map(|(id, d)| s.develop_op(id, lightcraft_develop::apply_partial(&d, &clip, 1.0), "Paste Settings"))
+                    .filter_map(|id| {
+                        s.catalog.photo(*id).map(|ph| (*id, crate::upright_frames::transferred(ph, &ph.develop, &clip, source.as_ref())))
+                    })
+                    .filter_map(|(id, d)| s.develop_op(id, d, "Paste Settings"))
                     .collect::<Vec<_>>();
                 let n = ops.len();
                 s.commit("Paste Settings", Op::Batch { ops })?;
@@ -862,14 +869,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 let groups = groups_param(p, c)?.unwrap_or_else(SettingsGroup::default_copy);
                 let d = s.develop_of(id).unwrap_or_default();
                 let partial = lightcraft_develop::extract_groups(&d, &groups);
+                let source = s.catalog.photo(id).and_then(|ph| crate::upright_frames::frame_of(ph, &d));
                 let ops = s
                     .selection
                     .ids
                     .clone()
                     .into_iter()
                     .filter(|x| *x != id)
-                    .filter_map(|x| s.develop_of(x).map(|d| (x, d)))
-                    .filter_map(|(x, dd)| s.develop_op(x, lightcraft_develop::apply_partial(&dd, &partial, 1.0), "Sync Settings"))
+                    .filter_map(|x| s.catalog.photo(x).map(|ph| (x, crate::upright_frames::transferred(ph, &ph.develop, &partial, source.as_ref()))))
+                    .filter_map(|(x, dd)| s.develop_op(x, dd, "Sync Settings"))
                     .collect::<Vec<_>>();
                 let n = ops.len();
                 s.commit("Sync Settings", Op::Batch { ops })?;
@@ -983,7 +991,14 @@ pub fn specs() -> Vec<CommandSpec> {
             let ops = ids
                 .iter()
                 .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, d)| s.develop_op(id, preset.apply(&d, amount), &format!("Preset: {}", preset.name)))
+                .filter_map(|(id, d)| {
+                    // a preset that turns the photo turns the Upright correction it keeps
+                    let mut after = preset.apply(&d, amount);
+                    if let Some(ph) = s.catalog.photo(id) {
+                        crate::upright_frames::settle(ph, &d, &mut after, &preset.settings, None);
+                    }
+                    s.develop_op(id, after, &format!("Preset: {}", preset.name))
+                })
                 .collect::<Vec<_>>();
             s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
             ok()

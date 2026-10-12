@@ -78,6 +78,7 @@ pub mod slideshow_export;
 pub mod smart;
 pub mod sync;
 pub mod text;
+pub mod upright_frames;
 mod view;
 pub mod walk;
 
@@ -259,6 +260,9 @@ pub struct Session {
     pub(crate) focus_scan: focus_scan::FocusScan,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
+    /// The frame of the photo the clipboard was copied from (its Upright correction is put into
+    /// each target's frame on Paste: [`crate::upright_frames`]).
+    pub clipboard_frame: Option<crate::upright_frames::PhotoFrame>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
     pub browse: Option<Browse>,
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
@@ -439,6 +443,7 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             focus_scan: Default::default(),
             clipboard: None,
+            clipboard_frame: None,
             meta_clipboard: None,
             browse: None,
             library_folder: None,
@@ -909,13 +914,18 @@ impl Session {
                 return Vec::new();
             }
         }
+        // an Upright correction goes into each photo's own frame
+        let source = self.catalog.photo(id).and_then(|p| crate::upright_frames::frame_of(p, new));
         self.selection
             .ids
             .iter()
             .filter(|x| **x != id)
             .filter_map(|x| self.develop_of(*x).map(|d| (*x, d)))
             .filter_map(|(x, d)| {
-                let synced = lightcraft_develop::apply_partial(&d, &delta, 1.0);
+                let synced = match self.catalog.photo(x) {
+                    Some(p) => crate::upright_frames::transferred(p, &d, &delta, source.as_ref()),
+                    None => lightcraft_develop::apply_partial(&d, &delta, 1.0),
+                };
                 (synced != *d).then(|| self.develop_op(x, synced, label)).flatten()
             })
             .collect()

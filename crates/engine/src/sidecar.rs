@@ -141,6 +141,27 @@ pub struct StoredFrame {
     pub height: f64,
 }
 
+impl StoredFrame {
+    /// The stored image of a file shown `shown_w × shown_h` after `orientation`.
+    pub fn of_shown(orientation: lightcraft_geom::Orientation, shown_w: f64, shown_h: f64) -> Option<StoredFrame> {
+        let ok = shown_w.is_finite() && shown_h.is_finite() && shown_w > 0.0 && shown_h > 0.0;
+        let (width, height) = if orientation.swaps_axes() { (shown_h, shown_w) } else { (shown_w, shown_h) };
+        ok.then_some(StoredFrame { orientation, width, height })
+    }
+}
+
+/// Photo `p`'s stored image, from its catalog record (import records the file's orientation).
+pub fn recorded_frame(p: &Photo) -> Option<StoredFrame> {
+    StoredFrame::of_shown(p.file_orientation?, f64::from(p.width), f64::from(p.height))
+}
+
+/// The stored image of the file at `path`, read from the file (photos imported before the
+/// orientation was recorded): `None` when it can't be read.
+pub fn probe_frame(path: &str) -> Option<StoredFrame> {
+    let bytes = std::fs::read(path).ok()?;
+    crate::files::probe_bytes(path, &bytes).ok()?.stored_frame()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum DevelopPatch {
     /// Our own complete settings (`lc:settings`).
@@ -337,6 +358,29 @@ impl SidecarData {
             self.warnings.retain(|w| w.code != crate::import::ImportWarningCode::UprightGeometry);
         }
         self.placed_upright.is_some()
+    }
+
+    /// Whether the packet's crop or saved Upright needs the photo's stored frame.
+    pub fn needs_frame(&self) -> bool {
+        self.upright.is_some() || matches!(&self.develop, Some(DevelopPatch::Partial(v)) if v.pointer("/crop/geometry").is_some())
+    }
+
+    /// For a photo already in the library whose file's orientation can't be learnt: leave its crop
+    /// as it is rather than take Lightroom's crop edges in an unknown frame, and say so.
+    pub fn hold_unframed_crop(&mut self) {
+        if self.frame.is_some() {
+            return;
+        }
+        let Some(DevelopPatch::Partial(Value::Object(partial))) = self.develop.as_mut() else { return };
+        if partial.remove("crop").is_some() {
+            self.warnings.push(crate::import::ImportWarning {
+                path: String::new(),
+                code: crate::import::ImportWarningCode::UnmappedXmp,
+                profile: None,
+                mode: None,
+                fields: vec!["Crop (the file's orientation couldn't be read)".into()],
+            });
+        }
     }
 
     /// Read the label through the catalog's label names: other editors write the label's name
@@ -704,11 +748,14 @@ impl Session {
         let Some(orig) = file_path(p) else { return Ok(None) };
         let Some((packet, from)) = read_packet(orig, p.kind, self.sidecar_naming(id)) else { return Ok(None) };
         let mut sc = parse_sidecar(&packet, crate::crs::Target::for_photo(p)).map_err(|e| EngineError::Other(format!("{}: {e}", from.display())))?;
-        let cropped = matches!(&sc.develop, Some(DevelopPatch::Partial(v)) if v.pointer("/crop/geometry").is_some());
-        if sc.upright.is_some() || cropped {
-            // Lightroom's crop and saved Upright are on the stored image: the file says how it is oriented
-            let probed = crate::import::probe_paths(self, &[orig.to_string()]).into_iter().next().and_then(std::result::Result::ok);
-            sc.set_frame(probed.and_then(|info| info.stored_frame()));
+        if sc.needs_frame() {
+            // Lightroom's crop and saved Upright are on the stored image: the catalog or the file says
+            // how it is oriented
+            let frame = recorded_frame(p).or_else(|| {
+                crate::import::probe_paths(self, &[orig.to_string()]).into_iter().next().and_then(std::result::Result::ok)?.stored_frame()
+            });
+            sc.set_frame(frame);
+            sc.hold_unframed_crop();
         }
         let mut warnings = sc.warnings.clone();
         for warning in &mut warnings {

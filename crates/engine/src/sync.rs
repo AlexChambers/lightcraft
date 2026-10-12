@@ -154,6 +154,8 @@ pub struct SyncReport {
     pub read: usize,
     /// (path or photo, why) for what couldn't be done.
     pub failed: Vec<(String, String)>,
+    /// What sidecars said that couldn't be carried over in full (as for import).
+    pub warnings: Vec<crate::import::ImportWarning>,
 }
 
 fn invalid(msg: impl Into<String>) -> EngineError {
@@ -586,7 +588,9 @@ fn sidecar_has_news(labels: &Catalog, p: &Photo, naming: SidecarNaming, listing:
         return false;
     }
     let Ok(text) = std::fs::read_to_string(&file) else { return false };
-    let Ok(sc) = crate::sidecar::parse_sidecar(&text, crate::crs::Target::for_photo(p)) else { return false };
+    let Ok(mut sc) = crate::sidecar::parse_sidecar(&text, crate::crs::Target::for_photo(p)) else { return false };
+    // compared in the photo's frame, as it would be read
+    framed(&mut sc, crate::sidecar::recorded_frame(p), path);
     let sc = sc.resolve_label(labels);
     let mut q = p.clone();
     crate::sidecar::merge_into(&mut q, &sc, "");
@@ -623,7 +627,8 @@ pub struct SyncWork {
     moved: Vec<FolderMoved>,
     missing: Vec<FolderPhoto>,
     /// (photo, its file, how its sidecar is named)
-    sidecars: Vec<(PhotoId, String, SidecarNaming, crate::crs::Target)>,
+    /// (photo, its file, sidecar naming, white balance target, its stored frame when recorded)
+    sidecars: Vec<(PhotoId, String, SidecarNaming, crate::crs::Target, Option<crate::sidecar::StoredFrame>)>,
 }
 
 /// The catalog half of a synchronize (see [`SyncJob`]).
@@ -677,7 +682,7 @@ impl SyncJob {
                 .zip(namings)
                 .filter_map(|(m, naming)| {
                     let p = s.catalog.photo(PhotoId(m.id))?;
-                    Some((p.id, m.path, naming, crate::crs::Target::for_photo(p)))
+                    Some((p.id, m.path, naming, crate::crs::Target::for_photo(p), crate::sidecar::recorded_frame(p)))
                 })
                 .collect()
         } else {
@@ -749,11 +754,11 @@ impl SyncWork {
             return;
         }
         let mut read = Vec::with_capacity(sidecars.len());
-        for (id, path, naming, target) in sidecars {
+        for (id, path, naming, target, frame) in sidecars {
             if cancel.load(Relaxed) {
                 break;
             }
-            read.push((id, path.clone(), read_sidecar(&path, naming, target)));
+            read.push((id, path.clone(), read_sidecar(&path, naming, target, frame)));
             step(1);
         }
         if !read.is_empty() {
@@ -762,15 +767,33 @@ impl SyncWork {
     }
 }
 
-/// Read and parse photo file `path`'s XMP sidecar file.
-fn read_sidecar(path: &str, naming: SidecarNaming, target: crate::crs::Target) -> std::result::Result<crate::sidecar::SidecarData, String> {
+/// Read and parse photo file `path`'s XMP sidecar file, its crop and saved Upright in the photo's
+/// stored frame (`frame`, else read from the file), as import reads them.
+fn read_sidecar(
+    path: &str,
+    naming: SidecarNaming,
+    target: crate::crs::Target,
+    frame: Option<crate::sidecar::StoredFrame>,
+) -> std::result::Result<crate::sidecar::SidecarData, String> {
     let file = crate::sidecar::find_sidecar(path, naming).ok_or_else(|| "no XMP sidecar".to_string())?;
     let len = std::fs::metadata(&file).map_err(|e| format!("{}: {e}", file.display()))?.len();
     if len > MAX_SIDECAR_BYTES {
         return Err(format!("{}: too large for an XMP sidecar", file.display()));
     }
     let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-    crate::sidecar::parse_sidecar(&text, target).map_err(|e| format!("{}: {e}", file.display()))
+    let mut sc = crate::sidecar::parse_sidecar(&text, target).map_err(|e| format!("{}: {e}", file.display()))?;
+    framed(&mut sc, frame, path);
+    Ok(sc)
+}
+
+/// Give a parsed sidecar of the photo whose file is `path` its stored frame: `frame` when the
+/// catalog recorded it, else read from the file (only when the packet's crop or saved Upright
+/// needs it). Without one, the photo's crop is left as it is and the report says so.
+fn framed(sc: &mut crate::sidecar::SidecarData, frame: Option<crate::sidecar::StoredFrame>, path: &str) {
+    if sc.needs_frame() {
+        sc.set_frame(frame.or_else(|| crate::sidecar::probe_frame(path)));
+        sc.hold_unframed_crop();
+    }
 }
 
 impl SyncCommit {
@@ -830,6 +853,12 @@ impl SyncCommit {
             SyncStep::Sidecars(read) => {
                 let mut ops = Vec::new();
                 for (id, path, sc) in read {
+                    if let Ok(sc) = &sc {
+                        report.warnings.extend(sc.warnings.iter().cloned().map(|mut w| {
+                            w.path = path.clone();
+                            w
+                        }));
+                    }
                     match sc.map_err(EngineError::Other).and_then(|sc| s.sidecar_op(id, sc)) {
                         Ok(op) => ops.push(op),
                         Err(e) => report.failed.push((path, e.to_string())),

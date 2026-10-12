@@ -141,7 +141,7 @@ application's renderer and is ignored: the photo keeps LightCraft's own process,
 | `ShadowTint`, `RedHue/Saturation`, `GreenHue/Saturation`, `BlueHue/Saturation` | `calibration.shadows_tint`, `calibration.red_hue/red_sat`, … | Calibration panel, 1:1 |
 | `PerspectiveVertical/Horizontal/Rotate/Scale/Aspect/X/Y` | `geometry.vertical/horizontal/rotate/scale/aspect/offset_x/offset_y` | |
 | `PerspectiveUpright` | `geometry.upright`, `geometry.upright_transform` | 0 off, 1 auto, 2 full, 3 level, 4 vertical, 5 guided; Lightroom's saved correction for the selected mode is kept as it is when it can be (see *Saved Upright geometry*), otherwise LightCraft works the mode out itself (Guided needs guides drawn in LightCraft: Lightroom's aren't read) and photo import says so |
-| `HasCrop`, `CropLeft/Top/Right/Bottom`, `CropAngle` | `crop.geometry` | Lightroom's edges are on the stored image (before its orientation) and its straighten angle turns the other way: both go into the frame the photo is shown in (through the file's orientation and the photo's Rotate Left / Right), as the Lightroom catalog import does; when the file's orientation isn't known (Synchronize Folder, a raw shown from its preview) the edges are taken as written; `HasCrop="False"` → no crop |
+| `HasCrop`, `CropLeft/Top/Right/Bottom`, `CropAngle` | `crop.geometry` | Lightroom's edges are on the stored image (before its orientation) and its straighten angle turns the other way: both go into the frame the photo is shown in (through the file's orientation and the photo's Rotate Left / Right), as the Lightroom catalog import does; the file's orientation is recorded on import (photos imported before that read it from the file); when it can't be known (a raw shown from its preview) the edges are taken as written on import, and an existing photo keeps its crop and the report says so; `HasCrop="False"` → no crop |
 
 Values pass through our control specs, so anything outside our slider ranges gets clamped.
 
@@ -158,8 +158,8 @@ photo is framed as in Lightroom instead of being analysed again, when
 - `UprightVersion` is `151388160` (the only version seen so far; any other is solved again);
 - `UprightTransformCount` includes the mode's matrix, and the matrix is nine finite numbers that make a sensible
   correction (no part of the photo at or beyond the horizon, no mirror, no collapse);
-- the file's orientation is known: on import and Read Metadata from File (Synchronize Folder solves the mode again,
-  and Lightroom catalog import doesn't read saved Upright yet: see [lightroom-catalog-import.md](lightroom-catalog-import.md));
+- the file's orientation is known: on import, Read Metadata from File and Synchronize Folder (Lightroom catalog
+  import doesn't read saved Upright yet: see [lightroom-catalog-import.md](lightroom-catalog-import.md));
 - the crop has no straighten angle (a straightened crop on top of a saved Upright isn't measured yet).
 
 The matrix's convention was measured on Lightroom's exports, not assumed (issue #205): a forward homography (photo
@@ -168,7 +168,12 @@ y / height, origin top left, y down, before the EXIF orientation), applied befor
 to fill the frame already in it. LightCraft turns it with the file's orientation into its own frame
 (`geometry.upright_transform`, centred coordinates of the oriented image, the photo's own Rotate Left / Right
 included) and applies the crop on top, as Lightroom does. Rotate Left / Right later turns the kept correction with
-the photo, as it does LightCraft's own Upright. On three public NEF raws exported by Lightroom Classic 12 with Upright Auto (one shown in portrait,
+the photo, as it does LightCraft's own Upright.
+
+An Upright correction belongs to its photo's frame. Paste, Paste from Previous, Sync and Auto Sync put a copied
+correction into each target's frame through the stored image (as Lightroom keeps it), so a turned virtual copy or a
+photo shot in portrait gets it the right way round, and a pasted crop that turns a photo turns the correction it
+keeps. A photo imported before the file's orientation was recorded is taken as stored the way it is shown. On three public NEF raws exported by Lightroom Classic 12 with Upright Auto (one shown in portrait,
 one cropped with Constrain Crop on), LightCraft's geometry with the kept matrix matches the exports to about half a
 pixel on average and under a pixel at worst, at full size; without it, the frames differ by 22 to 36 px on average.
 

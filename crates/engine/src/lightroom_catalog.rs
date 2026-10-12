@@ -542,8 +542,8 @@ fn mapped_settings(
     // Lightroom's saved Upright isn't kept from catalogs yet: how a catalog encodes it, and whether
     // its orientation agrees with the decoded file, haven't been checked on a real catalog (issue
     // #205). The mode is solved again, and the report says what was lost.
-    if crate::crs::upright_at_risk(&props).is_some() {
-        unknown.push("Upright (Lightroom's saved geometry, solved again: not read from catalogs yet)".into());
+    if let Some(mode) = crate::crs::upright_at_risk(&props) {
+        unknown.push(catalog_upright_note(mode));
     }
     if deferred > 0 {
         unknown.push("Deferred Lightroom adjustments (-999999)".into());
@@ -572,6 +572,27 @@ fn lightroom_orientation(code: &str) -> Option<Orientation> {
         _ => 'D',
     };
     ALL.into_iter().find(|&o| code.chars().eq([corner(o, 0.0, 0.0), corner(o, 1.0, 0.0)]))
+}
+
+/// How a catalog import reports Lightroom Upright geometry it doesn't carry over.
+fn catalog_upright_note(mode: crate::import::ImportUprightMode) -> String {
+    match mode {
+        crate::import::ImportUprightMode::Guided => "Upright (Guided: Lightroom's guides aren't read)".into(),
+        _ => "Upright (Lightroom's saved geometry, solved again: not read from catalogs yet)".into(),
+    }
+}
+
+/// The catalog report's names for what an XMP packet's import diagnostics say wasn't carried over.
+fn catalog_notes(warnings: &[crate::import::ImportWarning]) -> Vec<String> {
+    use crate::import::ImportWarningCode as C;
+    warnings
+        .iter()
+        .flat_map(|w| match w.code {
+            C::CameraProfile => vec!["CameraProfile".to_string()],
+            C::UprightGeometry => vec![catalog_upright_note(w.mode.unwrap_or(crate::import::ImportUprightMode::Unknown))],
+            C::UnmappedXmp => w.fields.clone(),
+        })
+        .collect()
 }
 
 fn strip_lua_sentinels(value: &mut crate::preset_import::Lua) -> usize {
@@ -746,11 +767,16 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, data: CatalogImport, contex
         if keep_develop {
             preserved += 1;
         }
+        // what the XMP and the develop settings couldn't carry over, each named once
+        let mut notes: Vec<String> = Vec::new();
         if !src.xmp.is_empty() {
             match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
                 Ok(mut sc) => {
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
+                    }
+                    if !keep_develop {
+                        notes.extend(catalog_notes(&sc.warnings));
                     }
                     crate::sidecar::merge_into(&mut p, &sc, &now);
                 }
@@ -783,12 +809,15 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, data: CatalogImport, contex
                 Ok((partial, unknown)) => {
                     p.develop = Arc::new(lightcraft_develop::apply_partial(&p.develop, &partial, 1.0));
                     p.edited = Some(now.clone());
-                    if !unknown.is_empty() {
-                        unmapped.insert(src.source_id, unknown);
-                    }
+                    notes.extend(unknown);
                 }
                 Err(e) => warnings.push(format!("image {} settings: {e}", src.source_id)),
             }
+        }
+        let mut seen = std::collections::HashSet::new();
+        notes.retain(|n| seen.insert(n.clone()));
+        if !notes.is_empty() {
+            unmapped.insert(src.source_id, notes);
         }
         if keep_develop {
             (p.develop, p.edited) = previous_develop;
@@ -1237,6 +1266,51 @@ mod tests {
         let off = format!(r#"s = {{ PerspectiveUpright = 0, UprightVersion = 151388160, UprightTransform_1 = "{auto}" }}"#);
         let (_, unknown) = mapped_settings(&off, crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
         assert!(unknown.iter().all(|u| !u.starts_with("Upright")), "{unknown:?}");
+    }
+
+    /// The catalog's XMP column reports what it can't carry over too: Guided guides there used
+    /// to import as Guided without guides and no word; a saved Upright in both the XMP and the
+    /// develop settings is reported once.
+    #[test]
+    fn catalog_xmp_upright_and_guides_are_reported() {
+        let xmp = |fields: &str| {
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+0.30" {fields}/></rdf:RDF></x:xmpmeta>"#
+            )
+        };
+        let guides = xmp(
+            r#"crs:PerspectiveUpright="5" crs:UprightFourSegmentsCount="2" crs:UprightFourSegments_0="0.2, 0.1, 0.25, 0.9" crs:UprightFourSegments_1="0.8, 0.1, 0.75, 0.9""#,
+        );
+        let auto = "1.010477639,-0.008540717,-0.006124940,0.014938050,1.011645918,-0.015359712,-0.007190889,-0.003396748,1.000000000";
+        let matrix = xmp(&format!(
+            r#"crs:PerspectiveUpright="1" crs:UprightVersion="151388160" crs:UprightTransformCount="6" crs:UprightTransform_1="{auto}""#
+        ));
+        let lua =
+            format!(r#"s = {{ PerspectiveUpright = 1, UprightVersion = 151388160, UprightTransformCount = 6, UprightTransform_1 = "{auto}" }}"#);
+        for (packet, settings, mode) in
+            [(guides, String::new(), lightcraft_develop::Upright::Guided), (matrix, lua, lightcraft_develop::Upright::Auto)]
+        {
+            let mut data = sample();
+            data.photos.truncate(1);
+            data.photos[0].image.remove("masterImage");
+            data.photos[0].xmp = packet;
+            data.photos[0].settings = settings;
+            let mut s = crate::Session::new();
+            let r = apply(&mut s, data, false).unwrap();
+            let p = s.catalog.photos().next().unwrap();
+            assert_eq!((p.develop.geometry.upright, p.develop.geometry.upright_transform), (mode, None));
+            let notes: Vec<String> = r["unmapped"]
+                .as_object()
+                .into_iter()
+                .flat_map(|m| m.values())
+                .filter_map(Value::as_array)
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .filter(|v| v.starts_with("Upright"))
+                .map(String::from)
+                .collect();
+            assert_eq!(notes.len(), 1, "{mode:?}: {r}");
+        }
     }
 
     #[test]
