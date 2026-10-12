@@ -111,9 +111,9 @@ impl ImportRun {
         queue: Vec<String>,
         album: Option<u64>,
         album_name: Option<String>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         ctx: &egui::Context,
     ) -> Result<Self, String> {
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (total, done) = (job.total.clone(), job.done.clone());
         let (opts, now) = (job.opts.clone(), job.now().to_string());
         let runner = Self::spawn(job, queue, cancel.clone(), ctx)?;
@@ -275,13 +275,31 @@ pub fn start_documents(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Va
     let result = start_paths(app, paths)?;
     if let Some(task) = app.import.as_mut() {
         task.open_documents = true;
+        // Register before the first worker tick, so even an import that has not started can stop.
+        task.guard = Some(app.session.activity.start("import", "Importing", lightcraft_engine::activity::Cancel::Yes));
     }
     Ok(result)
+}
+
+/// Native Add workers only prepare metadata. Dropping their receiver rejects both buffered and
+/// late results without waiting for I/O. Copy and Move retain their existing completion rules.
+pub(super) fn detach_cancelled_documents(app: &mut LightcraftApp, ctx: &egui::Context) {
+    if !app.import.as_ref().is_some_and(|t| t.open_documents && t.guard.as_ref().is_some_and(|g| g.is_cancelled())) {
+        return;
+    }
+    let Some(mut task) = app.import.take() else { return };
+    task.run = None;
+    task.cancelled = true;
+    if task.library == app.session.library_generation() {
+        // Keep earlier commits and merge their undo steps in the original library only.
+        finish(app, ctx, task);
+    }
 }
 
 /// Advance the import in progress (called every frame): start its worker, then add the batches it
 /// has readied to the catalog.
 pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
+    detach_cancelled_documents(app, ctx);
     let Some(mut task) = app.import.take() else { return };
     // Check before both starting work and accepting prepared batches. The UI blocks library
     // switches, but a host replacing its session must not commit old photo IDs into a new one.
@@ -292,17 +310,21 @@ pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
     if task.run.is_none() {
         let mut p = task.params.clone();
         p["paths"] = json!(task.queue);
+        let cancel =
+            task.guard.as_ref().and_then(|g| g.cancel_flag()).unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         let started = lightcraft_engine::cmd::library::import_params(&app.session, &p)
             .and_then(|req| Ok((lightcraft_engine::import::ImportJob::new(&mut app.session, req.opts)?, req.album, req.album_name)))
             .map_err(|e| e.to_string())
-            .and_then(|(job, album, name)| ImportRun::start(job, std::mem::take(&mut task.queue), album, name, ctx));
+            .and_then(|(job, album, name)| ImportRun::start(job, std::mem::take(&mut task.queue), album, name, cancel, ctx));
         if task.auto {
             task.keep_selection = Some(app.session.selection.clone());
         }
         match started {
             Ok(run) => {
                 let label = if task.browse { "Reading folder" } else { "Importing" };
-                task.guard = Some(app.session.activity.start("import", label, lightcraft_engine::activity::Cancel::Flag(run.cancel.clone())));
+                if task.guard.is_none() {
+                    task.guard = Some(app.session.activity.start("import", label, lightcraft_engine::activity::Cancel::Flag(run.cancel.clone())));
+                }
                 task.run = Some(run);
             }
             Err(e) => {

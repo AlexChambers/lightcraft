@@ -21,6 +21,15 @@ use crate::render::Slot;
 use crate::theme::Tokens;
 use crate::widgets::register;
 
+/// Activity kind for accepted native files that are waiting for the importer.
+pub const DOCUMENT_OPEN_ACTIVITY: &str = "documentOpen";
+
+/// Count files still accepted by the desktop queue, excluding cancelled requests even before
+/// the host's next tick removes them. One native request may contain several files.
+pub(crate) fn pending_document_files(app: &LightcraftApp) -> u64 {
+    app.session.activity.running_cancellable().iter().filter(|t| t.kind == DOCUMENT_OPEN_ACTIVITY).fold(0_u64, |n, t| n.saturating_add(t.total))
+}
+
 mod body;
 mod scan;
 mod tags;
@@ -57,7 +66,9 @@ pub fn dialog_open(app: &LightcraftApp) -> bool {
 /// Keep queued documents and running imports in the library where they were requested.
 /// Recovery is allowed to choose a library before any native request has been bound to one.
 pub(crate) fn check_library_switch(app: &mut LightcraftApp) -> Result<(), String> {
-    if app.import.is_some() || app.scan.is_some() || dialog_open(app) || (app.pending_document_opens != 0 && !waiting_for_library(app)) {
+    let ctx = app.tasks.repaint.clone().unwrap_or_default();
+    task::detach_cancelled_documents(app, &ctx);
+    if app.import.is_some() || app.scan.is_some() || dialog_open(app) || (pending_document_files(app) != 0 && !waiting_for_library(app)) {
         let error = crate::i18n::tr(
             "Finish or cancel the import and close Import Photos before switching libraries. Queued photos will open in this library.",
         )

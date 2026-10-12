@@ -29,12 +29,13 @@ TYPES = {
     "fff": "com.hasselblad.fff-raw-image",
 }
 RASTER = {"jpg", "jpeg", "png", "tif", "tiff", "webp", "psd", "jxl", "gif", "bmp", "heic", "heif", "avif"}
-# CoreTypes and its RawCameraTypes bundle supply these on the macOS 11 deployment
-# baseline. Reference them in LSItemContentTypes without redeclaring their tags.
-# JPEG XL and AVIF need compatibility declarations on older supported macOS versions.
-# X3F and KDC use our fallback identifiers because the baseline supplies neither.
+# CoreTypes and its RawCameraTypes bundle supply these on the supported macOS
+# releases (14, 15, 26). Reference their identifiers without redeclaring their tags.
+# The SDK's UTTypeJPEGXL constant arrived later than the public.jpeg-xl declaration.
+# Only X3F and KDC need fallback identifiers. See docs/macos-open.md for the policy.
 SYSTEM_TYPES = {
     "public.jpeg", "public.png", "public.tiff", "org.webmproject.webp",
+    "public.jpeg-xl", "public.avif",
     "com.adobe.raw-image", "com.canon.cr2-raw-image", "com.canon.cr3-raw-image",
     "com.nikon.raw-image", "com.nikon.nrw-raw-image", "com.sony.arw-raw-image",
     "com.fuji.raw-image", "com.olympus.raw-image", "com.panasonic.rw2-raw-image",

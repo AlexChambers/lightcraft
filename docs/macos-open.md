@@ -18,8 +18,15 @@ identity before starting its worker or committing its results.
 
 Startup recovery is the exception: a failed library must be reopened, replaced, or explicitly
 continued without saving before requests acquire their destination and the queue drains. This
-choice remains available during recovery. The queue lasts for this process only; quitting discards
-requests that have not started.
+choice remains available during recovery. Queued opens appear as "Waiting to import opened files"
+in the activity stack. Cancel a row to discard that request, even while Import Photos or startup
+recovery is open. The queue lasts for this process only. Quitting warns how many opened files have
+not been imported and offers Quit and Cancel. Cancel keeps the queue and the current dialog choices.
+
+Cancelling a running native Add import immediately releases its library-switch guard. A blocked
+read may finish in the background, but its buffered and late results are discarded. Photos already
+added stay in the original library, with one undo step. Close Import Photos and cancel any other
+outstanding requests before switching libraries.
 
 If Import Photos is confirmed while another import is active, confirmation is rejected with a
 message. The dialog keeps the chosen files and options. Wait for the active import to finish,
@@ -30,10 +37,33 @@ then click Import again. A second confirmation never replaces or cancels the act
 `packaging/macos/package.sh`, called by `.github/workflows/release.yml`, assembles and signs the
 app. It substitutes version fields in `Info.plist.in`, then runs `document_types.py` before signing.
 The generator reads `lightcraft_engine::import::EXTENSIONS`, registers each supported extension
-and references macOS's existing Uniform Type Identifiers (UTIs). CoreTypes and RawCameraTypes
-declarations available on the macOS 11 deployment baseline are not redeclared. Only JPEG XL,
-AVIF, X3F and KDC receive imported declarations with filename tags for compatibility on supported
-systems that lack them. Every document type has role Editor and rank Alternate.
+and references macOS's existing Uniform Type Identifiers (UTIs). The declaration policy targets the
+supported macOS releases, 14, 15 and 26. CoreTypes and RawCameraTypes supply 31 of the 33 referenced
+identifiers, including AVIF and JPEG XL. LightCraft does not redeclare these system types. The
+bundle's older binary deployment target does not expand this declaration compatibility policy.
+Every document type has role Editor and rank Alternate.
+
+Only these imported declarations remain:
+
+| Identifier | Filename tag | Conformance | Reason |
+| --- | --- | --- | --- |
+| `ai.storyteller.lightcraft.image.x3f` | `x3f` | `public.data`, `public.camera-raw-image` | No system declaration for Sigma X3F |
+| `ai.storyteller.lightcraft.image.kdc` | `kdc` | `public.data`, `public.camera-raw-image` | No system declaration for Kodak KDC |
+
+AVIF uses `public.avif`. The system declaration conforms to `public.heif-standard` and supplies the
+`avif` extension, `image/avif` MIME type and `AVIF` OSType. JPEG XL uses `public.jpeg-xl`, conforming
+to `public.image`, with the `jxl` extension and `image/jxl` MIME type. Neither needs a compatibility
+declaration for the supported releases. The SDK's `UTTypeJPEGXL` constant is available from macOS
+15.2; the string identifier and system image support predate that constant. Apple's
+[JPEG XL identifier documentation](https://developer.apple.com/documentation/uniformtypeidentifiers/uttypejpegxl),
+[Safari 17 format announcement](https://webkit.org/blog/14205/news-from-wwdc23-webkit-features-in-safari-17-beta/)
+and [AVIF system-framework support record](https://bugs.webkit.org/show_bug.cgi?id=241904) describe
+these identifiers and format support. The native CoreTypes regression checks the declaration
+parents and tags directly on the machine running the tests.
+
+If a future supported extension needs a compatibility declaration, copy the canonical system
+identifier, conformance and all tags, including MIME and OSType tags when present. Add an exact
+regression for those fields. Do not replace a system type with a generic image declaration.
 
 The app does not explicitly set a default handler. LaunchServices can nevertheless choose an
 Alternate handler as the default when no higher-ranked handler exists for that type. This is
@@ -47,8 +77,10 @@ cargo test -p lightcraft macos_document_types
 ```
 
 The test compares the template with the compiled extension list and checks ranks, roles, system
-UTI references and the exact compatibility declarations and their extension tags. HEIC/HEIF registration does not enable their optional decoder; builds
-without it report the normal import error. AVIF likewise retains the existing decoder limitation.
+UTI references and the exact fallback declarations and their extension tags. The macOS-only
+`macos_coretypes_supplies_avif_and_jpeg_xl` test reads CoreTypes directly; run it on each supported
+macOS version when checking the policy. HEIC/HEIF registration does not enable their optional
+decoder; builds without it report the normal import error. AVIF likewise retains the existing decoder limitation.
 
 ## Event handling
 
@@ -127,3 +159,23 @@ The regression suite also checks a blocked native worker during manual confirmat
 pickers, stale import results after a host replaces its library, all recovery choices, and reopening
 the recovery window after choosing Continue Without Saving. Physical Finder/Dock gestures,
 network shares, Intel macOS and macOS 11 were not retested in this round.
+
+### Round 3 verification on macOS 26.6.2, Apple M3 Max
+
+A native Open Documents event opened a FIFO to block the real file probe. Cancelling its activity
+row allowed an immediate switch to another library. Supplying valid PNG bytes then released the
+read; neither the new library nor the original library received a photo. Regression tests also
+reject batches prepared before cancellation and wait for a detached worker to exit before checking
+both libraries.
+
+With Import Photos open, two native requests produced cancellable activity rows. Quit showed the
+queued file count with Quit and Cancel. Cancel kept both requests and the dialog choices. Clicking
+the activity rows' cancel buttons discarded the requests while leaving the manual selection intact.
+A further single request produced the singular warning, and Quit exited successfully. Cancelling a
+queued activity also worked during startup recovery; choosing a usable library afterwards imported
+no cancelled file. Native Metal screenshots of the warning and preserved dialog were inspected.
+No bundle was registered and no defaults were changed.
+
+The generated plist references AVIF and JPEG XL without imported declarations. The CoreTypes audit
+checks their conformance and all relevant tags on macOS 26.6.2. macOS 14 and 15 were not available
+for runtime testing. Physical Finder/Dock gestures, network shares and Intel macOS were not retested.

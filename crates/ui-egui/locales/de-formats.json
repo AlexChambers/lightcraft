@@ -157,6 +157,7 @@
   "{n} change{} couldn't be written to disk: {e}\nIf you quit now, {} lost.": "{n} Änderung(en) konnten nicht auf den Datenträger geschrieben werden{0:.0}: {e}\nWenn du jetzt beendest, gehen sie verloren.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e}\nLightCraft retries automatically; quitting now would lose {}.": "{n} Änderung(en) nur im Arbeitsspeicher, nicht auf dem Datenträger gespeichert{0:.0}: {e}\nLightCraft versucht es automatisch erneut; wenn du jetzt beendest, gehen sie verloren.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e} — LightCraft will retry": "{n} Änderung(en) nur im Arbeitsspeicher gespeichert{:.0}: {e} – LightCraft versucht es erneut",
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "{n} von dir geöffnete Dateien wurden noch nicht importiert. Beim Beenden werden diese Importaufträge verworfen.",
   "{n} found · {sel} selected": "{n} gefunden · {sel} ausgewählt",
   "{n} photos": "Fotos: {n}",
   "{n} photos in {} are hidden by the filters above": "{n} Fotos in {} werden durch die obigen Filter ausgeblendet",
