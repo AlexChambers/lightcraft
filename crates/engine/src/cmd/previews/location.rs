@@ -79,7 +79,6 @@ pub(super) fn start(s: &mut Session, p: &Value) -> Result<Value> {
             return Ok(json!({"cancelled": true, "path": current}));
         }
         let (handled, failed) = prepared.cleanup(&task.handle());
-        s.media.invalidation().clear();
         let mut result = super::location_json(s);
         result["handled"] = json!(handled);
         result["failed"] = json!(failed);
@@ -110,10 +109,20 @@ fn commit(s: &mut Session, to: &std::path::Path, custom: Option<PathBuf>, task: 
     if task.is_cancelled() {
         return Ok(false);
     }
+    let previous_generation = s.smart_previews_cache_generation;
+    let next_generation = previous_generation.checked_add(1).ok_or("thumbnail cache generation is exhausted")?;
     let previous = std::mem::replace(&mut s.smart_previews_dir, custom);
+    s.smart_previews_cache_generation = next_generation;
     if let Err(error) = s.save_prefs() {
         s.smart_previews_dir = previous;
+        s.smart_previews_cache_generation = previous_generation;
         return Err(error.to_string());
+    }
+    // The durable folder and namespace change together. Even an exit inside save_prefs
+    // reopens with different thumbnail keys. Replacing this cache does no file scan or
+    // deletion. Cache identity rejects old results; their disk writes use the old namespace.
+    if let Some(lib) = s.library.as_ref() {
+        s.media.attach_disk_cache_namespace(&lib.thumbs_dir(), s.cache_bytes(), next_generation);
     }
     s.media.smart_dir = Some(to.to_path_buf());
     s.media.clear_sources();
@@ -167,11 +176,9 @@ pub(crate) fn poll(s: &mut Session) {
         }
         Ok(true) => {}
     }
-    let cache = s.media.invalidation();
     let to = migration.to.clone();
     let (tx, rx) = mpsc::channel();
-    let result = std::thread::Builder::new().name("lc-smart-move-cleanup".into()).spawn(move || {
-        cache.clear();
+    let result = spawn_cleanup(&migration.to, move || {
         let (handled, failed) = prepared.cleanup(&task.handle());
         let _ = tx.send(json!({"path": to, "handled": handled, "failed": failed}));
     });
@@ -182,4 +189,12 @@ pub(crate) fn poll(s: &mut Session) {
         }
         Err(error) => s.smart_migration_result = Some(Err(format!("the new folder is in use; source cleanup could not start: {error}"))),
     }
+}
+
+fn spawn_cleanup(_to: &std::path::Path, work: impl FnOnce() + Send + 'static) -> std::io::Result<std::thread::JoinHandle<()>> {
+    #[cfg(test)]
+    if crate::smart::tests_round4::fail_cleanup_spawn(_to) {
+        return Err(std::io::Error::other("injected cleanup spawn failure"));
+    }
+    std::thread::Builder::new().name("lc-smart-move-cleanup".into()).spawn(work)
 }

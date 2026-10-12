@@ -1,8 +1,13 @@
 {
-  "Photos: {count}": "Photos: {count}",
-  "Estimated total size: {size}": "Estimated total size: {size}",
-  "Destination: {path}": "Destination: {path}",
-  "Free space: {size}": "Free space: {size}",
+  "Photos: {count}": {
+    "one": "Foto: {count}",
+    "few": "Fotos: {count}",
+    "many": "Fotos: {count}",
+    "other": "Fotos: {count}"
+  },
+  "Estimated total size: {size}": "Tamanho total estimado: {size}",
+  "Destination: {path}": "Destino: {path}",
+  "Free space: {size}": "Espaço livre: {size}",
   ". {kept} existing previews kept unchanged": ". {kept} prévias existentes mantidas sem alterações",
   " ({} in Recently Deleted)": " ({} em Excluídos recentemente)",
   " · {skipped} skipped (file exists)": " · {skipped} ignorada(s) (arquivo existente)",
@@ -311,6 +316,25 @@
   "Added {n} photo{}": "{n} foto{0} adicionada{0}",
   "Where should the Lightroom catalog “{catalog}” go?": "Para onde vai o catálogo do Lightroom “{catalog}”?",
   "Merge into the open library “{library}” ({count} photo{})": "Mesclar na biblioteca aberta “{library}” ({count} foto{})",
-  "Smart preview folder changed. {count} source files could not be removed.": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
-  "Smart preview folder change failed: {error}": "Falha ao alterar a pasta de visualizações inteligentes: {error}"
+  "Smart preview folder changed. {count} source files could not be removed.": {
+    "one": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivo de origem.",
+    "few": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
+    "many": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem.",
+    "other": "Pasta de visualizações inteligentes alterada. Não foi possível remover {count} arquivos de origem."
+  },
+  "Smart preview folder change failed: {error}": "Falha ao alterar a pasta de visualizações inteligentes: {error}",
+  ". {count} existing previews kept unchanged": {
+    "one": ". {count} visualização existente mantida sem alterações",
+    "few": ". {count} visualizações existentes mantidas sem alterações",
+    "many": ". {count} visualizações existentes mantidas sem alterações",
+    "other": ". {count} visualizações existentes mantidas sem alterações"
+  },
+  "{count} smart previews · {size:.1} MiB": {
+    "one": "{count} visualização inteligente · {size:.1} MiB",
+    "few": "{count} visualizações inteligentes · {size:.1} MiB",
+    "many": "{count} visualizações inteligentes · {size:.1} MiB",
+    "other": "{count} visualizações inteligentes · {size:.1} MiB"
+  },
+  "could not check smart preview storage: {e}": "Não foi possível verificar o armazenamento das visualizações inteligentes: {e}",
+  "free space is unavailable for {path} on this platform": "O espaço livre de {path} não está disponível nesta plataforma."
 }

@@ -384,7 +384,7 @@ impl LightcraftApp {
                 };
                 let kept = b.kept.load(Ordering::Relaxed);
                 if kept > 0 {
-                    msg.push_str(&crate::i18n::tr_format!(". {kept} existing previews kept unchanged", kept = kept));
+                    msg.push_str(&crate::i18n::tr_format!(". {count} existing previews kept unchanged", count = kept));
                 }
                 if failed > 0 {
                     msg.push_str(&crate::i18n::tr_format!(" · {failed} couldn't be rendered", failed = failed));

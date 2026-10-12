@@ -42,7 +42,8 @@ impl Invalidation {
         };
         {
             let mut previous = current.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !Arc::ptr_eq(&previous.cache, &cache) {
+            let different_namespace = previous.cache.disk().zip(cache.disk()).is_some_and(|(old, new)| old.namespace() != new.namespace());
+            if !Arc::ptr_eq(&previous.cache, &cache) && !different_namespace {
                 previous.cache.retire();
             }
             previous.cache = cache;

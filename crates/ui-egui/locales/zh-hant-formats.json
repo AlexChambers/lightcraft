@@ -1,8 +1,13 @@
 {
-  "Photos: {count}": "Photos: {count}",
-  "Estimated total size: {size}": "Estimated total size: {size}",
-  "Destination: {path}": "Destination: {path}",
-  "Free space: {size}": "Free space: {size}",
+  "Photos: {count}": {
+    "one": "照片：{count} 張",
+    "few": "照片：{count} 張",
+    "many": "照片：{count} 張",
+    "other": "照片：{count} 張"
+  },
+  "Estimated total size: {size}": "預估總大小：{size}",
+  "Destination: {path}": "目的地：{path}",
+  "Free space: {size}": "可用空間：{size}",
   ". {kept} existing previews kept unchanged": ". 已保留 {kept} 個現有預覽，未作變更",
   " · {skipped} skipped (file exists)": " · 已略過 {skipped} 個（檔案已存在）",
   " · {} duplicate{} skipped": " · 已略過 {} 張重複照片{:.0}",
@@ -311,6 +316,25 @@
   "Added {n} photo{}": "已加入 {n} 張照片{:.0}",
   "Where should the Lightroom catalog “{catalog}” go?": "Lightroom 目錄「{catalog}」要匯入到哪裡？",
   "Merge into the open library “{library}” ({count} photo{})": "合併到目前開啟的照片庫「{library}」（{count} 張照片）{:.0}",
-  "Smart preview folder changed. {count} source files could not be removed.": "已變更智慧預覽資料夾。無法刪除 {count} 個來源檔案。",
-  "Smart preview folder change failed: {error}": "變更智慧預覽資料夾失敗：{error}"
+  "Smart preview folder changed. {count} source files could not be removed.": {
+    "one": "智慧型預覽資料夾已變更。有 {count} 個來源檔案無法移除。",
+    "few": "智慧型預覽資料夾已變更。有 {count} 個來源檔案無法移除。",
+    "many": "智慧型預覽資料夾已變更。有 {count} 個來源檔案無法移除。",
+    "other": "智慧型預覽資料夾已變更。有 {count} 個來源檔案無法移除。"
+  },
+  "Smart preview folder change failed: {error}": "變更智慧預覽資料夾失敗：{error}",
+  ". {count} existing previews kept unchanged": {
+    "one": "。已保留 {count} 個現有預覽，未做變更",
+    "few": "。已保留 {count} 個現有預覽，未做變更",
+    "many": "。已保留 {count} 個現有預覽，未做變更",
+    "other": "。已保留 {count} 個現有預覽，未做變更"
+  },
+  "{count} smart previews · {size:.1} MiB": {
+    "one": "{count} 個智慧型預覽 · {size:.1} MiB",
+    "few": "{count} 個智慧型預覽 · {size:.1} MiB",
+    "many": "{count} 個智慧型預覽 · {size:.1} MiB",
+    "other": "{count} 個智慧型預覽 · {size:.1} MiB"
+  },
+  "could not check smart preview storage: {e}": "無法檢查智慧型預覽儲存空間：{e}",
+  "free space is unavailable for {path} on this platform": "此平台無法取得 {path} 的可用空間。"
 }

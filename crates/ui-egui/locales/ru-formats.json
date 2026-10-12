@@ -1,8 +1,13 @@
 {
-  "Photos: {count}": "Photos: {count}",
-  "Estimated total size: {size}": "Estimated total size: {size}",
-  "Destination: {path}": "Destination: {path}",
-  "Free space: {size}": "Free space: {size}",
+  "Photos: {count}": {
+    "one": "{count} фотография",
+    "few": "{count} фотографии",
+    "many": "{count} фотографий",
+    "other": "{count} фотографий"
+  },
+  "Estimated total size: {size}": "Расчётный общий размер: {size}",
+  "Destination: {path}": "Папка назначения: {path}",
+  "Free space: {size}": "Свободное место: {size}",
   ". {kept} existing previews kept unchanged": ". Существующие превью ({kept}) сохранены без изменений",
   " ({unsure} with several look-alike files: use Locate)": " (из них с несколькими похожими файлами: {unsure} — используйте «Найти фото»)",
   " ({} in Recently Deleted)": " ({} в «Недавно удалённых»)",
@@ -311,6 +316,25 @@
   "Added {n} photo{}": "Добавлено фото: {n}{:.0}",
   "Where should the Lightroom catalog “{catalog}” go?": "Куда импортировать каталог Lightroom «{catalog}»?",
   "Merge into the open library “{library}” ({count} photo{})": "Объединить с открытой библиотекой «{library}» (фото: {count}){:.0}",
-  "Smart preview folder changed. {count} source files could not be removed.": "Папка смарт-превью изменена. Количество исходных файлов, которые не удалось удалить: {count}.",
-  "Smart preview folder change failed: {error}": "Не удалось изменить папку смарт-превью: {error}"
+  "Smart preview folder changed. {count} source files could not be removed.": {
+    "one": "Папка смарт-превью изменена. Не удалось удалить {count} исходный файл.",
+    "few": "Папка смарт-превью изменена. Не удалось удалить {count} исходных файла.",
+    "many": "Папка смарт-превью изменена. Не удалось удалить {count} исходных файлов.",
+    "other": "Папка смарт-превью изменена. Не удалось удалить {count} исходных файлов."
+  },
+  "Smart preview folder change failed: {error}": "Не удалось изменить папку смарт-превью: {error}",
+  ". {count} existing previews kept unchanged": {
+    "one": ". {count} существующее превью сохранено без изменений",
+    "few": ". {count} существующих превью сохранены без изменений",
+    "many": ". {count} существующих превью сохранено без изменений",
+    "other": ". {count} существующих превью сохранено без изменений"
+  },
+  "{count} smart previews · {size:.1} MiB": {
+    "one": "{count} смарт-превью · {size:.1} МиБ",
+    "few": "{count} смарт-превью · {size:.1} МиБ",
+    "many": "{count} смарт-превью · {size:.1} МиБ",
+    "other": "{count} смарт-превью · {size:.1} МиБ"
+  },
+  "could not check smart preview storage: {e}": "Не удалось проверить хранилище смарт-превью: {e}",
+  "free space is unavailable for {path} on this platform": "На этой платформе невозможно определить свободное место для {path}."
 }

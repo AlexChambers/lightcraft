@@ -150,16 +150,7 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     let (count, bytes) = (loc["count"].as_u64().unwrap_or(0), loc["bytes"].as_u64().unwrap_or(0));
     if available {
-        hint(
-            ui,
-            t,
-            &crate::i18n::tr_format!(
-                "{count} smart preview{} · {:.1} MiB",
-                if count == 1 { "" } else { "s" },
-                bytes as f64 / 1048576.0,
-                count = count
-            ),
-        );
+        hint(ui, t, &crate::i18n::tr_format!("{count} smart previews · {size:.1} MiB", count = count, size = bytes as f64 / 1048576.0));
     } else {
         hint(
             ui,
