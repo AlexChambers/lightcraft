@@ -5,7 +5,7 @@
 //! lime shirt olive that the camera kept lime): a hue/saturation table fitted to the residuals
 //! (applied like a DNG `ProfileHueSatMap`) corrects that when it also improves the held-out pixels.
 use lightcraft_color::{D50, D65, Mat3, PROPHOTO, REC2020, Xy, bradford, luminance_2020};
-use lightcraft_pipeline::tone::{CameraTone, GREY, ToneMap};
+use lightcraft_pipeline::tone::{CameraTone, ToneMap};
 use lightcraft_raster::{
     Rgb32f,
     resample::{Filter, fit, resize},
@@ -43,8 +43,9 @@ use look_fit::{
 use mono::{fit_dark_tone, fit_tone_only, monochrome, monochrome_look, to_prophoto};
 #[cfg(test)]
 use pairs::{
-    Attempt, MATRIX_SPREAD, Pairs, TONE_FITS, collect_pairs, colour_pair, displayed, fit_attempt, fit_pairs, fit_pairs_ordered, fit_pairs_with,
-    fit_partial, fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, matrix_spread, rank_correlation_ties, search_ordered,
+    Attempt, MATRIX_SPREAD, MATRIX_SPREAD_FROM, MIN_MATRIX_DETERMINANT, Pairs, TONE_FITS, collect_pairs, collect_pairs_by, colour_pair, displayed,
+    fit_attempt, fit_pairs, fit_pairs_ordered, fit_pairs_with, fit_partial, fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, matrix_spread,
+    rank_correlation_ties, search_ordered,
 };
 #[cfg(test)]
 pub(crate) use proxy::LensGeometry;

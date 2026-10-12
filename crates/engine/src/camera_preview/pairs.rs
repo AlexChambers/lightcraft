@@ -3,7 +3,7 @@ use super::proxy::DARK_FLOOR;
 #[cfg(test)]
 use super::tone::highlights;
 use super::tone::{HighlightCheck, ToneFit, highlights_hold, keeps, keeps_highlights};
-use super::{CameraLook, CameraTone, GREY, HsvTable, Mat3, REC2020, Rgb32f, ToneMap, luminance_2020};
+use super::{CameraLook, CameraTone, HsvTable, Mat3, REC2020, Rgb32f, ToneMap, luminance_2020};
 use lightcraft_color::{ADOBE_RGB, SRGB};
 
 /// A fit must cut the held-out squared error to below this share of the fallback's.
@@ -65,6 +65,45 @@ pub(super) type Pairs = Vec<Pair>;
 
 pub(super) fn collect_pairs(sensor: &Rgb32f, reference: &Rgb32f, min_chroma: f32, edge_limit: Option<f32>, dark: bool) -> Option<(Pairs, Pairs)> {
     collect_pairs_by(sensor, reference, |_| min_chroma, edge_limit, dark)
+}
+
+/// [`collect_pairs`] with the channel spread a pair must exceed to count as coloured given by the camera JPEG
+/// pixel's luminance ([`matrix_spread`]).
+pub(super) fn collect_pairs_by(
+    sensor: &Rgb32f,
+    reference: &Rgb32f,
+    min_chroma: impl Fn(f32) -> f32,
+    edge_limit: Option<f32>,
+    dark: bool,
+) -> Option<(Pairs, Pairs)> {
+    if (sensor.width, sensor.height) != (reference.width, reference.height) || sensor.data.len() != reference.data.len() {
+        return None;
+    }
+    let mut pairs = Vec::new();
+    // Highlights too (camera JPEGs bleach colours toward white there), for the chroma curve only.
+    let mut bright = Vec::new();
+    let mut colour = 0;
+    for (i, (input, output)) in sensor.data.iter().zip(&reference.data).enumerate() {
+        if edge_limit.is_some_and(|limit| local_contrast(sensor, i) > limit || local_contrast(reference, i) > limit) {
+            continue;
+        }
+        let y = luminance_2020(*output);
+        if !input.iter().all(|v| v.is_finite() && *v > 0.001 && *v < 1.5) || !output.iter().all(|v| v.is_finite() && *v >= 0.0) {
+            continue;
+        }
+        if (0.015..=1.0).contains(&y) {
+            bright.push((input.map(f64::from), output.map(f64::from)));
+        }
+        let floors = if dark { DARK_FLOOR } else { (0.015, 0.004) };
+        if !colour_pair_above(*input, *output, floors) {
+            continue;
+        }
+        let min = output.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = output.iter().copied().fold(0.0, f32::max);
+        colour += usize::from(max - min > min_chroma(y));
+        pairs.push((input.map(f64::from), output.map(f64::from)));
+    }
+    (pairs.len() >= 256 && colour >= pairs.len() / 20).then_some((pairs, bright))
 }
 
 /// The original colour-pair eligibility, also used to preserve its held-out split in tone fitting.
@@ -154,9 +193,21 @@ pub(super) fn fit_tone_with_shadows(
 /// 5% of coloured pairs a photo needs to learn its own colour matrix ([`matrix_spread`]).
 pub(super) const MATRIX_SPREAD: f32 = 0.05;
 
+/// Camera JPEG luminance (linear; middle grey, about sRGB 118) from which a pixel needs the fixed [`MATRIX_SPREAD`] to
+/// count as coloured ([`matrix_spread`]). Below it the spread scales with the luminance, continuous at it.
+pub(super) const MATRIX_SPREAD_FROM: f32 = 0.18;
+
+/// Smallest determinant of a colour matrix learnt through [`matrix_spread`]. In the dark, noise is a large share of
+/// each pixel's luminance and can count as colour: on a neutral dark scene whose camera JPEG has noise of its own
+/// (0.003 linear per channel) and doesn't show the sensor's, 15% of the pairs count, and the fit learns a matrix that
+/// sends every colour to the same grey (determinant about 0, its rows alike), which the gates can't tell from the
+/// camera's on a grey scene. Real ones are far above it, as the camera's colours are more saturated than the generic
+/// matrix's: 3.0 to 8.4 on the five public files that learn their colour through the scaled spread.
+pub(super) const MIN_MATRIX_DETERMINANT: f64 = 0.1;
+
 /// The channel spread a camera JPEG pixel of luminance `y` must exceed to count as coloured when the photo learns its
-/// own colour matrix in a fit without clipped pixels ([`fit_look_with`]): [`MATRIX_SPREAD`] from middle grey ([`GREY`],
-/// about sRGB 118) up, and below it the same share of the pixel's luminance (0.28). A colour spreads a pixel's channels
+/// own colour matrix and the fixed spread gave it no look ([`fit_look_with`]): [`MATRIX_SPREAD`] from
+/// [`MATRIX_SPREAD_FROM`] up, and below it the same share of the pixel's luminance (0.28). A colour spreads a pixel's channels
 /// in proportion to its luminance, so a fixed 0.05 asked darker pixels for more saturated colours: at linear 0.036,
 /// the median of a dark olive A7 II scene (issue #865), for a spread of 1.4 times the pixel's luminance. Only 2.7% of
 /// that scene's pairs qualified, short of the 5%, and it got the partial look without a colour matrix, although its
@@ -164,7 +215,7 @@ pub(super) const MATRIX_SPREAD: f32 = 0.05;
 /// The matrix is fitted to luminance-normalised colour ([`fit_matrix`]), which a dark pixel shows as well as a bright
 /// one.
 pub(super) fn matrix_spread(y: f32) -> f32 {
-    MATRIX_SPREAD * (y / GREY).min(1.0)
+    MATRIX_SPREAD * (y / MATRIX_SPREAD_FROM).min(1.0)
 }
 
 /// Ridge-regularised 3×3 chromaticity matrix (luminance-normalised RGB) on the training pairs.
@@ -226,7 +277,9 @@ pub(super) fn fit_pairs_ordered(
     order: &[ToneFit],
 ) -> Option<CameraLook> {
     let check = HighlightCheck { pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: false };
-    search_ordered(sensor, reference, colour, order, &check, true).map(|(look, _)| look)
+    search_ordered(sensor, reference, colour.clone(), order, &check, false)
+        .or_else(|| search_ordered(sensor, reference, colour, order, &check, true))
+        .map(|(look, _)| look)
 }
 
 /// The tone fits the search tries, in order: the first whose look passes the acceptance gates is
@@ -311,6 +364,12 @@ fn fit_pairs_on(
         Some(given) => vec![given],
         None => {
             let matrix = fit_matrix(&pairs)?;
+            if scaled && matrix.determinant() <= MIN_MATRIX_DETERMINANT {
+                if lightcraft_pipeline::profiling() {
+                    eprintln!("[profile] camera look: matrix determinant {:.3}, a grey matrix learnt from noise", matrix.determinant());
+                }
+                return None;
+            }
             vec![(matrix, fit_hue_sat(&pairs, &matrix)), (matrix, None)]
         }
     };
@@ -441,8 +500,8 @@ pub(super) fn rank_correlation_ties(pairs: &[([f64; 3], [f64; 3])]) -> f64 {
 /// no pixel-exact registration and was the largest part of the neutral fallback's error (rendered
 /// 9–22 L* too dark), the chroma curve (the fallback kept about a third of the camera's
 /// colourfulness), and, when the scene has enough colour to learn one (5% of the pairs with a
-/// channel spread above 0.05 at any luminance: the half weight was measured with it, not with the
-/// full look's [`matrix_spread`]), the photo's own colour matrix at
+/// channel spread above [`MATRIX_SPREAD`] at any luminance: the half weight was measured with it,
+/// not with the full look's [`matrix_spread`]), the photo's own colour matrix at
 /// [`PARTIAL_MATRIX_WEIGHT`]. No hue/saturation table. Tried on
 /// all pixels and then, like the full look, on the pixels away from edges; used only when it cuts
 /// the held-out squared error to below [`MIN_IMPROVEMENT`] of the neutral fallback's, in linear
@@ -502,7 +561,7 @@ pub(super) fn fit_partial_on(
         return None;
     }
     let spread = |y: &[f64; 3]| y.iter().copied().fold(f64::NEG_INFINITY, f64::max) - y.iter().copied().fold(f64::INFINITY, f64::min);
-    let colourful = pairs.iter().filter(|(_, y)| spread(y) > 0.05).count() >= pairs.len() / 20;
+    let colourful = pairs.iter().filter(|(_, y)| spread(y) > f64::from(MATRIX_SPREAD)).count() >= pairs.len() / 20;
     let matrix = match colourful.then(|| fit_matrix(&pairs)).flatten() {
         Some(own) => Mat3(std::array::from_fn(|r| {
             std::array::from_fn(|c| Mat3::IDENTITY.0[r][c] + PARTIAL_MATRIX_WEIGHT * (own.0[r][c] - Mat3::IDENTITY.0[r][c]))

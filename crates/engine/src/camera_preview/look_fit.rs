@@ -80,15 +80,16 @@ pub(super) fn fit_look(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool], co
 /// closer to the camera JPEG than the neutral fallback.
 ///
 /// The colour a photo's own matrix needs is asked of darker pixels in proportion to their luminance
-/// ([`matrix_spread`], issue #865) only where the fit sees no clipped pixels: the search on all
-/// pixels of a photo with clipped ones, and its refit, keep the fixed spread, so the look they give
-/// is the one they gave before. A photo that learns its colour only through the scaled spread had no
-/// such look to keep, and gets one fitted on what the sensor measured (the search without the
-/// clipped pixels). On a dark DMC-G10 scene the search on all pixels passed the gates only through
-/// its 56 clipped pairs (held-out RMS from 0.066 for the neutral fallback to 0.021; without them
-/// from 0.022 to 0.019, short of the 30% cut) and rendered 1.0 ΔE76 further from the camera JPEG
-/// than its partial look; the search without them finds a look away from edges that renders it
-/// 0.5 closer than the partial look.
+/// ([`matrix_spread`], issue #865) only after the fixed spread finds nothing, and only where the fit
+/// sees no clipped pixels. Every search with the fixed spread, and the refit, run as before, so a
+/// photo that had a look keeps it. A photo that learns its colour only through the scaled spread
+/// had no such look to keep, and gets one fitted on what the sensor measured: on all pixels when
+/// none is clipped, else without the clipped ones. On a dark DMC-G10 scene the search on all pixels
+/// with the scaled spread passed the gates only through its 56 clipped pairs (its conditional-median
+/// curve cut the held-out RMS from the neutral fallback's 0.066 to 0.021; refitted without them,
+/// 0.0220 to 0.0192, and the quantile curve 0.0220 to 0.0201, both short of the 30% cut) and
+/// rendered 1.0 ΔE76 further from the camera JPEG than its partial look; the search without them
+/// finds a look away from edges that renders it 0.5 closer than the partial look.
 pub(super) fn fit_look_with(
     sensor: &Rgb32f,
     reference: &Rgb32f,
@@ -99,12 +100,13 @@ pub(super) fn fit_look_with(
     let unclipped = without_clipped(sensor, clipped);
     // from the proxies as they are: the retries' filters (clipped pixels, edges) don't remove them
     let bright = HighlightCheck { pairs: highlights(sensor, reference), clipped: clipped_highlights(sensor, reference, clipped), dro, grey: false };
-    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright, unclipped.is_none()) else {
-        return unclipped
-            .as_ref()
-            .and_then(|u| search_ordered(u, reference, colour, TONE_FITS, &bright, true))
-            .map(|(look, _)| look)
-            .or_else(|| fit_partial(unclipped.as_ref().unwrap_or(sensor), reference, &bright));
+    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright, false) else {
+        let found = match &unclipped {
+            None => search_ordered(sensor, reference, colour, TONE_FITS, &bright, true),
+            Some(u) => search_ordered(u, reference, colour.clone(), TONE_FITS, &bright, false)
+                .or_else(|| search_ordered(u, reference, colour, TONE_FITS, &bright, true)),
+        };
+        return found.map(|(look, _)| look).or_else(|| fit_partial(unclipped.as_ref().unwrap_or(sensor), reference, &bright));
     };
     let Some(unclipped) = unclipped else { return Some(look) };
     let refit = fit_attempt(&unclipped, reference, &colour, attempt, &bright, false);
