@@ -1,6 +1,6 @@
 # Calibrated Contrast and Blacks
 
-> **Last updated:** 2026-10-12 · **Change:** new (process V3)
+> **Last updated:** 2026-10-13 · **Change:** minor (composed CPU preview tables and aggregate publication threshold)
 
 Process V3 calibrates global Contrast and Blacks on the camera-look path: a raw with
 `SourceInfo::camera_tone`. Contrast acts per channel. Blacks blends a per-channel result with
@@ -29,7 +29,8 @@ Combined edits use V2 Whites before the two calibrated operators.
 The operators convert linear Rec.2020 to linear ProPhoto RGB (D50, with Bradford white-point
 adaptation), encode values with the sRGB transfer curve, apply the fitted curves, and convert
 back. The matrices come from `RgbSpace::to_space`. CPU `finish.rs` and GPU `finish.wgsl` use
-the same matrices and lookup tables. The computation is pointwise, so a render window needs
+the same matrices and operator tables. CPU previews compose the encoding and operator
+lookups into tables indexed by linear input. The computation is pointwise, so a render window needs
 no whole-photo measurement.
 
 ## Operator family
@@ -52,6 +53,13 @@ Each active operator has 1024 table entries over encoded values between 0 and 1.
 store linear output and are interpolated linearly. A running maximum prevents a fitted
 curve from reversing tone order. Neither shipped fit folds back. Non-finite amounts are
 skipped, and finite amounts are clamped to the slider range.
+
+When the resolved per-channel weight is exactly one or zero in f32, the renderer selects
+only the per-channel or luminance operation. In particular, negative Blacks is per channel.
+For 8-bit CPU renders, per-channel Contrast and Blacks share one table with 16,384 intervals
+over linear input. With a genuine luminance mix, each operator has a separate linear-input
+table and the renderer preserves their order. U16 and F32 exports retain the original
+operator tables and exact sRGB encoding. Metal retains the original tables too.
 
 ### HDR and gamut limits
 
@@ -82,6 +90,12 @@ generator. Fit files contain no photo names, paths or per-photo values. Their pr
 records the original fit filename and SHA-256. The Rust constants record each sanitized
 fit's SHA-256 as well.
 
+The sanitizer omits error groups and individual bands with fewer than three distinct
+contributing photos. Published rows record the distinct photo counts for the group and its
+retained bands. Repeated pairs from one photo do not satisfy the threshold. Coefficients
+and overall counts remain available. These omissions do not change the fits or the full
+paired agreement measurements below.
+
 ```sh
 python3 -m pip install -r tools/requirements-light-v3.txt
 python3 tools/light_v3_constants.py rust
@@ -92,6 +106,8 @@ python3 tools/light_v3_constants.py rust --check
 writes reference outputs from `tools/light_v3_family.py` to 12 significant digits, avoiding
 platform-dependent final bits in NumPy. Rust tests compare the port against those references.
 `sanitize` accepts only Contrast and Blacks fits and writes their public aggregate form.
+`python3 -m unittest discover -s tools -p 'test_light_v3_constants.py'` checks the publication
+threshold with synthetic inputs and scans all committed fit files.
 
 ## Measured agreement
 
@@ -115,15 +131,26 @@ adjustments and sources without a camera curve have no new calibration.
 
 ## Cost and stability
 
-Each active operator adds a 4 KiB table built once per render, at most 8 KiB for both. The
-per-pixel cost is two colour matrix multiplications around the active operators, table
-lookups and, for Blacks, luminance scaling and a blend. There is no extra image pass,
-source read, per-photo state or statistic. Zero Contrast and Blacks skip the new work.
+Each active operator has a 4 KiB source table, at most 8 KiB for both. CPU previews also
+build one composed table of 128 KiB, or two such tables when Blacks uses a genuine luminance
+mix. Each of its 16,384 intervals stores an intercept and slope. The composed per-channel
+path uses three lookups per pixel and two colour matrix multiplications. A luminance mix
+also computes luminance scaling and a blend.
+There is no extra image pass, source read, per-photo state or statistic. Zero Contrast and
+Blacks skip the new work. Metal and high-bit-depth CPU exports allocate only the source tables.
 
-A 1280x853 cached CPU exposure-change check on an M3 Max used two Rayon threads and the
-development build, with nine samples per case. At Contrast +40 and Blacks -30, median render
-time was 60.2 ms under V2 and 111.2 ms under V3. With both sliders zero, it was 57.2 and
-50.6 ms. These shared-machine measurements are not a release benchmark.
+Release measurements on an M3 Max used two Rayon threads and nine interleaved samples per
+case against main `701f78ea` and the original V3 commit `344bf75b`. With Contrast +40 and
+Blacks -30, cached CPU renders took 1.20 to 1.25 times main across Sony ILCE-7M3 and Nikon D750
+fit views, 1:1 windows and full frames. The original V3 took 1.98 to 2.06 times main in the
+same run. Full-frame CPU medians fell from 1535 to 927 ms for Sony and from 1567 to 960 ms
+for Nikon. Fit and window output was 1920 by 1280; full frames were about 24 MP. These
+measurements exclude decoding, cache preparation and file encoding.
+
+Metal medians were 3.07 to 4.76 ms for fit and window views and 18.24 to 22.83 ms for full
+frames. The initial Nikon window median rose from 3.67 to 4.76 ms; a 27-sample interleaved
+confirmation measured 3.92 ms for the original V3 and 3.91 ms for this version. Other work
+on the shared machine was not controlled. These samples do not establish tail latency.
 
 V1 and V2 keep their rendering and persistent cache keys. Persistent keys from process V3
 on include the process this build actually renders with, so saved settings from a newer
@@ -135,4 +162,5 @@ Current Process remains one undoable settings change and never downgrades a futu
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Compose CPU preview lookups, preserve exact deep exports, and require three distinct photos per published error aggregate |
 | 2026-10-12 | new | Split Contrast and Blacks calibration, preserve V2 Whites and legacy rendering |
