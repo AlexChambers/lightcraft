@@ -27,6 +27,7 @@
 pub mod airlight;
 pub mod auto;
 pub mod blemish;
+pub mod budget;
 pub mod colorops;
 pub mod cull;
 pub mod dust;
@@ -306,15 +307,26 @@ impl StageCache {
     /// Bytes of the intermediate images held (each buffer counted once; the sources they were
     /// made from belong to their owner and are not counted).
     pub fn bytes(&self) -> usize {
+        self.image_bytes(false)
+    }
+
+    /// All CPU image storage retained by this cache, including source images and
+    /// segmentation mattes that may no longer be held by the caller's source LRU.
+    /// Used for wasm32 admission; GPU allocations have a separate device budget.
+    pub fn retained_bytes(&self) -> usize {
+        self.image_bytes(true)
+    }
+
+    fn image_bytes(&self, include_sources: bool) -> usize {
         fn size<T>(i: &lightcraft_raster::Image<T>) -> usize {
             i.data.len() * std::mem::size_of::<T>()
         }
         let mut seen: Vec<usize> = Vec::new();
-        let mut total = 0;
+        let mut total: usize = 0;
         let mut add = |p: usize, n: usize| {
             if !seen.contains(&p) {
                 seen.push(p);
-                total += n;
+                total = total.saturating_add(n);
             }
         };
         if let Some(full) = self.airlight_frame.value() {
@@ -323,6 +335,12 @@ impl StageCache {
             add(Arc::as_ptr(&full.dark) as usize, size(&full.dark));
         }
         for e in self.lock().iter() {
+            if include_sources {
+                add(Arc::as_ptr(&e.src) as usize, e.src.data.capacity().saturating_mul(12));
+                if let Some(mattes) = e.masks.mattes() {
+                    add(Arc::as_ptr(mattes) as usize, mattes.bytes());
+                }
+            }
             if !Arc::ptr_eq(&e.sampled, &e.src) {
                 add(Arc::as_ptr(&e.sampled) as usize, size(&e.sampled));
             }
@@ -607,6 +625,8 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         airlight::check_pixels(plan.w, plan.h)?;
     }
     let full = plan.needs_airlight.then(|| self::plan(src_img, info, s, &RenderRequest { window: None, ..*req }));
+    #[cfg(target_arch = "wasm32")]
+    budget::check_wasm_render(src_img, info, edit, req, cache.map_or(0, |c| c.retained_bytes() as u64))?;
     let shared = match (&src, cache) {
         (Src::Shared(a), Some(c)) => Some((*a, c)),
         _ => None,

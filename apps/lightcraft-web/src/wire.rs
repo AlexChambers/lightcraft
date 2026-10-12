@@ -187,12 +187,23 @@ impl WorkerCore {
                     (Source::File { path }, None) => return Err(format!("{path}: original not found in browser storage")),
                     (origin @ Source::Demo { .. }, _) => self.media.origin_ref(origin, job.max_edge).load_source()?,
                 };
-                let cost = src.image.width * src.image.height * 12 + 64;
-                self.sources.insert(key, src.clone(), cost);
+                let cost = src.bytes();
+                self.sources.insert(key.clone(), src.clone(), cost);
                 src
             }
         };
         let info = src.info_or(job.info());
+        let request = job.request();
+        let check = |retained| lightcraft_engine::pipeline::budget::check_wasm_render(&src.image, &info, &job.settings, &request, retained);
+        // Stage entries can keep old sources alive after the source LRU evicts
+        // them. Count every view, not only this job's cache. On pressure, release
+        // reusable data and retry admission before allocating any work images.
+        let retained = self.stages.values().fold(self.sources.cost() as u64, |n, c| n.saturating_add(c.retained_bytes() as u64));
+        if check(retained).is_err() {
+            self.stages.clear();
+            self.sources.retain(|cached| *cached == key);
+            check(self.sources.cost() as u64)?;
+        }
         let mut rendered = match &job.stages {
             Some(view) => {
                 let st = self.stages.entry(view.clone()).or_default().clone();
@@ -450,6 +461,58 @@ mod tests {
         assert_eq!((rendered.image.width, rendered.image.height), (121, 83));
         job.request = wire.request();
         assert!(job.run().rendered.is_ok());
+    }
+
+    #[test]
+    fn wasm_budget_rejects_full_work_frame_and_worker_recovers() {
+        use lightcraft_engine::develop::{Mask, MaskComponent, MaskOp, MaskShape};
+        use lightcraft_engine::pipeline::{self, PixelWindow};
+        let mut session = Session::with_demo();
+        let id = session.visible_cloned()[0];
+        let mut job = session.region_job(id, 1920, 1280, PixelWindow { x: 2560, y: 1792, w: 4096, h: 2816 }, false).unwrap();
+        let settings = Arc::make_mut(&mut job.settings);
+        settings.effects.dehaze = 80.0;
+        settings.effects.clarity = 80.0;
+        settings.effects.texture = 60.0;
+        settings.light.highlights = -80.0;
+        settings.light.shadows = 80.0;
+        settings.detail.nr_luminance = 70.0;
+        settings.detail.nr_color = 60.0;
+        settings.detail.sharpen_amount = 60.0;
+        settings.optics.defringe_purple_amount = 10.0;
+        for (id, shape) in [MaskShape::Subject, MaskShape::Sky, MaskShape::Background].into_iter().enumerate() {
+            settings.masks.push(Mask {
+                id: id as u32,
+                refine: 100.0,
+                components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: false, shape }],
+                ..Default::default()
+            });
+        }
+        let mut wire = WireJob::from_job(&job, false, "Region");
+        wire.max_edge = 600;
+        wire.max_w = 9504;
+        wire.max_h = 6336;
+        wire.stages = Some("Region".into());
+        let mut wire: WireJob = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+        let mut core = WorkerCore::default();
+        // The virtual output has the review's dimensions without allocating a 61 MP source.
+        let src = Arc::new(lightcraft_raster::Rgb32f::new(600, 400));
+        core.sources.insert(wire.source_key(), DecodedSource::new(src.clone(), None), 600 * 400 * 12);
+        let plan = pipeline::plan(&src, &wire.info(), &wire.settings, &wire.request());
+        assert_eq!((plan.w, plan.h), (9504, 6336), "filter support reaches the entire frame");
+        for window in [wire.window, Some([0, 0, 9504, 6336]), None] {
+            wire.window = window;
+            let error = core.render(&wire, None).err().expect("wasm32 memory-budget error");
+            assert!(error.contains("memory budget"), "{error}");
+            assert!(core.stages.values().all(|cache| cache.bytes() == 0), "reject before work allocation");
+        }
+        wire.max_w = 600;
+        wire.max_h = 400;
+        wire.window = Some([16, 16, 121, 83]);
+        let rendered = core.render(&wire, None).unwrap();
+        let expected = pipeline::render(&src, &wire.info(), &wire.settings, &wire.request()).unwrap();
+        assert_eq!((rendered.image.width, rendered.image.height), (121, 83));
+        assert_eq!(rendered.image, expected.image);
     }
 
     // a job from before windows existed has none

@@ -897,6 +897,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     if let Some(why) = photo.preview_only.as_deref().filter(|_| !fullscreen) {
         preview_only_pill(ui, canvas, why);
     }
+    if let Some(error) = windows.iter().find_map(|(view, _)| app.renderer.failure(if view.before { Slot::RegionBefore } else { Slot::Region })) {
+        region_failure_notice(ui, canvas, error, app.ui.navigator && !fullscreen);
+    }
     resp.context_menu(|ui| {
         crate::widgets::menu_button(ui, crate::i18n::tr("Zoom"), |ui| {
             for (label, cmd) in [("Fit", "view.zoomFit"), ("100%", "view.zoom100"), ("Zoom In", "view.zoomIn"), ("Zoom Out", "view.zoomOut")] {
@@ -908,6 +911,23 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         ui.separator();
         super::grid::context_menu(app, ui, id);
     });
+}
+
+/// A failed zoom job keeps the whole-frame preview visible. The status stays
+/// until the requested region succeeds or the view no longer needs that region.
+fn region_failure_notice(ui: &mut egui::Ui, canvas: Rect, error: &str, navigator: bool) {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(canvas);
+    let width = (canvas.width() - 48.0 - if navigator { NAV_W + 12.0 } else { 0.0 }).clamp(80.0, 420.0);
+    let message = crate::i18n::tr("Zoom detail is unavailable. Try a lower zoom.");
+    let g = p.layout(message.into(), t.font(12.0), Color32::WHITE, width);
+    let size = g.size() + vec2(20.0, 12.0);
+    // Leave room for the Before/After labels along the canvas' lower edge.
+    let r = Rect::from_min_size(pos2(canvas.left() + 12.0, canvas.bottom() - size.y - 36.0), size);
+    p.rect_filled(r, 4.0, Color32::from_black_alpha(225));
+    p.galley(r.min + vec2(10.0, 6.0), g, Color32::WHITE);
+    register(ui.ctx(), "notice:regionFailure:loupe", r);
+    ui.interact(r, egui::Id::new("region-failure-notice"), Sense::hover()).on_hover_text(error);
 }
 
 /// The info overlay at the canvas' top left (`view.infoOverlay`): file name with the capture date
