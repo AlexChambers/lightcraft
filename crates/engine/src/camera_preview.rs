@@ -5,7 +5,7 @@
 //! lime shirt olive that the camera kept lime): a hue/saturation table fitted to the residuals
 //! (applied like a DNG `ProfileHueSatMap`) corrects that when it also improves the held-out pixels.
 use lightcraft_color::{ADOBE_RGB, D50, D65, Mat3, PROPHOTO, REC2020, SRGB, Xy, bradford, luminance_2020};
-use lightcraft_pipeline::tone::{CameraTone, ToneMap};
+use lightcraft_pipeline::tone::{CameraTone, GREY, ToneMap};
 use lightcraft_raster::{
     Rgb32f,
     resample::{Filter, fit, resize},
@@ -36,7 +36,8 @@ use lightcraft_raw::{
 /// 9: the bundled NIKON Z 8 and NIKON D5300 profiles.
 /// 12: tone curves of low-contrast scenes (range limit 1.2, with the bright-area check for curves under 1.5, #699).
 /// 13: the partial look's second attempt with the bright pairs (#631's bird).
-pub const LOOK_VERSION: u32 = 13;
+/// 14: the colour a matrix needs asked of pixels darker than middle grey in proportion to their luminance (#865).
+pub const LOOK_VERSION: u32 = 14;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {
@@ -334,19 +335,30 @@ fn fit_look(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool], colour: Optio
 /// replace a look fitted away from edges). A photo that had no look gets one when the search
 /// without the clipped pixels finds it, and otherwise the [`fit_partial`] look when that is clearly
 /// closer to the camera JPEG than the neutral fallback.
+///
+/// The colour a photo's own matrix needs is asked of darker pixels in proportion to their luminance
+/// ([`matrix_spread`], issue #865) only where the fit sees no clipped pixels: the search on all
+/// pixels of a photo with clipped ones, and its refit, keep the fixed spread, so the look they give
+/// is the one they gave before. A photo that learns its colour only through the scaled spread had no
+/// such look to keep, and gets one fitted on what the sensor measured (the search without the
+/// clipped pixels). On a dark DMC-G10 scene the search on all pixels passed the gates only through
+/// its 56 clipped pairs (held-out RMS from 0.066 for the neutral fallback to 0.021; without them
+/// from 0.022 to 0.019, short of the 30% cut) and rendered 1.0 ΔE76 further from the camera JPEG
+/// than its partial look; the search without them finds a look away from edges that renders it
+/// 0.5 closer than the partial look.
 fn fit_look_with(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool], colour: Option<(Mat3, Option<HsvTable>)>, dro: bool) -> Option<CameraLook> {
     let unclipped = without_clipped(sensor, clipped);
     // from the proxies as they are: the retries' filters (clipped pixels, edges) don't remove them
     let bright = HighlightCheck { pairs: highlights(sensor, reference), clipped: clipped_highlights(sensor, reference, clipped), dro, grey: false };
-    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright) else {
+    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright, unclipped.is_none()) else {
         return unclipped
             .as_ref()
-            .and_then(|u| search_ordered(u, reference, colour, TONE_FITS, &bright))
+            .and_then(|u| search_ordered(u, reference, colour, TONE_FITS, &bright, true))
             .map(|(look, _)| look)
             .or_else(|| fit_partial(unclipped.as_ref().unwrap_or(sensor), reference, &bright));
     };
     let Some(unclipped) = unclipped else { return Some(look) };
-    let refit = fit_attempt(&unclipped, reference, &colour, attempt, &bright);
+    let refit = fit_attempt(&unclipped, reference, &colour, attempt, &bright, false);
     if refit.is_none() && lightcraft_pipeline::profiling() {
         eprintln!("[profile] camera look: no fit without the clipped pixels on the accepted attempt, keeping the fit on all pixels");
     }
@@ -432,7 +444,7 @@ fn dro_off(own_tone: &CameraTone) -> CameraTone {
 /// Whether curve `a` is nowhere brighter than `b` over the scene luminances the finish stage's tone
 /// table covers ([`ToneMap::camera`]).
 fn at_most(a: &CameraTone, b: &CameraTone) -> bool {
-    use lightcraft_pipeline::tone::{GREY, LUT_MAX_EV, LUT_MIN_EV, LUT_N};
+    use lightcraft_pipeline::tone::{LUT_MAX_EV, LUT_MIN_EV, LUT_N};
     (0..LUT_N).all(|i| {
         let x = GREY * 2f32.powf(LUT_MIN_EV + (LUT_MAX_EV - LUT_MIN_EV) * i as f32 / (LUT_N - 1) as f32);
         a.apply(x) <= b.apply(x) + 1e-5
@@ -481,9 +493,9 @@ fn fit_dng_tone(raw: &RawImage, bytes: &[u8], transform: &CameraTransform, lens:
         grey: false,
     };
     let look = TONE_FITS.iter().find_map(|&tone| {
-        [false, true].into_iter().find_map(|away_from_edges| {
-            fit_attempt(fit_on, &reference, &colour, Attempt { tone, profile: true, away_from_edges, dark: true }, &bright)
-        })
+        [false, true]
+            .into_iter()
+            .find_map(|away_from_edges| fit_attempt(fit_on, &reference, &colour, Attempt { tone, profile: true, away_from_edges, dark: true }, &bright, false))
     });
     let Some(look) = look else { return refuse("fit") };
     let plain = match raw.color.profile.tone_curve.as_ref().and_then(crate::files::dng_tone_curve) {
@@ -845,7 +857,8 @@ pub(crate) fn profile_pairs(raw: &RawImage, bytes: &[u8], lens: Option<&LensGeom
     let to_camera = transform.matrix.inverse()?;
     // clipped sensor pixels don't record the scene's colour (see `fit_look`)
     let sensor = without_clipped(&sensor, &clipped).unwrap_or(sensor);
-    let (pairs, _) = collect_pairs(&sensor, &reference, 0.05, None, false)?;
+    // the fixed spread, not `matrix_spread`: what the darker pixels would add to a pooled profile is not measured
+    let (pairs, _) = collect_pairs(&sensor, &reference, MATRIX_SPREAD, None, false)?;
     Some(pairs.into_iter().map(|(x, y)| (to_camera.apply(x), y)).collect())
 }
 
@@ -1015,6 +1028,12 @@ fn local_contrast(image: &Rgb32f, i: usize) -> f32 {
 type Pair = ([f64; 3], [f64; 3]);
 type Pairs = Vec<Pair>;
 fn collect_pairs(sensor: &Rgb32f, reference: &Rgb32f, min_chroma: f32, edge_limit: Option<f32>, dark: bool) -> Option<(Pairs, Pairs)> {
+    collect_pairs_by(sensor, reference, |_| min_chroma, edge_limit, dark)
+}
+
+/// [`collect_pairs`] with the channel spread a pair must exceed to count as coloured given by the camera JPEG
+/// pixel's luminance ([`matrix_spread`]).
+fn collect_pairs_by(sensor: &Rgb32f, reference: &Rgb32f, min_chroma: impl Fn(f32) -> f32, edge_limit: Option<f32>, dark: bool) -> Option<(Pairs, Pairs)> {
     if (sensor.width, sensor.height) != (reference.width, reference.height) || sensor.data.len() != reference.data.len() {
         return None;
     }
@@ -1039,7 +1058,7 @@ fn collect_pairs(sensor: &Rgb32f, reference: &Rgb32f, min_chroma: f32, edge_limi
         }
         let min = output.iter().copied().fold(f32::INFINITY, f32::min);
         let max = output.iter().copied().fold(0.0, f32::max);
-        colour += usize::from(max - min > min_chroma);
+        colour += usize::from(max - min > min_chroma(y));
         pairs.push((input.map(f64::from), output.map(f64::from)));
     }
     (pairs.len() >= 256 && colour >= pairs.len() / 20).then_some((pairs, bright))
@@ -1128,6 +1147,23 @@ fn fit_tone_with_shadows(
     Some(candidate)
 }
 
+/// Channel spread (linear) above which a camera JPEG pixel at or above middle grey counts as coloured, toward the
+/// 5% of coloured pairs a photo needs to learn its own colour matrix ([`matrix_spread`]).
+const MATRIX_SPREAD: f32 = 0.05;
+
+/// The channel spread a camera JPEG pixel of luminance `y` must exceed to count as coloured when the photo learns its
+/// own colour matrix in a fit without clipped pixels ([`fit_look_with`]): [`MATRIX_SPREAD`] from middle grey ([`GREY`],
+/// about sRGB 118) up, and below it the same share of the pixel's luminance (0.28). A colour spreads a pixel's channels
+/// in proportion to its luminance, so a fixed 0.05 asked darker pixels for more saturated colours: at linear 0.036,
+/// the median of a dark olive A7 II scene (issue #865), for a spread of 1.4 times the pixel's luminance. Only 2.7% of
+/// that scene's pairs qualified, short of the 5%, and it got the partial look without a colour matrix, although its
+/// full look passes every acceptance gate (held-out RMS from 0.027 to 0.010) and renders closer to the camera JPEG.
+/// The matrix is fitted to luminance-normalised colour ([`fit_matrix`]), which a dark pixel shows as well as a bright
+/// one.
+fn matrix_spread(y: f32) -> f32 {
+    MATRIX_SPREAD * (y / GREY).min(1.0)
+}
+
 /// Ridge-regularised 3×3 chromaticity matrix (luminance-normalised RGB) on the training pairs.
 fn fit_matrix(pairs: &[([f64; 3], [f64; 3])]) -> Option<Mat3> {
     let mut gram = [[0.0; 3]; 3];
@@ -1182,7 +1218,7 @@ fn fit_pairs_with(sensor: &Rgb32f, reference: &Rgb32f, colour: Option<(Mat3, Opt
 #[cfg(test)]
 fn fit_pairs_ordered(sensor: &Rgb32f, reference: &Rgb32f, colour: Option<(Mat3, Option<HsvTable>)>, order: &[ToneFit]) -> Option<CameraLook> {
     let check = HighlightCheck { pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: false };
-    search_ordered(sensor, reference, colour, order, &check).map(|(look, _)| look)
+    search_ordered(sensor, reference, colour, order, &check, true).map(|(look, _)| look)
 }
 
 /// The tone fits the search tries, in order: the first whose look passes the acceptance gates is
@@ -1211,20 +1247,23 @@ struct Attempt {
 /// fails the gates, once more on the pixels away from edges (same gates): there colour pairs stay
 /// valid when the camera JPEG's geometry differs slightly from the raw's (issue #232). The whole
 /// search runs with one tone fit before the next is tried, so the conditional-median fallback
-/// accepts exactly what the previous releases accepted.
+/// accepts exactly what the previous releases accepted. With `scaled`, the photo's own colour asks
+/// darker pixels for colour in proportion to their luminance ([`matrix_spread`]), else for the fixed
+/// [`MATRIX_SPREAD`] ([`fit_look_with`] says when).
 fn search_ordered(
     sensor: &Rgb32f,
     reference: &Rgb32f,
     colour: Option<(Mat3, Option<HsvTable>)>,
     order: &[ToneFit],
     bright: &HighlightCheck,
+    scaled: bool,
 ) -> Option<(CameraLook, Attempt)> {
     let profiles: &[bool] = if colour.is_some() { &[true, false] } else { &[false] };
     order.iter().find_map(|&tone| {
         profiles.iter().find_map(|&profile| {
             [false, true].into_iter().find_map(|away_from_edges| {
                 let attempt = Attempt { tone, profile, away_from_edges, dark: false };
-                fit_attempt(sensor, reference, &colour, attempt, bright).map(|look| (look, attempt))
+                fit_attempt(sensor, reference, &colour, attempt, bright, scaled).map(|look| (look, attempt))
             })
         })
     })
@@ -1236,9 +1275,10 @@ fn fit_attempt(
     colour: &Option<(Mat3, Option<HsvTable>)>,
     attempt: Attempt,
     bright: &HighlightCheck,
+    scaled: bool,
 ) -> Option<CameraLook> {
     let colour = if attempt.profile { colour.clone() } else { None };
-    fit_pairs_on(sensor, reference, colour, attempt.away_from_edges.then_some(EDGE_CONTRAST), attempt.tone, attempt.dark, bright)
+    fit_pairs_on(sensor, reference, colour, attempt.away_from_edges.then_some(EDGE_CONTRAST), attempt.tone, attempt.dark, bright, scaled)
 }
 
 fn fit_pairs_on(
@@ -1249,10 +1289,16 @@ fn fit_pairs_on(
     tone_fit: ToneFit,
     dark: bool,
     highlights: &HighlightCheck,
+    scaled: bool,
 ) -> Option<CameraLook> {
     // A known colour model needs enough signal for tone fitting, not a scene rich enough to
     // learn a new colour matrix. Still reject monochrome references.
-    let (pairs, bright) = collect_pairs(sensor, reference, if colour.is_some() { 0.005 } else { 0.05 }, edge_limit, dark)?;
+    let spread = |y| match (colour.is_some(), scaled) {
+        (true, _) => 0.005,
+        (false, true) => matrix_spread(y),
+        (false, false) => MATRIX_SPREAD,
+    };
+    let (pairs, bright) = collect_pairs_by(sensor, reference, spread, edge_limit, dark)?;
     let candidates = match colour {
         Some(given) => vec![given],
         None => {
@@ -1386,8 +1432,10 @@ fn rank_correlation_ties(pairs: &[([f64; 3], [f64; 3])]) -> f64 {
 /// compacts, dull or nearly colourless scenes): the tone curve by quantile matching, which needs
 /// no pixel-exact registration and was the largest part of the neutral fallback's error (rendered
 /// 9–22 L* too dark), the chroma curve (the fallback kept about a third of the camera's
-/// colourfulness), and, when the scene has enough colour to learn one (the full look's condition),
-/// the photo's own colour matrix at [`PARTIAL_MATRIX_WEIGHT`]. No hue/saturation table. Tried on
+/// colourfulness), and, when the scene has enough colour to learn one (5% of the pairs with a
+/// channel spread above 0.05 at any luminance: the half weight was measured with it, not with the
+/// full look's [`matrix_spread`]), the photo's own colour matrix at
+/// [`PARTIAL_MATRIX_WEIGHT`]. No hue/saturation table. Tried on
 /// all pixels and then, like the full look, on the pixels away from edges; used only when it cuts
 /// the held-out squared error to below [`MIN_IMPROVEMENT`] of the neutral fallback's, in linear
 /// and in gamma-encoded display values, and when the JPEG shows the same picture
@@ -3762,7 +3810,7 @@ mod tests {
         assert_eq!((none.matrix.0, none.tone), (all.matrix.0, all.tone));
         // without clipped pixels the refit keeps the accepted attempt (here: all pixels, own colour, quantile tone)
         let check = HighlightCheck { pairs: highlights(&sensor, &reference), clipped: Vec::new(), dro: false, grey: false };
-        let (_, attempt) = search_ordered(&sensor, &reference, None, TONE_FITS, &check).unwrap();
+        let (_, attempt) = search_ordered(&sensor, &reference, None, TONE_FITS, &check, false).unwrap();
         assert_eq!(attempt, Attempt { tone: ToneFit::Quantile, profile: false, away_from_edges: false, dark: false });
         assert!(without_clipped(&sensor, &[true; 3]).is_none(), "a mask of another size is ignored");
     }
@@ -4070,6 +4118,162 @@ mod tests {
         assert!(fit_look(&sensor, &reference, &none, None).is_none(), "monochrome JPEG");
     }
 
+    /// A dark scene (camera JPEG luminance 0.03–0.11, L* 19–39) through the known matrix of these tests and a camera
+    /// curve: its sensor colours vary by `tint` around neutral (red and blue scaled by 1 − `tint` to 1 + `tint`), and
+    /// the camera JPEG keeps each pixel's colour while it brightens it.
+    fn dark_scene(tint: f32) -> (Rgb32f, Rgb32f) {
+        let known = Mat3([[1.8, -0.4, -0.1], [-0.2, 1.5, -0.1], [-0.05, -0.3, 1.7]]);
+        let mut sensor = Rgb32f::new(96, 64);
+        let mut reference = sensor.clone();
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f32::from((seed >> 16) as u16) / 65536.0
+        };
+        for (src, dst) in sensor.data.iter_mut().zip(&mut reference.data) {
+            let ev = 0.006 + next() * 0.016;
+            *src = [ev * (1.0 + tint * (2.0 * next() - 1.0)), ev, ev * (1.0 + tint * (2.0 * next() - 1.0))];
+            let p = known.apply_f32(*src);
+            let y = luminance_2020(p);
+            *dst = p.map(|v| v * (1.0 - (-4.0 * y).exp()) / y);
+        }
+        (sensor, reference)
+    }
+
+    /// The share of `pairs` whose camera JPEG pixel has a channel spread above `threshold` at its luminance.
+    fn coloured_share(pairs: &[Pair], threshold: impl Fn(f32) -> f32) -> f64 {
+        let coloured = pairs
+            .iter()
+            .filter(|(_, y)| {
+                let y = y.map(|v| v as f32);
+                y.iter().copied().fold(f32::NEG_INFINITY, f32::max) - y.iter().copied().fold(f32::INFINITY, f32::min) > threshold(luminance_2020(y))
+            })
+            .count();
+        coloured as f64 / pairs.len().max(1) as f64
+    }
+
+    /// Issue #865: a dark, muted scene whose colours vary as much for their luminance as a colourful scene's. Under the
+    /// fixed channel spread of 0.05, 2.6% of its pairs counted as coloured, short of the 5% a colour matrix needs, so it
+    /// got the partial look without one (the A7 II scene of the issue: 2.7%). Asked in proportion to the luminance below
+    /// middle grey ([`matrix_spread`]), most of them count: the full look learns the camera's colour and renders the
+    /// scene's colours far closer to the camera JPEG than the partial look does.
+    #[test]
+    fn a_dark_muted_scene_learns_its_colour() {
+        let (sensor, reference) = dark_scene(0.25);
+        let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+        let fixed = coloured_share(&pairs, |_| MATRIX_SPREAD);
+        assert!(fixed < 0.05, "too few coloured pairs under the fixed spread: {fixed:.3}");
+        assert!(coloured_share(&pairs, matrix_spread) > 0.5);
+        let look = fit_pairs(&sensor, &reference).expect("a full look");
+        assert_ne!(look.matrix, Mat3::IDENTITY);
+        // the camera's colours (luminance-normalised: the tone curve sets brightness)
+        let known = Mat3([[1.8, -0.4, -0.1], [-0.2, 1.5, -0.1], [-0.05, -0.3, 1.7]]);
+        for x in [[0.8, 1.0, 0.75], [1.2, 1.0, 0.9], [0.8, 1.0, 1.2], [1.0; 3]] {
+            let (a, b) = (look.matrix.apply(x), known.apply(x));
+            let (la, lb) = (luma(a), luma(b));
+            assert!((0..3).all(|c| (a[c] / la - b[c] / lb).abs() < 0.02), "{x:?}: {a:?} vs {b:?}");
+        }
+        // what it had: the partial look with the generic colour
+        let check = HighlightCheck { pairs: highlights(&sensor, &reference), clipped: Vec::new(), dro: false, grey: false };
+        let partial = fit_partial(&sensor, &reference, &check).expect("the partial look");
+        assert_eq!(partial.matrix, Mat3::IDENTITY);
+        let colour_error = |look: &CameraLook| {
+            let tone = ToneMap::camera(&look.tone, 0.0, 0.0, 0.0);
+            let error: f64 = sensor
+                .data
+                .iter()
+                .zip(&reference.data)
+                .map(|(x, t)| {
+                    let (p, t) = (displayed(look.matrix.apply(x.map(f64::from)), &tone), t.map(f64::from));
+                    let (lp, lt) = (luma(p), luma(t));
+                    (0..3).map(|c| (p[c] / lp - t[c] / lt).powi(2)).sum::<f64>()
+                })
+                .sum();
+            (error / sensor.data.len() as f64).sqrt()
+        };
+        let (full, partial) = (colour_error(&look), colour_error(&partial));
+        assert!(full < 0.25 * partial, "luminance-normalised colour error: full look {full:.4}, partial look {partial:.4}");
+    }
+
+    /// Only pixels darker than middle grey are asked for less. From middle grey up the spread is the fixed 0.05 as
+    /// before, less than 0.28 of a bright pixel's luminance, so no bright pair stops counting and a bright scene keeps
+    /// its full look. A dark scene whose colours stay within 0.28 of their luminance from neutral learns no colour
+    /// matrix and keeps the partial look.
+    #[test]
+    fn the_colour_a_matrix_needs_is_unchanged_from_middle_grey_up() {
+        assert_eq!(matrix_spread(GREY).to_bits(), MATRIX_SPREAD.to_bits());
+        assert_eq!(matrix_spread(0.6).to_bits(), MATRIX_SPREAD.to_bits());
+        assert!((matrix_spread(0.036) - 0.01).abs() < 1e-6);
+        // a bright scene (camera JPEG luminance 0.3 to 0.6) with colours close to neutral: spreads above 0.05, under
+        // 0.28 of the luminance
+        let (sensor, mut reference) = dark_scene(0.025);
+        reference.map_in_place(|p| {
+            let y = luminance_2020(p);
+            p.map(|v| v * (0.3 + (y - 0.028) / (0.11 - 0.028) * 0.3) / y)
+        });
+        let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+        let share = coloured_share(&pairs, matrix_spread);
+        assert_eq!(share, coloured_share(&pairs, |_| MATRIX_SPREAD), "bright pairs are counted as before");
+        assert!(share >= 0.05 && coloured_share(&pairs, |y| 0.28 * y) < 0.05, "{share:.3}");
+        assert!(fit_pairs(&sensor, &reference).is_some(), "the bright scene keeps its full look");
+        // the same colours in the dark
+        let (sensor, reference) = dark_scene(0.025);
+        let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+        assert!(coloured_share(&pairs, matrix_spread) < 0.05);
+        assert!(fit_pairs(&sensor, &reference).is_none(), "no colour matrix from a nearly neutral dark scene");
+        let look = fit_look(&sensor, &reference, &vec![false; sensor.data.len()], None).expect("the partial look");
+        assert_eq!(look.matrix, Mat3::IDENTITY);
+    }
+
+    /// A dark scene that the neutral fallback renders about as close to its camera JPEG as any global look can: the
+    /// camera's tone is the fallback's, and the JPEG differs from it pixel by pixel by up to 70% (local processing no
+    /// global look follows). A clipped sky, one pixel in 50, comes out magenta and too bright through the fallback where
+    /// the camera shows it white. Returns the sensor proxy, the JPEG proxy and the clip mask.
+    fn clipped_dark_scene() -> (Rgb32f, Rgb32f, Vec<bool>) {
+        let known = Mat3([[1.8, -0.4, -0.1], [-0.2, 1.5, -0.1], [-0.05, -0.3, 1.7]]);
+        let neutral = ToneMap::new(0.0, 0.0, 0.0);
+        let mut sensor = Rgb32f::new(96, 64);
+        let mut reference = sensor.clone();
+        let mut clipped = vec![false; sensor.data.len()];
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f32::from((seed >> 16) as u16) / 65536.0
+        };
+        for (i, (src, dst)) in sensor.data.iter_mut().zip(&mut reference.data).enumerate() {
+            if i % 50 == 0 {
+                // the green sample clips, red and blue (after white balance) go on rising
+                let k = 0.95 + 0.1 * next();
+                *src = [1.3 * k, 0.99 * k, 1.4 * k];
+                *dst = [0.8 * (0.97 + 0.06 * next()); 3];
+                clipped[i] = true;
+                continue;
+            }
+            let ev = 0.012 + next() * 0.03;
+            *src = [ev * (1.0 + 0.25 * (2.0 * next() - 1.0)), ev, ev * (1.0 + 0.25 * (2.0 * next() - 1.0))];
+            let local = 1.0 + 0.7 * (2.0 * f64::from(next()) - 1.0);
+            *dst = displayed(known.apply(src.map(f64::from)), &neutral).map(|v| (v * local) as f32);
+        }
+        (sensor, reference, clipped)
+    }
+
+    /// Learning the colour through the scaled spread ([`matrix_spread`]) needs a look that the gates pass on the pixels
+    /// the sensor measured. On all pixels of [`clipped_dark_scene`] the look passes them only through the clipped sky
+    /// (the fallback is far from the camera JPEG there, the look is fitted to it); without the sky no look does. A photo
+    /// whose look the fixed spread doesn't admit had no look to keep, so it doesn't get the one fitted to its clipped
+    /// pixels (issue #865: a dark DMC-G10 scene rendered 1.0 ΔE76 further from its camera JPEG with it than with its
+    /// partial look).
+    #[test]
+    fn a_dark_scene_learns_its_colour_only_from_the_pixels_the_sensor_measured() {
+        let (sensor, reference, clipped) = clipped_dark_scene();
+        let check = HighlightCheck { pairs: highlights(&sensor, &reference), clipped: Vec::new(), dro: false, grey: false };
+        assert!(search_ordered(&sensor, &reference, None, TONE_FITS, &check, false).is_none(), "the fixed spread doesn't admit it");
+        assert!(search_ordered(&sensor, &reference, None, TONE_FITS, &check, true).is_some(), "on all pixels the gates pass");
+        let unclipped = without_clipped(&sensor, &clipped).unwrap();
+        assert!(search_ordered(&unclipped, &reference, None, TONE_FITS, &check, true).is_none(), "on the measured pixels they don't");
+        assert!(fit_look(&sensor, &reference, &clipped, None).is_none(), "no look fitted to the clipped pixels");
+    }
+
     /// A coloured scene whose camera JPEG is black and white: the camera's tone curve applied to the scene's
     /// luminance, grey in every pixel.
     fn black_and_white_scene() -> (Rgb32f, Rgb32f) {
@@ -4319,9 +4523,8 @@ mod tests {
         }
         let colour = Some((Mat3::IDENTITY, None));
         let check = HighlightCheck { pairs: highlights(&sensor, &reference), clipped: Vec::new(), dro: false, grey: false };
-        let look =
-            fit_attempt(&sensor, &reference, &colour, Attempt { tone: ToneFit::Quantile, profile: true, away_from_edges: false, dark: true }, &check)
-                .expect("tone fitted");
+        let look = fit_attempt(&sensor, &reference, &colour, Attempt { tone: ToneFit::Quantile, profile: true, away_from_edges: false, dark: true }, &check, false)
+            .expect("tone fitted");
         assert_eq!(look.matrix, Mat3::IDENTITY);
         assert!(look.hue_sat.is_none());
         let (fitted, default) = (ToneMap::camera(&look.tone, 0.0, 0.0, 0.0), ToneMap::new(0.0, 0.0, 0.0));
