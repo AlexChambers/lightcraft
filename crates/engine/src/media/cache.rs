@@ -72,6 +72,7 @@ impl Default for MediaCache {
             clear_after_source: false,
             availability: Default::default(),
             scenes: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             invalidation: Invalidation::new(rendered.clone()),
             rendered,
             denoise: DenoiseIndex::default(),
@@ -86,14 +87,18 @@ fn rendered_budget(share: usize) -> usize {
 
 impl MediaCache {
     /// Captured by proxy workers, follows cache replacement for this library only.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn invalidation(&self) -> Invalidation {
         self.invalidation.clone()
     }
 
-    /// Keep rendered thumbnails on disk in `dir` as well. A cache in the same namespace is retired
-    /// (its files stay): render jobs still holding it can't write through it any more, even
-    /// into a directory a later clear emptied (`dir` may be the same one).
-    pub fn attach_disk_cache(&mut self, dir: &std::path::Path, disk_bytes: u64) {
+    /// Keep rendered thumbnails on disk in `dir` as well, in the namespace of libraries from
+    /// before namespaces (tests; libraries attach theirs with [`Self::attach_disk_cache_namespace`]).
+    /// A cache in the same namespace is retired (its files stay): render jobs still holding it
+    /// can't write through it any more, even into a directory a later clear emptied (`dir` may
+    /// be the same one).
+    #[cfg(test)]
+    pub(crate) fn attach_disk_cache(&mut self, dir: &std::path::Path, disk_bytes: u64) {
         self.attach_disk_cache_namespace(dir, disk_bytes, 0);
     }
 
@@ -106,17 +111,20 @@ impl MediaCache {
             self.rendered.retire();
         }
         self.rendered = Arc::new(PreviewCache::with_disk_namespace(rendered_budget(self.budget), dir, disk_bytes, namespace));
-        self.invalidation = Invalidation::for_disk(dir, self.rendered.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.invalidation = Invalidation::for_disk(dir, self.rendered.clone());
+        }
         self.clear_sources();
     }
 
-    /// Change the disk budget of the cache in `dir`: in place when that cache is attached (its
-    /// thumbnails are keyed by content, so they and the textures shown from them stay valid,
-    /// and the same cache object keeps its generation), else attach it.
+    /// Change the disk budget of the cache attached in `dir`, in place: its thumbnails are keyed
+    /// by content, so they and the textures shown from them stay valid, and the same cache
+    /// object keeps its generation. Nothing is attached here: a library attaches its cache when
+    /// it opens or changes its smart preview folder, in the namespace saved with it.
     pub fn set_disk_cache_bytes(&mut self, dir: &std::path::Path, disk_bytes: u64) {
-        match self.rendered.disk().filter(|d| d.dir() == dir) {
-            Some(d) => d.set_budget(disk_bytes),
-            None => self.attach_disk_cache(dir, disk_bytes),
+        if let Some(d) = self.rendered.disk().filter(|d| d.dir() == dir) {
+            d.set_budget(disk_bytes);
         }
     }
 

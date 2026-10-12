@@ -26,6 +26,8 @@ The reader bounds the JSON header to 4096 bytes, the file to 256 MiB, dimensions
 
 Builds write atomically. Format conversions, repairs, discards, and automatic look refreshes invalidate rendered caches. Decoded sources follow the same cache generation, and a pending older render cannot refill them. Automatic look refreshes preserve each proxy's format. Their candidate scan checks for an older look version. It does not decode current-look proxies to find corruption. Use Build Smart Previews to verify and repair those files.
 
+A build or look refresh clears the thumbnail cache once, after its last photo. Before it changes its first proxy, it creates and syncs an empty marker file in the library's `thumbs` folder, and it removes the marker after that clear. If the app quits or crashes in between, every proxy is either its old or its new file, and the marker remains. The next opening then saves a new thumbnail cache generation before it shows any thumbnail, so thumbnails are rendered again from the current proxies. This also holds when a retry cannot change anything because the originals are offline. If the marker cannot be created, the build stops with an error before it changes any proxy.
+
 Invalidation follows the cache currently attached to the same library, including reopening it while a conversion or look refresh is running. Switching to another library does not invalidate that other library's cache.
 
 ## Move the preview folder
@@ -39,6 +41,17 @@ Cancel during copying keeps the entire old folder in use. Verified copies alread
 After the new location is saved, cleanup removes redundant sources on the worker and cannot be cancelled. Each destination is verified again before its source is removed. A crash before the location is saved reopens the complete old folder; retry the move. A crash during cleanup reopens the complete new folder and can leave redundant old files. Those leftovers can be removed after checking that the new folder is available. Neither crash point leaves the active folder split. Leave retains the old files. Delete removes them only after the new location is saved.
 
 The folder preference and a new thumbnail cache generation are saved in one atomic write. A process exit immediately after that write reopens with the new generation, so it cannot serve thumbnails made from a different proxy in the old folder. The running session also replaces its memory cache before using the new folder. This does not depend on the cleanup worker starting. Cache namespace selection does no filesystem I/O; old thumbnail files count toward the same cache budget and normal pruning removes them.
+
+## Opening the library in an older version
+
+Versions without Lossless smart previews, up to and including 0.7.1, can open a library this version has used, with these limits:
+
+- They cannot read Lossless (`LCSP2`) proxies. A photo whose original is offline has no usable smart preview there.
+- They do not know the format preference or the thumbnail cache generation. Saving preferences in them drops both, so the library format returns to Compact.
+- They read the thumbnails of generation 0 and ignore the interrupted-build marker. After a folder change or an interrupted build, they can show thumbnails made from the previous proxies.
+- After an older version has saved preferences, this version starts again at generation 0 and can show those same thumbnails.
+
+File > Previews > Discard Preview Cache removes every cached thumbnail, in all generations, and they are rendered again from the current proxies.
 
 ## Codec comparison
 
