@@ -2333,5 +2333,11 @@
   "Checking the GPU…": "Проверка ГП…",
   "CPU": "ЦП",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "Модель лиц использует ГП, только если проверка показала, что он даёт те же результаты быстрее.",
-  "Checking the GPU for faces": "Проверка ГП для лиц"
+  "Checking the GPU for faces": "Проверка ГП для лиц",
+  "Changing smart preview folder": "Изменение папки смарт-превью",
+  "Refreshing smart previews": "Обновление смарт-превью",
+  "Smart preview folder changed. One source file could not be removed.": "Папка смарт-превью изменена. Не удалось удалить один исходный файл.",
+  "Smart preview folder changed.": "Папка смарт-превью изменена.",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "Старая папка используется до завершения копирования. Отмена сохраняет старую папку. После смены папки удаление исходных файлов отменить нельзя.",
+  "Smart preview folder change cancelled. The old folder is still in use.": "Смена папки смарт-превью отменена. Старая папка по-прежнему используется."
 }

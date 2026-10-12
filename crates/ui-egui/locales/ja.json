@@ -2340,5 +2340,11 @@
   "Checking the GPU…": "GPU を確認中…",
   "CPU": "CPU",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "顔モデルが GPU を使うのは、同じ結果をより速く出せると確認できた場合だけです。",
-  "Checking the GPU for faces": "顔用の GPU を確認中"
+  "Checking the GPU for faces": "顔用の GPU を確認中",
+  "Changing smart preview folder": "スマートプレビューのフォルダーを変更中",
+  "Smart preview folder changed. One source file could not be removed.": "スマートプレビューのフォルダーを変更しました。コピー元ファイルを1個削除できませんでした。",
+  "Smart preview folder changed.": "スマートプレビューのフォルダーを変更しました。",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "コピーが完了するまで元のフォルダーを使用します。キャンセルすると元のフォルダーを維持します。フォルダー変更後はコピー元ファイルの削除をキャンセルできません。",
+  "Refreshing smart previews": "スマートプレビューを更新中",
+  "Smart preview folder change cancelled. The old folder is still in use.": "スマートプレビューのフォルダー変更をキャンセルしました。元のフォルダーを引き続き使用します。"
 }

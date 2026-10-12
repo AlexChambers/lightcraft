@@ -68,6 +68,26 @@ fn available_space(path: &std::path::Path, custom: bool) -> Result<u64, String> 
 }
 
 pub(crate) fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(result) = app.session.smart_migration_result.take() {
+        ctx.data_mut(|d| d.remove::<(f64, Value)>(egui::Id::new("smart-location")));
+        let message = match result {
+            Err(error) => crate::i18n::tr_format!("Smart preview folder change failed: {error}", error = error),
+            Ok(result) if result["cancelled"] == true => {
+                crate::i18n::tr("Smart preview folder change cancelled. The old folder is still in use.").to_string()
+            }
+            Ok(result) => {
+                let count = result["failed"].as_array().map_or(0, Vec::len);
+                match count {
+                    0 => crate::i18n::tr("Smart preview folder changed.").to_string(),
+                    1 => crate::i18n::tr("Smart preview folder changed. One source file could not be removed.").to_string(),
+                    _ => crate::i18n::tr_format!("Smart preview folder changed. {count} source files could not be removed.", count = count),
+                }
+            }
+        };
+        app.toast(ctx, message);
+    }
+
     let Some(Dialog::BuildSmartPreviews { checking, free_bytes, space_error, .. }) = &mut app.ui.dialog else {
         app.smart_preview_space = None;
         return;

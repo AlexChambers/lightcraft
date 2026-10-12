@@ -2340,5 +2340,11 @@
   "Checking the GPU…": "Comprobando la GPU…",
   "CPU": "CPU",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "Un modelo de caras usa la GPU solo cuando una comprobación muestra que da los mismos resultados más rápido.",
-  "Checking the GPU for faces": "Comprobando la GPU para las caras"
+  "Checking the GPU for faces": "Comprobando la GPU para las caras",
+  "Changing smart preview folder": "Cambiando la carpeta de vistas previas inteligentes",
+  "Smart preview folder changed. One source file could not be removed.": "Carpeta de vistas previas inteligentes cambiada. No se pudo eliminar un archivo de origen.",
+  "Smart preview folder changed.": "Carpeta de vistas previas inteligentes cambiada.",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "La carpeta anterior sigue en uso hasta que termina la copia. Cancelar conserva la carpeta anterior. La eliminación de los archivos de origen no se puede cancelar después del cambio de carpeta.",
+  "Refreshing smart previews": "Actualizando vistas previas inteligentes",
+  "Smart preview folder change cancelled. The old folder is still in use.": "Cambio de carpeta de vistas previas inteligentes cancelado. La carpeta anterior sigue en uso."
 }

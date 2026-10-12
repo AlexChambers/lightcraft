@@ -2141,5 +2141,11 @@
   "Checking the GPU…": "正在檢查 GPU…",
   "CPU": "CPU",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "只有在檢查顯示 GPU 能更快得出相同結果時，臉孔模型才會使用 GPU。",
-  "Checking the GPU for faces": "正在檢查用於臉孔的 GPU"
+  "Checking the GPU for faces": "正在檢查用於臉孔的 GPU",
+  "Changing smart preview folder": "正在變更智慧預覽資料夾",
+  "Smart preview folder changed. One source file could not be removed.": "已變更智慧預覽資料夾。無法刪除一個來源檔案。",
+  "Smart preview folder changed.": "已變更智慧預覽資料夾。",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "複製完成前仍使用原資料夾。取消會保留原資料夾。變更資料夾後，無法取消來源檔案清理。",
+  "Refreshing smart previews": "正在更新智慧預覽",
+  "Smart preview folder change cancelled. The old folder is still in use.": "已取消變更智慧預覽資料夾。仍在使用原資料夾。"
 }

@@ -2338,5 +2338,11 @@
   "Checking the GPU…": "Vérification du GPU…",
   "CPU": "Processeur",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "Un modèle de visages n’utilise le GPU que si une vérification montre qu’il donne les mêmes résultats plus vite.",
-  "Checking the GPU for faces": "Vérification du GPU pour les visages"
+  "Checking the GPU for faces": "Vérification du GPU pour les visages",
+  "Changing smart preview folder": "Changement du dossier des aperçus dynamiques",
+  "Smart preview folder changed. One source file could not be removed.": "Dossier des aperçus dynamiques modifié. Un fichier source n'a pas pu être supprimé.",
+  "Smart preview folder changed.": "Dossier des aperçus dynamiques modifié.",
+  "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.": "L'ancien dossier reste utilisé jusqu'à la fin de la copie. Annuler conserve l'ancien dossier. La suppression des fichiers sources ne peut plus être annulée après le changement de dossier.",
+  "Refreshing smart previews": "Actualisation des aperçus dynamiques",
+  "Smart preview folder change cancelled. The old folder is still in use.": "Changement du dossier des aperçus dynamiques annulé. L'ancien dossier reste utilisé."
 }

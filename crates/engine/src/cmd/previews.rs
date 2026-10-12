@@ -3,6 +3,9 @@
 //! Runs on a background thread (the app keeps working; progress / cancel by command, and a row in
 //! the activity stack, issue #345), or inline with `wait` (CLI, MCP, tests).
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod location;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -232,7 +235,7 @@ fn smart_run(
     jobs: Vec<SmartJob>,
     state: Option<(&PreviewBuild, &TaskGuard)>,
     format: Option<crate::smart::Format>,
-    cache: &lightcraft_preview::PreviewCache,
+    cache: &crate::media::Invalidation,
 ) -> std::result::Result<SmartCounts, String> {
     let mut n = SmartCounts::default();
     let mut changed = false;
@@ -345,6 +348,9 @@ fn smart_run(
 #[cfg(not(target_arch = "wasm32"))]
 fn smart(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.smartPreviews";
+    if s.activity.list().iter().any(|t| t.kind == "smartMigration") {
+        return Err(bad(C, "the smart preview folder is changing; wait for it to finish"));
+    }
     let dir = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
     let discard = p.get("discard").and_then(Value::as_bool).unwrap_or(false);
     let background = p.get("background").and_then(Value::as_bool).unwrap_or(false);
@@ -367,7 +373,7 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
         jobs.push((id, path, source, ph.fitted_look()));
     }
     let custom = s.smart_previews_dir.is_some();
-    let cache = s.media.rendered.clone();
+    let cache = s.media.invalidation();
     if background {
         let what = if discard { "discarding smart previews" } else { "smart previews" };
         let state = Arc::new(PreviewBuild { total: jobs.len(), what, ..Default::default() });
@@ -386,7 +392,9 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
             .map_err(|e| bad(C, format!("could not start: {e}")))?;
         return Ok(state.json());
     }
-    let r = smart_run(&dir, custom, discard, jobs, None, Some(format), &cache).map_err(|e| bad(C, e))?;
+    let state = PreviewBuild { total: jobs.len(), what: "smart previews", ..Default::default() };
+    let task = task_for(s, &state);
+    let r = smart_run(&dir, custom, discard, jobs, Some((&state, &task)), Some(format), &cache).map_err(|e| bad(C, e))?;
     Ok(
         json!({"built": r.built, "repaired": r.repaired, "refreshed": r.refreshed, "staleKept": r.stale_kept, "removed": r.removed, "failed": r.failed}),
     )
@@ -402,6 +410,9 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
 /// is built, and a missing folder is never created. Returns the thread, if started.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn refresh_stale_smart_previews(s: &mut Session) -> Option<std::thread::JoinHandle<()>> {
+    if s.activity.list().iter().any(|t| t.kind == "smartMigration") {
+        return None;
+    }
     let dir = s.media.smart_dir.clone()?;
     if !dir.is_dir() || crate::smart::look_checked(&dir) {
         return None;
@@ -410,25 +421,35 @@ pub(crate) fn refresh_stale_smart_previews(s: &mut Session) -> Option<std::threa
     let photos: Vec<_> = s.catalog.photos().filter(|p| matches!(p.source, lightcraft_catalog::Source::File { .. }) && p.fitted_look()).collect();
     let jobs: Vec<SmartJob> =
         photos.iter().map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge)), true)).collect();
-    let cache = s.media.rendered.clone();
+    if jobs.is_empty() {
+        return None;
+    }
+    let cache = s.media.invalidation();
+    let mut state = PreviewBuild { total: jobs.len(), what: "smart previews", ..Default::default() };
+    let task = s.activity.start("smartRefresh", "Refreshing smart previews", Cancel::Flag(state.cancel.clone()));
     std::thread::Builder::new()
         .name("lc-smart-look".into())
-        .spawn(move || refresh_stale(&dir, jobs, &cache))
+        .spawn(move || refresh_stale(&dir, jobs, &cache, &mut state, &task))
         .map_err(|e| log::warn!("smart previews: could not start the look refresh: {e}"))
         .ok()
 }
 
 /// The body of [`refresh_stale_smart_previews`]: rebuild the stale proxies among `jobs`.
 #[cfg(not(target_arch = "wasm32"))]
-fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>, cache: &lightcraft_preview::PreviewCache) {
+fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>, cache: &crate::media::Invalidation, state: &mut PreviewBuild, task: &TaskGuard) {
     let stale: Vec<SmartJob> = jobs
         .into_iter()
         .map(|(id, path, source, look)| (id, crate::smart::existing_file_path(dir, path), source, look))
         .filter(|(_, path, _, _)| crate::smart::is_stale(path))
         .collect();
+    if state.cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    state.total = stale.len();
+    task.progress(0, stale.len() as u64);
     if !stale.is_empty() {
         // `custom`: the folder is there already, and must not be recreated if it went away since
-        match smart_run(dir, true, false, stale, None, None, cache) {
+        match smart_run(dir, true, false, stale, Some((state, task)), None, cache) {
             Ok(n) => log::info!("smart previews: {} refreshed to the current camera look, {} kept (original offline)", n.refreshed, n.stale_kept),
             Err(e) => {
                 // not marked: the next opening tries again
@@ -436,6 +457,9 @@ fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>, cache: &lightcraft_
                 return;
             }
         }
+    }
+    if state.cancel.load(Ordering::Relaxed) {
+        return;
     }
     if let Err(e) = crate::smart::mark_look_checked(dir) {
         log::warn!("smart previews: {e}");
@@ -462,49 +486,7 @@ fn location_json(s: &Session) -> Value {
 /// Show or change where smart previews are kept (per library).
 #[cfg(not(target_arch = "wasm32"))]
 fn smart_location(s: &mut Session, p: &Value) -> Result<Value> {
-    const C: &str = "library.smartPreviewsLocation";
-    let current = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
-    let reset = p.get("reset").and_then(Value::as_bool).unwrap_or(false);
-    let chosen = str_param(p, "path").filter(|x| !x.trim().is_empty());
-    if !reset && chosen.is_none() {
-        return Ok(location_json(s));
-    }
-    let lib_dir = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
-    let default = crate::smart::dir(&lib_dir);
-    let (new_dir, custom) = match chosen {
-        Some(x) if !reset => {
-            let d = std::path::PathBuf::from(x.trim());
-            if !d.is_absolute() {
-                return Err(bad(C, "path must be an absolute folder path"));
-            }
-            (d.clone(), (d != default).then_some(d))
-        }
-        _ => (default, None),
-    };
-    if new_dir == current {
-        return Ok(location_json(s));
-    }
-    // the new place must work before anything moves; there is no fallback to another drive
-    crate::smart::check_writable(&new_dir).map_err(|e| bad(C, e))?;
-    let (held, _) = crate::smart::stats(&current);
-    let existing = match str_param(p, "existing") {
-        Some(x) => Some(crate::smart::Existing::parse(x).ok_or_else(|| bad(C, "existing must be move, leave or discard"))?),
-        None if held == 0 => Some(crate::smart::Existing::Leave),
-        None => None,
-    };
-    let Some(existing) = existing else {
-        return Err(bad(C, format!("{held} smart preview(s) are in {}: pass existing = move, leave or discard", current.display())));
-    };
-    let (moved, failed) = crate::smart::migrate(&current, &new_dir, existing);
-    s.smart_previews_dir = custom;
-    s.media.smart_dir = Some(new_dir);
-    s.media.rendered.clear();
-    s.media.clear_sources();
-    s.save_prefs()?;
-    let mut r = location_json(s);
-    r["handled"] = json!(moved);
-    r["failed"] = json!(failed);
-    Ok(r)
+    location::start(s, p)
 }
 
 /// Choose the default for future builds. Changing it never discards an offline proxy.
@@ -562,7 +544,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Smart Previews Location",
             [],
             None,
-            "{path?: absolute folder, reset?: bool, existing?: move|leave|discard} — without path/reset: where this library keeps its smart previews → {path, default, custom, available, count, bytes}. With path (or reset = back to `Smart Previews` in the library): use that folder instead (must exist or have an existing parent, and accept writes; never falls back to another drive). Smart previews already in the old folder need `existing`: move them, leave them (build again), or discard them → also {handled, failed}",
+            "{path?: absolute folder, reset?: bool, existing?: move|leave|discard, background?: bool}. Without path/reset, returns {path, default, custom, available, count, bytes, running}. Set path to change folders, or reset to use the library folder. Existing previews need an explicit move, leave or discard choice. Background mode returns immediately; activity.list and activity.cancel track copying. The old folder stays in use on cancellation or copy failure. After all copies verify and the location is saved, source cleanup completes without cancellation. Poll this command for the outcome in migration. Synchronous mode returns {handled, failed}.",
             always,
             smart_location
         ),

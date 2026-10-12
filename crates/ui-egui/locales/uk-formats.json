@@ -300,5 +300,7 @@
   "Already in “{}”": "Уже в «{}»",
   "Move {n} photo{} to “{}”": "Перемістити до «{1}» фото: {n}{0:.0}",
   "Move {n} photo{} to “{}”?": "Перемістити до «{1}» фото: {n}{0:.0}?",
-  "Moved {n} photo{} to “{}”. Edit → Undo moves them back.": "До «{1}» переміщено фото: {n}{0:.0}. Редагування → Скасувати поверне їх."
+  "Moved {n} photo{} to “{}”. Edit → Undo moves them back.": "До «{1}» переміщено фото: {n}{0:.0}. Редагування → Скасувати поверне їх.",
+  "Smart preview folder changed. {count} source files could not be removed.": "Папку смарт-переглядів змінено. Кількість вихідних файлів, які не вдалося видалити: {count}.",
+  "Smart preview folder change failed: {error}": "Не вдалося змінити папку смарт-переглядів: {error}"
 }

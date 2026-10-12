@@ -13,8 +13,12 @@ use lightcraft_pipeline::tone::CameraTone;
 use lightcraft_raster::{Rgb32f, Rgba8};
 
 mod format;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod migration;
 #[cfg(test)]
 mod tests_lossless;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests_round3;
 pub use format::Format;
 
 const MAGIC: &[u8] = b"LCSP1\n";
@@ -233,10 +237,19 @@ pub fn check_writable(dir: &Path) -> Result<(), String> {
 /// The owned proxy files in both layouts. Do not follow symlinked directories or
 /// traverse unrelated folders inside a user-selected smart preview directory.
 fn files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    try_files(dir).unwrap_or_default()
+}
+
+fn try_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
     let mut found = Vec::new();
-    for e in entries.flatten() {
-        let Ok(kind) = e.file_type() else { continue };
+    for entry in entries {
+        let e = entry?;
+        let kind = e.file_type()?;
         if kind.is_file() && e.path().extension().is_some_and(|ext| ext == "lcsp") {
             found.push(e.path()); // legacy layout
         } else if kind.is_dir() {
@@ -245,22 +258,24 @@ fn files(dir: &Path) -> Vec<PathBuf> {
             if shard.len() != 2 || !shard.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
                 continue;
             }
-            let Ok(children) = std::fs::read_dir(e.path()) else { continue };
-            for child in children.flatten() {
+            let children = std::fs::read_dir(e.path())?;
+            for child in children {
+                let child = child?;
                 let name = child.file_name();
                 let Some(name) = name.to_str() else { continue };
                 let Some(stem) = name.strip_suffix(".lcsp") else { continue };
                 if stem.len() == 32
                     && stem.starts_with(shard)
                     && stem.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-                    && child.file_type().is_ok_and(|kind| kind.is_file())
+                    && child.file_type()?.is_file()
                 {
                     found.push(child.path());
                 }
             }
         }
     }
-    found
+    found.sort();
+    Ok(found)
 }
 
 /// The number of smart previews in `dir` and their total size in bytes.
@@ -274,7 +289,7 @@ pub fn stats(dir: &Path) -> (usize, u64) {
 /// What to do with the smart previews in the old folder when the location changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Existing {
-    /// Move them to the new folder (copy and delete across drives).
+    /// Copy and verify them in the new folder, then remove the redundant sources.
     Move,
     /// Leave them where they are (they stop being used; build again in the new folder).
     Leave,
@@ -293,51 +308,17 @@ impl Existing {
     }
 }
 
-/// Apply `what` to the smart previews in `from` for the new folder `to` → (moved or removed, failed).
+/// Synchronous migration for non-UI callers. The library command commits its location
+/// between these phases instead. Never delete a source before every destination verifies.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn migrate(from: &Path, to: &Path, what: Existing) -> (usize, Vec<String>) {
-    let (mut done, mut failed) = (0, Vec::new());
-    if what == Existing::Leave {
-        return (done, failed);
+    let activity = crate::activity::Activity::default();
+    let task = activity.start("smartMigration", "Changing smart preview folder", crate::activity::Cancel::No);
+    match migration::prepare(from, to, Some(what), &task.handle()) {
+        Ok(Some(prepared)) => prepared.cleanup(&task.handle()),
+        Ok(None) => (0, Vec::new()),
+        Err(error) => (0, vec![error]),
     }
-    for src in files(from) {
-        let Some(name) = src.file_name() else { continue };
-        let dst = name
-            .to_str()
-            .and_then(|n| n.strip_suffix(".lcsp"))
-            .filter(|stem| stem.len() == 32 && stem.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
-            .map_or_else(|| to.join(name), |stem| to.join(&stem[..2]).join(name));
-        let r = match what {
-            Existing::Discard => std::fs::remove_file(&src),
-            _ => {
-                let parent = dst.parent().unwrap_or(to);
-                // Create only the shard, never missing parent directories on an unplugged drive.
-                let prepare = if parent.is_dir() { Ok(()) } else { std::fs::create_dir(parent) };
-                prepare.and_then(|()| {
-                    if is_usable(&dst)
-                        && (!is_usable(&src)
-                            || header(&dst).map(|h| h.0) == header(&src).map(|h| h.0)
-                            || header(&dst).is_some_and(|h| h.0 == Format::Lossless))
-                    {
-                        // Keep a valid destination of the same or higher precision.
-                        std::fs::remove_file(&src)
-                    } else {
-                        // Verify before replacing anything, then verify the atomic destination
-                        // before removing the source. This also works across drives.
-                        let bytes = read(&src).map_err(std::io::Error::other)?;
-                        decode(&bytes).map_err(std::io::Error::other)?;
-                        lightcraft_catalog::safe_file::write_atomic(&dst, &bytes)?;
-                        load(&dst).map_err(std::io::Error::other)?;
-                        std::fs::remove_file(&src)
-                    }
-                })
-            }
-        };
-        match r {
-            Ok(()) => done += 1,
-            Err(err) => failed.push(format!("{}: {err}", src.display())),
-        }
-    }
-    (done, failed)
 }
 
 /// A cheap structural hint using the bounded header, payload length and end marker.

@@ -300,5 +300,7 @@
   "Already in “{}”": "Ya está en “{}”",
   "Move {n} photo{} to “{}”": "Mover {n} foto{0} a “{1}”",
   "Move {n} photo{} to “{}”?": "¿Mover {n} foto{0} a “{1}”?",
-  "Moved {n} photo{} to “{}”. Edit → Undo moves them back.": "{n} foto{0} movida{0} a “{1}”. Editar → Deshacer las devuelve."
+  "Moved {n} photo{} to “{}”. Edit → Undo moves them back.": "{n} foto{0} movida{0} a “{1}”. Editar → Deshacer las devuelve.",
+  "Smart preview folder changed. {count} source files could not be removed.": "Carpeta de vistas previas inteligentes cambiada. No se pudieron eliminar {count} archivos de origen.",
+  "Smart preview folder change failed: {error}": "No se pudo cambiar la carpeta de vistas previas inteligentes: {error}"
 }

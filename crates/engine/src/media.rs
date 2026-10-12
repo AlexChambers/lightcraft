@@ -22,6 +22,9 @@ use std::sync::{Arc, Weak};
 use lightcraft_catalog::{MediaKind, Op, Photo, PhotoId, Source};
 use lightcraft_develop::DevelopSettings;
 use lightcraft_pipeline::{Quality, RenderRequest, Rendered, SourceInfo, StageCache};
+mod invalidation;
+pub(crate) use invalidation::Invalidation;
+
 use lightcraft_preview::{Hash128, Hasher128, Lru, PreviewCache};
 use lightcraft_raster::{Histogram, Rgb32f, Rgba8};
 use serde::{Deserialize, Serialize};
@@ -366,6 +369,7 @@ pub struct MediaCache {
     scenes: Vec<lightcraft_scenes::Scene>,
     /// Rendered thumbnails (memory, plus disk once a library is attached).
     pub rendered: Arc<PreviewCache>,
+    invalidation: Invalidation,
     /// Which photos have a cached denoised picture, and how to read it.
     pub denoise: DenoiseIndex,
 }
@@ -419,6 +423,7 @@ impl DenoiseIndex {
 impl Default for MediaCache {
     fn default() -> Self {
         let budget = crate::memory::cache_share(crate::memory::budget());
+        let rendered = Arc::new(PreviewCache::memory(rendered_budget(budget)));
         MediaCache {
             settings_hashes: SettingsHashes::default(),
             thumbs: Lru::new(THUMB_SOURCE_BYTES.min(budget)),
@@ -438,7 +443,8 @@ impl Default for MediaCache {
             clear_after_source: false,
             availability: Default::default(),
             scenes: Vec::new(),
-            rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
+            invalidation: Invalidation::new(rendered.clone()),
+            rendered,
             denoise: DenoiseIndex::default(),
         }
     }
@@ -450,12 +456,19 @@ fn rendered_budget(share: usize) -> usize {
 }
 
 impl MediaCache {
+    /// Captured by proxy workers, follows cache replacement for this library only.
+    pub(crate) fn invalidation(&self) -> Invalidation {
+        self.invalidation.clone()
+    }
+
     /// Keep rendered thumbnails on disk in `dir` as well. The cache this replaces is retired
     /// (its files stay): render jobs still holding it can't write through it any more, even
     /// into a directory a later clear emptied (`dir` may be the same one).
     pub fn attach_disk_cache(&mut self, dir: &std::path::Path, disk_bytes: u64) {
         self.rendered.retire();
         self.rendered = Arc::new(PreviewCache::with_disk(rendered_budget(self.budget), dir, disk_bytes));
+        self.invalidation = Invalidation::for_disk(dir, self.rendered.clone());
+        self.clear_sources();
     }
 
     /// Change the disk budget of the cache in `dir`: in place when that cache is attached (its
@@ -750,6 +763,8 @@ pub struct RenderJob {
     /// Assigned by a frontend to distinguish late completions, even for an identical render key.
     pub request_id: u64,
     pub cache_generation: u64,
+    /// The cache object that owned this work; generations can repeat after replacement.
+    pub cache_owner: Weak<PreviewCache>,
     /// Content identity for validating a decoded source returned after a reload.
     pub source_key: Option<Hash128>,
     pub photo: PhotoId,
@@ -781,6 +796,8 @@ pub struct RenderJob {
 
 pub struct RenderResult {
     pub cache_generation: u64,
+    /// The cache object that owned this work; generations can repeat after replacement.
+    pub cache_owner: Weak<PreviewCache>,
     pub request_id: u64,
     pub source_key: Option<Hash128>,
     pub photo: PhotoId,
@@ -895,6 +912,7 @@ impl RenderJob {
     fn failed(&self, e: String) -> RenderResult {
         RenderResult {
             cache_generation: self.cache_generation,
+            cache_owner: self.cache_owner.clone(),
             request_id: self.request_id,
             source_key: self.source_key,
             photo: self.photo,
@@ -939,6 +957,7 @@ impl RenderJob {
             let histogram = Histogram::of_srgb8(&image);
             return RenderResult {
                 cache_generation: self.cache_generation,
+                cache_owner: self.cache_owner.clone(),
                 request_id: self.request_id,
                 source_key: self.source_key,
                 photo: self.photo,
@@ -1015,6 +1034,7 @@ impl RenderJob {
                 }
                 RenderResult {
                     cache_generation: self.cache_generation,
+                    cache_owner: self.cache_owner.clone(),
                     request_id: self.request_id,
                     source_key: self.source_key,
                     photo: self.photo,
@@ -1121,6 +1141,7 @@ impl QuickJob {
         let (request_id, photo, key) = (self.request_id, self.photo, self.key);
         crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult {
             cache_generation: u64::MAX,
+            cache_owner: Weak::new(),
             request_id,
             source_key: None,
             photo,
@@ -1139,6 +1160,7 @@ impl QuickJob {
         let request_id = self.request_id;
         let done = |rendered: Result<Rendered, String>, quick| RenderResult {
             cache_generation: u64::MAX,
+            cache_owner: Weak::new(),
             request_id,
             source_key: None,
             photo,
@@ -1280,6 +1302,7 @@ impl crate::Session {
         Some(RenderJob {
             request_id: 0,
             cache_generation,
+            cache_owner: Arc::downgrade(&self.media.rendered),
             source_key: Some(source_key),
             photo: id,
             level,
@@ -1344,6 +1367,7 @@ impl crate::Session {
         Some(RenderJob {
             request_id: 0,
             cache_generation,
+            cache_owner: Arc::downgrade(&self.media.rendered),
             source_key: Some(Hasher128::new().str(&content_key(&p)).finish()),
             photo: id,
             level,
@@ -1404,6 +1428,7 @@ impl crate::Session {
         Some(RenderJob {
             request_id: 0,
             cache_generation,
+            cache_owner: Arc::downgrade(&self.media.rendered),
             source_key: Some(Hasher128::new().str(&content_key(&p)).finish()),
             photo: id,
             level,
@@ -1594,7 +1619,8 @@ impl crate::Session {
     /// Accept a finished job's loaded source into the cache. What the decode learnt about the file that the catalog
     /// has wrong is corrected too ([`Self::learn_as_shot_wb`]).
     pub fn accept(&mut self, r: &RenderResult) {
-        if r.cache_generation == self.media.rendered.generation()
+        if r.cache_owner.upgrade().is_some_and(|cache| Arc::ptr_eq(&cache, &self.media.rendered))
+            && r.cache_generation == self.media.rendered.generation()
             && let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&content_key(p)).finish() == key))
         {

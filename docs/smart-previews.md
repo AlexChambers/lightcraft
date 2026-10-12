@@ -24,7 +24,19 @@ The header has `format: "tiff32"`, format-local `enc: 1`, dimensions, `look_vers
 
 The reader bounds the JSON header to 4096 bytes, the file to 256 MiB, dimensions to 8192 on either axis, and the pixel count to 16 Mi pixels. The decoder must agree with the header dimensions. Lossless payload length and checksum are verified before decoding. The cheap is_complete check verifies length and the trailing marker for staleness hints. The separate is_usable check verifies the checksum and decodes the pixels. Build Smart Previews uses is_usable before skipping a rebuild. Folder migration verifies the destination before deleting the source. A malformed file returns an error.
 
-Builds write atomically. Format conversions, repairs, discards, and automatic look refreshes invalidate rendered caches. Decoded sources follow the same cache generation, and a pending older render cannot refill them. Automatic look refreshes preserve each proxy's format.
+Builds write atomically. Format conversions, repairs, discards, and automatic look refreshes invalidate rendered caches. Decoded sources follow the same cache generation, and a pending older render cannot refill them. Automatic look refreshes preserve each proxy's format. Their candidate scan checks for an older look version. It does not decode current-look proxies to find corruption. Use Build Smart Previews to verify and repair those files.
+
+Invalidation follows the cache currently attached to the same library, including reopening it while a conversion or look refresh is running. Switching to another library does not invalidate that other library's cache.
+
+## Move the preview folder
+
+Settings runs folder changes on a worker and shows progress and cancellation in the activity stack. Builds and look refreshes must finish before a folder change starts. New builds wait until the folder change finishes.
+
+For Move, the worker copies and verifies every destination before the library saves and uses the new location. This also applies on the same volume. Renaming each source early would leave the old folder incomplete after cancellation or a crash, so there is no rename fast path. The destination needs enough free space for the copies while the old folder is retained.
+
+Cancel during copying keeps the entire old folder in use. Verified copies already written to the new folder may remain; retrying reuses them. A copy, verification or preference-save failure also retains all sources and the old location. Reopening a library during copying cancels the folder change without waiting for the worker's I/O.
+
+After the new location is saved, cleanup removes redundant sources on the worker and cannot be cancelled. Each destination is verified again before its source is removed. A crash before the location is saved reopens the complete old folder; retry the move. A crash during cleanup reopens the complete new folder and can leave redundant old files. Those leftovers can be removed after checking that the new folder is available. Neither crash point leaves the active folder split. Leave retains the old files. Delete removes them only after the new location is saved.
 
 ## Codec comparison
 
