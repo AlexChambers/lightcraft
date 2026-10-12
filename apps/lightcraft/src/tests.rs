@@ -445,6 +445,10 @@ fn on_exit_ends_the_process_on_macos() {
             PrefsWriter::default(),
             #[cfg(target_os = "macos")]
             None,
+            #[cfg(target_os = "macos")]
+            None,
+            #[cfg(target_os = "macos")]
+            document_open::PendingOpens::default(),
         );
         println!("calling on_exit");
         eframe::App::on_exit(&mut app, None);

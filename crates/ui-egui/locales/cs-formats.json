@@ -196,6 +196,7 @@
   "{n} change{} couldn't be written to disk: {e}\nIf you quit now, {} lost.": "Změny nelze zapsat na disk: {n}{0:.0}: {e}\nPokud nyní ukončíte aplikaci, tyto změny se ztratí.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e}\nLightCraft retries automatically; quitting now would lose {}.": "Změny uložené v paměti, ale nezapsané na disk: {n}{0:.0}: {e}\nLightCraft zápis automaticky opakuje; při ukončení nyní se tyto změny ztratí.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e} — LightCraft will retry": "Změny uložené v paměti, ale nezapsané na disk: {n}{:.0}: {e} — LightCraft zápis zopakuje",
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "Počet otevřených souborů, které ještě nebyly importovány: {n}. Ukončením se tyto požadavky zahodí.",
   "{n} found · {sel} selected": "Nalezeno: {n} · vybráno: {sel}",
   "{n} photos": "fotografií: {n}",
   "{n} photos in {} are hidden by the filters above": "Fotografie v {} skryté filtry nahoře: {n}",

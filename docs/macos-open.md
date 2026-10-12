@@ -38,7 +38,7 @@ then click Import again. A second confirmation never replaces or cancels the act
 app. It substitutes version fields in `Info.plist.in`, then runs `document_types.py` before signing.
 The generator reads `lightcraft_engine::import::EXTENSIONS`, registers each supported extension
 and references macOS's existing Uniform Type Identifiers (UTIs). The declaration policy targets the
-supported macOS releases, 14, 15 and 26. CoreTypes and RawCameraTypes supply 31 of the 33 referenced
+supported macOS releases, 14, 15 and 26. CoreTypes and RawCameraTypes supply 31 of the 34 referenced
 identifiers, including AVIF and JPEG XL. LightCraft does not redeclare these system types. The
 bundle's older binary deployment target does not expand this declaration compatibility policy.
 Every document type has role Editor and rank Alternate.
@@ -49,6 +49,7 @@ Only these imported declarations remain:
 | --- | --- | --- | --- |
 | `ai.storyteller.lightcraft.image.x3f` | `x3f` | `public.data`, `public.camera-raw-image` | No system declaration for Sigma X3F |
 | `ai.storyteller.lightcraft.image.kdc` | `kdc` | `public.data`, `public.camera-raw-image` | No system declaration for Kodak KDC |
+| `ai.storyteller.lightcraft.image.mef` | `mef` | `public.data`, `public.camera-raw-image` | Fallback for the MEF format added on main |
 
 AVIF uses `public.avif`. The system declaration conforms to `public.heif-standard` and supplies the
 `avif` extension, `image/avif` MIME type and `AVIF` OSType. JPEG XL uses `public.jpeg-xl`, conforming

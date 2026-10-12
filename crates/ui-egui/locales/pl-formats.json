@@ -147,6 +147,7 @@
   "{n} change{} couldn't be written to disk: {e}\nIf you quit now, {} lost.": "Nie udało się zapisać zmian na dysku ({n}){0:.0}: {e}\nJeśli teraz zamkniesz program, zostaną utracone.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e}\nLightCraft retries automatically; quitting now would lose {}.": "Zmiany zapisane w pamięci, ale nie na dysku ({n}){0:.0}: {e}\nLightCraft ponawia zapis automatycznie; zamknięcie programu teraz oznacza ich utratę.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e} — LightCraft will retry": "Zmiany zapisane w pamięci, ale nie na dysku ({n}){:.0}: {e} — LightCraft ponowi próbę",
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "Liczba otwartych plików, które nie zostały jeszcze zaimportowane: {n}. Zakończenie programu odrzuci te żądania.",
   "{n} found · {sel} selected": "Znaleziono {n} · zaznaczono {sel}",
   "{n} photos": "zdjęcia ({n})",
   "{n} photos in {} are hidden by the filters above": "Zdjęcia w {} ukryte przez powyższe filtry: {n}",

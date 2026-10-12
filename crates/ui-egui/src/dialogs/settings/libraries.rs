@@ -8,7 +8,7 @@ pub(crate) fn can_switch_library(app: &LightcraftApp) -> Result<(), String> {
     if crate::lightroom_import::is_running(app) {
         return Err("wait for Lightroom catalog import to finish before switching libraries".into());
     }
-    if app.import.is_some() || app.scan.is_some() {
+    if app.import.as_ref().is_some_and(crate::import::ImportTask::blocks_library_switch) || app.scan.is_some() {
         return Err("wait for the import to finish before switching libraries".into());
     }
     Ok(())

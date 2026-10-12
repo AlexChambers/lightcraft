@@ -54,7 +54,11 @@ fn macos_document_types_match_import_extensions_and_use_alternate_rank() {
     ]
     .into_iter()
     .collect();
-    let fallbacks = [("ai.storyteller.lightcraft.image.x3f", "x3f"), ("ai.storyteller.lightcraft.image.kdc", "kdc")];
+    let fallbacks = [
+        ("ai.storyteller.lightcraft.image.x3f", "x3f"),
+        ("ai.storyteller.lightcraft.image.kdc", "kdc"),
+        ("ai.storyteller.lightcraft.image.mef", "mef"),
+    ];
     let mut declared = BTreeSet::new();
     let mut tagged = BTreeSet::new();
     for entry in plist["UTImportedTypeDeclarations"].as_array().unwrap() {

@@ -155,6 +155,7 @@
   "{n} change{} couldn't be written to disk: {e}\nIf you quit now, {} lost.": "Modifiche non scritte sul disco: {n}{0:.0}: {e}\nSe esci ora, andranno perse.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e}\nLightCraft retries automatically; quitting now would lose {}.": "Modifiche salvate in memoria ma non scritte sul disco: {n}{0:.0}: {e}\nLightCraft riprova da solo; se esci ora, andranno perse.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e} — LightCraft will retry": "Modifiche salvate solo in memoria: {n}{:.0}: {e}; LightCraft riproverà",
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "File aperti non ancora importati: {n}. Uscendo, queste richieste verranno scartate.",
   "{n} found · {sel} selected": "Trovate: {n} · selezionate: {sel}",
   "{n} photos": "{n} foto",
   "{n} photos in {} are hidden by the filters above": "I filtri qui sopra nascondono {n} foto in {}",

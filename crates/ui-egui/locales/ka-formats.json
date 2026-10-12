@@ -197,6 +197,7 @@
   "{n} change{} couldn't be written to disk: {e}\nIf you quit now, {} lost.": "დისკზე ვერ ჩაიწერა ცვლილება: {n}{0:.0}: {e}\nთუ ახლა გახვალთ, ისინი დაიკარგება.{1:.0}",
   "{n} change{} saved in memory but not written to disk: {e}\nLightCraft retries automatically; quitting now would lose {}.": "ცვლილება შენახულია მეხსიერებაში, მაგრამ დისკზე არ ჩაწერილა: {n}{:.0}: {e}\nLightCraft ავტომატურად ცდილობს ხელახლა; ახლა გასვლით ისინი დაიკარგება.{:.0}",
   "{n} change{} saved in memory but not written to disk: {e} — LightCraft will retry": "ცვლილება შენახულია მეხსიერებაში, მაგრამ დისკზე არ ჩაწერილა: {n}{:.0}: {e} — LightCraft ხელახლა სცდის",
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "თქვენ მიერ გახსნილი ფაილები ჯერ არ შემოტანილა: {n}. გასვლისას ეს მოთხოვნები გაუქმდება.",
   "{n} found · {sel} selected": "ნაპოვნია: {n} · მონიშნულია: {sel}",
   "{n} originals opened in the other editor": "სხვა რედაქტორში გახსნილი ორიგინალები: {n}",
   "{n} photos": "ფოტო: {n}",
