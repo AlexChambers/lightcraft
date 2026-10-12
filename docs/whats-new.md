@@ -386,7 +386,8 @@
   says so.
 - Rotate Left and Rotate Right turn an Upright correction with the photo. It used to stay as it was, so the photo
   came out skewed after a turn. Settings JSON that changes the rotation (Apply Settings JSON, MCP `set_develop`, the
-  CLI) turns it the same way, also when the settings are sent back whole.
+  CLI) turns it the same way, also when the settings are sent back whole, again after each change or with their
+  numbers rounded.
 - An Upright correction stays with its photo: it is the analysis of that one image. Paste, Sync and Auto Sync give a
   virtual copy the correction turned its way. Other photos get the rest of the Geometry settings (the Upright mode,
   the Transform sliders, guides) and keep their own correction, or work out their own when the mode changes; Lightroom

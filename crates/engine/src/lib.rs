@@ -78,7 +78,6 @@ pub mod slideshow_export;
 pub mod smart;
 pub mod sync;
 pub mod text;
-pub mod upright_frames;
 pub mod upright_transfer;
 mod view;
 pub mod walk;
@@ -1330,8 +1329,8 @@ mod tests_spots;
 #[cfg(test)]
 mod tests_sync;
 #[cfg(test)]
-mod tests_view_follow;
-#[cfg(test)]
 mod tests_upright;
+#[cfg(test)]
+mod tests_view_follow;
 #[cfg(test)]
 mod tests_xmp;

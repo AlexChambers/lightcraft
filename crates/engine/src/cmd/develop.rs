@@ -250,7 +250,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Settings JSON",
             [],
             None,
-            "{settings: partial DevelopSettings JSON, label?} (a change of `orientation` turns the photo's Upright correction with it unless `geometry.upright_transform` states a different one; a change of `geometry.upright` drops it to be solved again)",
+            "{settings: partial DevelopSettings JSON, label?} (a change of `orientation` turns the photo's Upright correction with it, also when `geometry.upright_transform` states the photo's own as it was read: before a turn or with its numbers rounded; a different one is taken as given; a change of `geometry.upright` drops it to be solved again)",
             has_active,
             |s, p| {
                 let partial = p.get("settings").cloned().ok_or_else(|| bad("develop.merge", "missing settings"))?;
@@ -260,10 +260,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     *d = d.merged(&partial).map_err(|e| bad("develop.merge", e.to_string()))?;
                     // a turn turns the Upright correction the photo keeps, as Rotate does; a new mode
                     // drops it; a correction stated in the JSON is taken as given, unless it is the
-                    // photo's own unchanged (settings sent back whole, as develop.get returned them)
-                    if !crate::upright_transfer::states_new_correction(&partial, &before) {
-                        crate::upright_transfer::settle_edit(&before, d);
-                    }
+                    // photo's own as it was read (settings sent back whole, in any frame)
+                    crate::upright_transfer::settle_json(&before, d, &partial);
                     Ok(())
                 })
             }

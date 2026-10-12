@@ -5,16 +5,20 @@
 //!
 //! - between entries of the same file (a photo and its virtual copies) the correction moves too,
 //!   turned by the difference in their Rotate Left / Right;
-//! - between different files only the Upright mode and the Transform sliders move: the target
-//!   keeps its own correction while its mode stays the same, else solves its own, as Lightroom
-//!   does when it syncs the Upright mode (a correction found for one scene is wrong for another);
+//! - between different files the rest of the Geometry group moves (the Upright mode, the Transform
+//!   sliders, Guided guides, Constrain Crop), not the correction: the target keeps its own while
+//!   its mode stays the same, else solves its own (a correction found for one scene is wrong for
+//!   another);
 //! - presets never carry a correction (they are for other photos);
 //! - a change that turns a photo turns the correction it keeps, and a change of mode drops it to
-//!   be solved again.
+//!   be solved again;
+//! - settings JSON (`develop.merge`) that states the photo's own correction, in whatever frame it
+//!   was read and with its numbers rounded, names that correction, which is kept as above; any
+//!   other correction it states is taken as given.
 
 use lightcraft_catalog::{Photo, PhotoId, Source};
 use lightcraft_develop::DevelopSettings;
-use lightcraft_geom::Orientation;
+use lightcraft_geom::{Homography, Orientation};
 use serde_json::Value;
 
 /// The photo settings were taken from, as far as its Upright correction is concerned.
@@ -85,13 +89,65 @@ pub fn settle_edit(before: &DevelopSettings, after: &mut DevelopSettings) {
     }
 }
 
-/// Whether settings JSON `patch` states a correction other than the one `before` holds: settings
-/// sent back whole (as `develop.get` returned them) state the photo's own, unchanged, and that one
-/// is turned with the photo like any kept correction.
-pub fn states_new_correction(patch: &Value, before: &DevelopSettings) -> bool {
-    patch
-        .pointer("/geometry/upright_transform")
-        .is_some_and(|v| serde_json::from_value::<Option<lightcraft_geom::Homography>>(v.clone()).ok() != Some(before.geometry.upright_transform))
+/// Settings `after` of a photo (which had `before`) once settings JSON `patch` was merged into them
+/// (`develop.merge`), with its Upright correction settled. A correction the JSON states that is the
+/// photo's own ([`names_own`]) counts as not stated: the photo keeps its correction, turned to the
+/// stated orientation, or drops it for a new mode ([`settle_edit`]). Settings sent back whole carry
+/// the correction as they were read: before a turn, or before an earlier send turned it, and maybe
+/// with the numbers rewritten. Any other stated correction is taken as given.
+pub fn settle_json(before: &DevelopSettings, after: &mut DevelopSettings, patch: &Value) {
+    if let Some(v) = patch.pointer("/geometry/upright_transform") {
+        let stated = serde_json::from_value::<Option<Homography>>(v.clone()).ok();
+        if !stated.is_some_and(|h| names_own(h, before.geometry.upright_transform)) {
+            return;
+        }
+        after.geometry.upright_transform = before.geometry.upright_transform;
+    }
+    settle_edit(before, after);
+}
+
+/// The eight frames a photo's correction can be read in (any Rotate Left / Right and flip).
+const FRAMES: [Orientation; 8] = [
+    Orientation::Normal,
+    Orientation::FlipH,
+    Orientation::Rotate180,
+    Orientation::FlipV,
+    Orientation::Transpose,
+    Orientation::Rotate90,
+    Orientation::Transverse,
+    Orientation::Rotate270,
+];
+
+/// Whether correction `stated` is the photo's own correction `own`, read in any of its frames
+/// (`upright::turned` only swaps and negates elements, so each frame's copy is exact), up to
+/// [`SAME_CORRECTION`]. Whichever frames match, keeping `own` turned to the stated orientation gives
+/// the same result.
+fn names_own(stated: Option<Homography>, own: Option<Homography>) -> bool {
+    match (stated, own) {
+        (None, None) => true,
+        (Some(s), Some(o)) => FRAMES.iter().any(|f| same_correction(&s, &lightcraft_pipeline::upright::turned(&o, *f))),
+        _ => false,
+    }
+}
+
+/// How far apart two corrections may be, per element with each scaled so its last element is 1,
+/// and still be the same correction.
+///
+/// - A program that writes the numbers its own way may round them. At 6 decimals that moves an
+///   element by at most 5e-7, about twice that after the scaling, and at 9 or 12 by far less: the
+///   limit is ten times the 6-decimal error.
+/// - Corrections this close make the same picture. Moving each element of a typical correction by
+///   1e-5 moves no corner of the photo by more than about 6e-5 of half its long edge: under 0.2 px at
+///   6000 px. So a correction stated on purpose and found this close to the photo's own (two
+///   photos' Level corrections can be) loses at most that much by being taken as the photo's own,
+///   and anything further apart is taken as given.
+const SAME_CORRECTION: f64 = 1e-5;
+
+/// Whether corrections `a` and `b` are the same up to [`SAME_CORRECTION`] (never for a matrix that
+/// can't be scaled: a last element of 0 or not finite).
+fn same_correction(a: &Homography, b: &Homography) -> bool {
+    let ([.., sa], [.., sb]) = (a.0, b.0);
+    sa.is_finite() && sb.is_finite() && sa != 0.0 && sb != 0.0 && a.0.iter().zip(b.0.iter()).all(|(x, y)| (x / sa - y / sb).abs() <= SAME_CORRECTION)
 }
 
 /// `patch` applied to settings `before` of photo `p`, taken from `source` ([`settle`]).

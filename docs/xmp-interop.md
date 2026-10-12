@@ -199,10 +199,14 @@ correction for that scene, in the frame that photo is shown in. So when settings
   in the Presets panel's preview.
 - **Rotate Left / Right** turns the correction with the photo.
 - **Settings JSON** (`develop.merge`, MCP `set_develop`, the CLI):
-  - A change of rotation turns the correction the photo keeps, as Rotate does, also when the settings are sent
-    back whole (as `develop.get` returned them, the photo's own correction in them unchanged).
+  - A change of rotation turns the correction the photo keeps, as Rotate does. That holds when the settings are
+    sent back whole: a copy read once and sent again after each change, read before a turn, or with its numbers
+    rounded (to 6 decimals or more) still states the photo's own correction, in whatever frame it was read.
   - A change of Upright mode drops the correction, to be solved again.
-  - A different correction stated in the JSON is taken as given.
+  - A different correction stated in the JSON is taken as given. One within 1e-5 per element of the photo's own,
+    which makes about the same picture (within 0.2 px at 6000 px), counts as the photo's own.
+  - Settings JSON taken from one photo and sent to another file carries the first photo's correction. To copy edits
+    between photos, use Copy / Paste or Sync, which keep each photo's own.
 
 Not measured yet: the Transform sliders (Vertical, Horizontal, Rotate, Aspect, Scale, X / Y Offset) together with a
 saved Upright (LightCraft applies its own slider mapping on top, as with its own Upright), Level, Vertical and Full

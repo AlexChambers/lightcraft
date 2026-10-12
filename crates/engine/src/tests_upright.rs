@@ -1145,6 +1145,121 @@ fn whole_settings_json_round_trip_turns_the_correction() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
+/// The matrix in settings JSON `v` with each number rounded to `digits` decimals, as a program that
+/// writes numbers its own way would send it.
+fn rounded(mut v: Value, digits: i32) -> Value {
+    let k = 10f64.powi(digits);
+    for x in v.pointer_mut("/geometry/upright_transform").and_then(Value::as_array_mut).into_iter().flatten() {
+        *x = json!((x.as_f64().unwrap() * k).round() / k);
+    }
+    v
+}
+
+/// An agent reads the settings once and sends its copy back whole after each change: the rotation
+/// set back to Normal, the same copy again, then with Exposure changed. After the first send the
+/// copy's correction is no longer the photo's current one; it is still the photo's own, in the
+/// frame it was read in, so every send leaves the correction in the photo's frame (the second and
+/// third used to put it back in the old frame: 15.5 px mean, 28.2 px max at 3200 x 4800).
+#[test]
+fn a_local_copy_of_the_settings_sent_whole_again_keeps_the_correction_in_frame() {
+    let src = temp_dir("upright-local-copy");
+    let mut s = Session::new().with_fs();
+    let id = import_jpeg(&mut s, &src, "a", 6, Some(&lightroom(1)));
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let original = placed(1, Orientation::Rotate90, 60.0, 40.0);
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    let mut local = s.execute("develop.get", &json!({"id": id.0})).unwrap();
+    local["orientation"] = json!("Normal");
+    for send in ["first", "the same again", "with Exposure"] {
+        if send == "with Exposure" {
+            local["light"]["exposure"] = json!(0.5);
+        }
+        s.execute("develop.merge", &json!({"settings": local})).unwrap();
+        let d = dev(&s, id);
+        assert_eq!(d.orientation, Orientation::Normal, "{send}");
+        assert!(same(d.geometry.upright_transform, original), "{send}: {:?}", d.geometry.upright_transform);
+    }
+    assert_eq!(dev(&s, id).light.exposure, 0.5);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Settings JSON whose matrix another program wrote with fewer decimals (12, 9, 6) still names the
+/// photo's own correction, so a change of rotation turns it (it used to be stored as given, in the
+/// old frame). A correction that differs by more than rounding (1e-4 in one element), or another
+/// analysis's, is taken as given.
+#[test]
+fn settings_json_with_re_rounded_numbers_names_the_photos_own_correction() {
+    let src = temp_dir("upright-re-rounded");
+    let mut s = Session::new().with_fs();
+    let id = import_jpeg(&mut s, &src, "a", 6, Some(&lightroom(1)));
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let original = placed(1, Orientation::Rotate90, 60.0, 40.0);
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    let mut read = s.execute("develop.get", &json!({"id": id.0})).unwrap();
+    read["orientation"] = json!("Normal");
+    for digits in [12, 9, 6] {
+        s.execute("develop.merge", &json!({"settings": rounded(read.clone(), digits)})).unwrap();
+        let d = dev(&s, id);
+        assert!(same(d.geometry.upright_transform, original), "{digits}: {:?}", d.geometry);
+        s.execute("edit.undo", &json!({})).unwrap();
+    }
+    let mut nudged = placed(1, Orientation::Rotate90, 60.0, 40.0);
+    nudged.0[1] += 1e-4;
+    let other = placed(2, Orientation::Rotate90, 60.0, 40.0);
+    for given in [nudged, other] {
+        let mut sent = read.clone();
+        sent["geometry"]["upright_transform"] = serde_json::to_value(given).unwrap();
+        s.execute("develop.merge", &json!({"settings": sent})).unwrap();
+        assert_eq!(dev(&s, id).geometry.upright_transform, Some(given));
+        s.execute("edit.undo", &json!({})).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// Every file orientation, every orientation the settings were read at and two later ones: the
+/// copy read once is sent whole with the first, the same copy again, then with the second and an
+/// Exposure change, exact and with its numbers rounded to 6 decimals (24,576 sends). After each,
+/// the correction is the photo's own in the stated orientation's frame, from coordinate maps alone.
+#[test]
+fn settings_json_sent_whole_in_every_frame() {
+    let m = matrix(SLOTS[1]);
+    let mut sends = 0;
+    for file in ORIENTATIONS {
+        for read_at in ORIENTATIONS {
+            for digits in [None, Some(6)] {
+                for first in ORIENTATIONS {
+                    for then in ORIENTATIONS {
+                        let mut s = Session::new();
+                        s.catalog
+                            .apply(lightcraft_catalog::Op::AddPhoto { photo: Box::new(sweep_photo(1, "/sweep/a.jpg", file, read_at, m)) })
+                            .unwrap();
+                        let id = lightcraft_catalog::PhotoId(1);
+                        s.selection = crate::Selection::single(id);
+                        let read = s.execute("develop.get", &json!({"id": 1})).unwrap();
+                        let mut local = digits.map_or(read.clone(), |n| rounded(read, n));
+                        for (i, o) in [first, first, then].into_iter().enumerate() {
+                            local["orientation"] = serde_json::to_value(o).unwrap();
+                            if i == 2 {
+                                local["light"]["exposure"] = json!(0.5);
+                            }
+                            s.execute("develop.merge", &json!({"settings": local})).unwrap();
+                            let d = dev(&s, id);
+                            assert_eq!(d.orientation, o);
+                            assert!(
+                                same(d.geometry.upright_transform, oracle(file, o, m)),
+                                "file {file:?}, read at {read_at:?}, {digits:?} decimals, send {i} to {o:?}: {:?}",
+                                d.geometry.upright_transform
+                            );
+                            sends += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(sends, 24_576);
+}
+
 /// Copy, open another library, Paste: photo ids start again in each library, so a photo there with
 /// the copied photo's id is another file and keeps its own correction (it used to get the copied
 /// one).
