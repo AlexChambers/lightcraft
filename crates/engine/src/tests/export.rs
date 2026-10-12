@@ -654,6 +654,7 @@ fn remove_location_holds_for_original_and_dng_exports() {
     assert!(lightcraft_meta::extract(&e.bytes).gps.is_some());
     let err = export_photo(&mut s, jid, &opts("original", true), 1).err().unwrap();
     assert!(err.contains("can't remove the location") && err.contains("export as JPEG"), "{err}");
+    assert!(!err.contains("DNG"), "a JPEG can't be exported as DNG: {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -694,7 +695,44 @@ fn remove_location_refuses_a_raw_that_embeds_gps() {
     s.execute("library.import", &json!({"paths": [raw.to_string_lossy()]})).unwrap();
     let id = s.catalog.photos().next().unwrap().id;
     let err = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "original", "removeLocation": true})), 1).err().unwrap();
-    assert!(err.contains("can't remove the location"), "{err}");
+    assert!(err.contains("can't remove the location") && err.contains("DNG"), "a raw can go out as DNG: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A HEIC whose only GPS is in its thumbnail's EXIF (the pictures have no data: an original's
+/// export never decodes it). Item 1 is the photo, 2 its thumbnail, 3 the thumbnail's EXIF, kept in
+/// the `meta` box's `idat`.
+fn heic_with_gps_in_its_thumbnail() -> Vec<u8> {
+    let bx = |kind: &[u8], body: &[u8]| [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat();
+    let full = |kind: &[u8], body: &[u8]| bx(kind, &[&[0u8, 0, 0, 0][..], body].concat());
+    let gps = lightcraft_meta::Gps { latitude: 48.85, longitude: 2.35, altitude: None };
+    let exif = [&[0u8, 0, 0, 0][..], &lightcraft_meta::write_exif(&lightcraft_meta::Metadata { gps: Some(gps), ..Default::default() })].concat();
+    let infe = |id: u8, kind: &[u8]| bx(b"infe", &[&[2, 0, 0, 0, 0, id, 0, 0][..], kind, &[0]].concat());
+    let iinf = full(b"iinf", &[&[0, 3][..], &infe(1, b"hvc1"), &infe(2, b"hvc1"), &infe(3, b"Exif")].concat());
+    let iref = full(b"iref", &[bx(b"thmb", &[0, 2, 0, 1, 0, 1]), bx(b"cdsc", &[0, 3, 0, 1, 0, 2])].concat());
+    // `iloc` version 1, 4-byte offsets and lengths: item 3 from `idat` (construction method 1)
+    let mut iloc = vec![1, 0, 0, 0, 0x44, 0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0];
+    iloc.extend_from_slice(&(exif.len() as u32).to_be_bytes());
+    let meta = full(b"meta", &[full(b"pitm", &[0, 1]), iinf, iref, bx(b"iloc", &iloc), bx(b"idat", &exif)].concat());
+    [bx(b"ftyp", b"heic\0\0\0\0mif1heic"), meta].concat()
+}
+
+/// "Remove location info" refuses an original that embeds GPS anywhere it can be read, here only
+/// in a HEIC's thumbnail (#693 review), and doesn't offer DNG for a photo that isn't a raw.
+#[test]
+fn remove_location_refuses_a_heic_whose_thumbnail_has_gps() {
+    use lightcraft_catalog::{Op, Photo, Source};
+    let dir = temp_dir("export-noloc-heic");
+    let path = dir.join("IMG_0003.HEIC");
+    std::fs::write(&path, heic_with_gps_in_its_thumbnail()).unwrap();
+    let mut s = Session::new().with_fs();
+    let id = s.catalog.alloc_photo_id();
+    let p = Photo::new(id, Source::File { path: path.to_string_lossy().into() }, "IMG_0003.HEIC", "HEIC", 32, 32, "2026-10-12T00:00:00");
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    let opts = |remove: bool| ExportOptions::from_json(&json!({"format": "original", "removeLocation": remove}));
+    assert!(export_photo(&mut s, id, &opts(false), 1).is_ok(), "copied as is when the location may stay");
+    let err = export_photo(&mut s, id, &opts(true), 1).err().expect("refused: the thumbnail's EXIF has GPS");
+    assert!(err.contains("can't remove the location") && err.contains("export as JPEG or TIFF"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
