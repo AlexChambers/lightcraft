@@ -533,6 +533,23 @@ fn hdr_avif_export_hlg() {
     assert!(!hdr.bytes.windows(4).any(|w| w == b"clli"));
 }
 
+/// An exported AVIF's metadata reads back (issue #693: HEIF-family files had no metadata reader).
+/// avif-serialize writes the EXIF as an `Exif` item in two extents, its offset field and the TIFF.
+#[test]
+fn exported_avif_metadata_reads_back() {
+    use lightcraft_catalog::{Catalog, Photo, PhotoId, Source};
+    let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
+    p.meta.camera = "Synthetic X2".into();
+    p.captured = Some("2026-10-12T12:34:56".into());
+    let m = crate::export::export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+    let img = lightcraft_raster::Rgba8::new(48, 32);
+    let avif = crate::export::encode_with_metadata(&img, &ExportOptions::from_json(&json!({"format": "avif", "quality": 60})), Some(&m)).unwrap();
+    assert_eq!(lightcraft_codecs::sniff(&avif), Some(lightcraft_codecs::Format::Avif));
+    let back = lightcraft_meta::extract(&avif);
+    assert_eq!(back.model.as_deref(), Some("Synthetic X2"));
+    assert_eq!(back.capture_time.map(|d| d.to_iso()).as_deref(), Some("2026-10-12T12:34:56"));
+}
+
 /// "Remove location info" holds for the file-copying formats too: the sidecar and the DNG's
 /// packet carry no location, and an original that embeds GPS is refused rather than copied.
 #[test]
