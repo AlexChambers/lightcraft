@@ -2179,5 +2179,8 @@
   "Checking the GPU…": "正在检查 GPU…",
   "CPU": "CPU",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "只有检查表明 GPU 能更快给出相同结果时，人脸模型才会使用 GPU。",
-  "Checking the GPU for faces": "正在检查用于人脸的 GPU"
+  "Checking the GPU for faces": "正在检查用于人脸的 GPU",
+  "Quit LightCraft?": "退出 LightCraft？",
+  "Waiting to import opened files": "等待导入已打开的文件",
+  "1 file you opened hasn't been imported yet. Quitting discards this request.": "您打开的 1 个文件尚未导入。退出将取消此导入请求。"
 }

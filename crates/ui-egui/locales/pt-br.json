@@ -2180,5 +2180,8 @@
   "Checking the GPU…": "Verificando a GPU…",
   "CPU": "CPU",
   "A face model uses the GPU only when a check shows it gives the same results faster.": "Um modelo de rostos só usa a GPU quando uma verificação mostra que ela dá os mesmos resultados mais rápido.",
-  "Checking the GPU for faces": "Verificando a GPU para rostos"
+  "Checking the GPU for faces": "Verificando a GPU para rostos",
+  "Quit LightCraft?": "Sair do LightCraft?",
+  "Waiting to import opened files": "Aguardando a importação dos arquivos abertos",
+  "1 file you opened hasn't been imported yet. Quitting discards this request.": "1 arquivo que você abriu ainda não foi importado. Ao sair, essa solicitação será descartada."
 }

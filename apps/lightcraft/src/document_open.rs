@@ -15,6 +15,7 @@ struct Batch {
     paths: Vec<String>,
     /// Startup recovery chooses the destination before this becomes an import request.
     library: Option<u64>,
+    guard: lightcraft_engine::activity::TaskGuard,
 }
 
 impl PendingOpens {
@@ -35,13 +36,23 @@ impl PendingOpens {
         }
         if !batch.is_empty() {
             let library = (!lightcraft_ui_egui::import::waiting_for_library(app)).then(|| app.session.library_generation());
-            self.batches.push_back(Batch { paths: batch, library });
+            let guard = app.session.activity.start(
+                lightcraft_ui_egui::import::DOCUMENT_OPEN_ACTIVITY,
+                "Waiting to import opened files",
+                lightcraft_engine::activity::Cancel::Yes,
+            );
+            guard.progress(0, batch.len() as u64);
+            self.batches.push_back(Batch { paths: batch, library, guard });
             app.pending_document_opens = self.batches.len();
             app.pending_document_library = self.batches.iter().find_map(|b| b.library);
         }
     }
 
     pub fn tick(&mut self, app: &mut LightcraftApp) {
+        // Cancellation works while a dialog, another worker, or startup recovery blocks import.
+        self.batches.retain(|batch| !batch.guard.is_cancelled());
+        app.pending_document_opens = self.batches.len();
+        app.pending_document_library = self.batches.iter().find_map(|b| b.library);
         if lightcraft_ui_egui::import::waiting_for_library(app) {
             return;
         }
@@ -422,5 +433,257 @@ mod review_repros {
         assert!(app.session.catalog.is_empty());
         drop(app);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod independent_round2 {
+    use super::*;
+    use lightcraft_engine::Session;
+    use lightcraft_ui_egui::{Services, import, state::Dialog};
+    use serde_json::json;
+
+    fn fixture(tag: &str) -> (PathBuf, String, LightcraftApp) {
+        let dir = std::env::temp_dir().join(format!("lc-independent-r2-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = lightcraft_raster::Rgba8 { width: 8, height: 8, data: vec![[20, 90, 30, 255]; 64] };
+        let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
+        let file = dir.join("photo.png");
+        std::fs::write(&file, bytes).unwrap();
+        let mut session = Session::new().with_fs();
+        session.open_library(dir.join("A"), false).unwrap();
+        (dir, file.to_str().unwrap().into(), LightcraftApp::new(session, Services::default()))
+    }
+    fn finish(app: &mut LightcraftApp) {
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while app.import.is_some() && std::time::Instant::now() < deadline {
+            import::tick(app, &ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.import.is_none());
+    }
+    #[test]
+    fn missing_and_malformed_files_release_the_library_switch_guard() {
+        let (dir, _, mut app) = fixture("failures");
+        let bad = dir.join("bad.png");
+        std::fs::write(&bad, b"this is not a PNG").unwrap();
+        let mut pending = PendingOpens::default();
+        pending.enqueue(vec![Ok(dir.join("missing.png"))], &mut app);
+        pending.enqueue(vec![Ok(bad)], &mut app);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let unreadable = dir.join("unreadable.png");
+            std::fs::copy(dir.join("photo.png"), &unreadable).unwrap();
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+            assert!(std::fs::read(&unreadable).is_err());
+            pending.enqueue(vec![Ok(unreadable)], &mut app);
+        }
+        let batches = pending.batches.len();
+        for _ in 0..batches {
+            pending.tick(&mut app);
+            finish(&mut app);
+        }
+        assert_eq!(app.pending_document_opens, 0);
+        assert!(app.pending_document_library.is_none());
+        assert!(app.session.activity.list().is_empty());
+        assert!(app.session.catalog.is_empty());
+        app.run("app.openLibrary", json!({"path": dir.join("B").to_str().unwrap()})).unwrap();
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cancelled_blocked_native_import_must_allow_switching() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let (dir, path, mut app) = fixture("cancel-blocked");
+        let original = app.session.media.file_probe.clone().unwrap();
+        let original_for_job = original.clone();
+        let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+        struct WorkerExited(std::sync::mpsc::Sender<()>);
+        impl Drop for WorkerExited {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let exited = WorkerExited(exited_tx);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let release = Arc::new(AtomicBool::new(false));
+        let ready = release.clone();
+        app.session.media.file_probe = Some(Arc::new(move |p| {
+            let _keep_until_worker_exits = &exited;
+            tx.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !ready.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            original_for_job(p)
+        }));
+        let mut pending = PendingOpens::default();
+        pending.enqueue(vec![Ok(path.into())], &mut app);
+        pending.tick(&mut app);
+        import::tick(&mut app, &egui::Context::default());
+        rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        // Only the worker now owns the instrumented probe.
+        app.session.media.file_probe = Some(original);
+        let task = app.session.activity.list()[0].id;
+        app.run("activity.cancel", json!({"id":task})).unwrap();
+        // Switching must work immediately after cancellation, even before the next frame.
+        let status = app.import.as_ref().map(|t| t.status());
+        let result = app.run("app.openLibrary", json!({"path": dir.join("B").to_str().unwrap()}));
+        eprintln!("After accepted cancellation: status={status:?}; switch={result:?}; activity={:?}", app.session.activity.list());
+        release.store(true, Ordering::SeqCst);
+        exited_rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        finish(&mut app);
+        assert!(app.session.catalog.is_empty(), "late results must not enter the current library");
+        app.run("app.openLibrary", json!({"path": dir.join("A").to_str().unwrap()})).unwrap();
+        assert!(app.session.catalog.is_empty(), "late results must not enter the original library either");
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.is_ok(), "accepted cancellation must provide a way out of a blocked native Add import: {result:?}");
+    }
+    #[test]
+    fn quitting_with_queued_native_documents_must_ask_before_discarding() {
+        let (dir, path, mut app) = fixture("quit-queued");
+        let candidates = lightcraft_engine::import::scan(&mut app.session, std::slice::from_ref(&path));
+        app.ui.dialog = Some(Dialog::Import { opts: Box::new(import::ImportDialog::new(candidates)) });
+        let mut pending = PendingOpens::default();
+        pending.enqueue(vec![Ok(path.into())], &mut app);
+        pending.tick(&mut app);
+        assert_eq!(pending.batches.len(), 1);
+        assert!(app.import.is_none());
+        let can_close = lightcraft_ui_egui::panels::notices::may_close(&mut app);
+        eprintln!(
+            "Queued={}, activity={:?}, may_close={can_close}, prompt={:?}",
+            app.pending_document_opens,
+            app.session.activity.list(),
+            app.quit_prompt
+        );
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(!can_close, "warn before silently discarding accepted native requests");
+    }
+    #[test]
+    fn cancellation_rejects_batches_prepared_before_the_next_frame() {
+        use std::sync::Arc;
+        let (dir, path, mut app) = fixture("cancel-prepared");
+        let original = app.session.media.file_probe.clone().unwrap();
+        let probe = original.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        struct Exited(std::sync::mpsc::Sender<()>);
+        impl Drop for Exited {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let exited = Exited(tx);
+        app.session.media.file_probe = Some(Arc::new(move |p| {
+            let _keep_until_worker_exits = &exited;
+            probe(p)
+        }));
+        import::start_documents(&mut app, vec![path]).unwrap();
+        import::tick(&mut app, &egui::Context::default());
+        app.session.media.file_probe = Some(original);
+        // The worker has sent its batch, but no UI frame has accepted it yet.
+        rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        let id = app.session.activity.list()[0].id;
+        app.run("activity.cancel", json!({"id": id})).unwrap();
+        finish(&mut app);
+        assert!(app.session.catalog.is_empty(), "cancellation must reject buffered results too");
+        assert!(app.session.activity.list().is_empty());
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn library_generation_identifies_an_opening_not_a_folder_name() {
+        let (dir, _, mut app) = fixture("identity");
+        let initial = app.session.library_generation();
+        std::fs::rename(dir.join("A"), dir.join("renamed")).unwrap();
+        assert_eq!(initial, app.session.library_generation());
+        std::fs::rename(dir.join("renamed"), dir.join("A")).unwrap();
+        app.session.open_library(dir.join("A"), false).unwrap();
+        assert_ne!(initial, app.session.library_generation());
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod round3_queue_regressions {
+    use super::*;
+    use lightcraft_engine::Session;
+    use lightcraft_ui_egui::{Services, import, state::Dialog};
+    use serde_json::json;
+
+    #[test]
+    fn queued_native_requests_can_be_cancelled_before_the_importer_is_ready() {
+        let mut app = LightcraftApp::new(Session::new(), Services::default());
+        app.ui.dialog = Some(Dialog::Import { opts: Box::new(import::ImportDialog::default()) });
+        let mut pending = PendingOpens::default();
+        pending.enqueue(vec![Ok(std::env::temp_dir().join("cancel-queued.png"))], &mut app);
+        pending.tick(&mut app);
+        let activities = app.session.activity.list();
+        assert_eq!(activities.len(), 1, "queued requests need a cancellable activity row");
+        app.run("activity.cancel", json!({"id": activities[0].id})).unwrap();
+        pending.tick(&mut app);
+        assert!(pending.batches.is_empty());
+        assert_eq!(app.pending_document_opens, 0);
+        assert!(app.pending_document_library.is_none());
+        app.ui.dialog = None;
+        pending.tick(&mut app);
+        assert!(app.import.is_none());
+        assert!(lightcraft_ui_egui::panels::notices::may_close(&mut app));
+    }
+}
+
+#[cfg(test)]
+mod round3_quit_regressions {
+    use super::*;
+    use lightcraft_engine::Session;
+    use lightcraft_ui_egui::{Services, headless::Headless, import, panels::notices, state::Dialog};
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn queued_file_count_and_quit_choices_preserve_or_discard_requests() {
+        for n in [1, 2] {
+            let mut app = LightcraftApp::new(Session::new(), Services::default());
+            app.ui.dialog = Some(Dialog::Import { opts: Box::new(import::ImportDialog::default()) });
+            let mut pending = PendingOpens::default();
+            // One request can contain several files. The warning counts files, not batches.
+            pending.enqueue((0..n).map(|i| Ok(std::env::temp_dir().join(format!("quit-queued-{i}.png")))).collect(), &mut app);
+            pending.tick(&mut app);
+            assert!(!notices::may_close(&mut app));
+            let message = app.quit_prompt.as_ref().unwrap().text();
+            let expected = if n == 1 { "1 file you opened hasn't been imported yet." } else { "2 files you opened haven't been imported yet." };
+            assert!(message.contains(expected), "{message}");
+            let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
+            for button in ["button:quitCancel", "button:quitAnyway"] {
+                assert!(!notices::may_close(&mut h.app));
+                // First-use font installation and the window's sizing pass precede input.
+                for _ in 0..4 {
+                    h.step();
+                }
+                assert_eq!(h.request("ui.clickWidget", json!({"id": button}), Duration::from_secs(20))["ok"], true);
+                for _ in 0..4 {
+                    h.step();
+                }
+                pending.tick(&mut h.app);
+                if button == "button:quitCancel" {
+                    assert!(!h.quit_requested());
+                    assert!(h.app.quit_prompt.is_none());
+                    assert_eq!(pending.batches.len(), 1);
+                    assert!(matches!(h.app.ui.dialog, Some(Dialog::Import { .. })));
+                } else {
+                    assert!(h.quit_requested());
+                    assert!(pending.batches.is_empty());
+                    assert!(h.app.import.is_none());
+                }
+            }
+        }
     }
 }

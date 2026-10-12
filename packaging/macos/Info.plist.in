@@ -74,42 +74,6 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>public.jpeg-xl</string>
-			<key>UTTypeDescription</key>
-			<string>JXL image</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-				<string>public.image</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>jxl</string>
-				</array>
-			</dict>
-		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>public.avif</string>
-			<key>UTTypeDescription</key>
-			<string>AVIF image</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-				<string>public.image</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>avif</string>
-				</array>
-			</dict>
-		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
 			<string>ai.storyteller.lightcraft.image.x3f</string>
 			<key>UTTypeDescription</key>
 			<string>X3F image</string>
