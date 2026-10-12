@@ -297,6 +297,12 @@ impl ImportTask {
         self
     }
 
+    /// Manual imports finish prepared batches before a library switch. A cancelled native Add
+    /// worker can be detached immediately, without accepting its late results.
+    pub(crate) fn blocks_library_switch(&self) -> bool {
+        !(self.open_documents && self.guard.as_ref().is_some_and(|g| g.is_cancelled()))
+    }
+
     /// `{done, total, imported, cancelled}` for `ui.inspect`.
     pub fn status(&self) -> Value {
         json!({"done": self.done, "total": self.total, "imported": self.imported, "cancelled": self.cancelled})
@@ -971,7 +977,7 @@ fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
         }
         return;
     }
-    if task.open_documents && (task.first.is_some() || !task.existing.is_empty()) {
+    if task.open_documents && !task.moved_on && (task.first.is_some() || !task.existing.is_empty()) {
         // An album, Local folder or search must not hide the file just opened by Finder.
         let _ = app.run("library.clearFilter", json!({}));
         let _ = app.run("library.source", json!({"kind": "all"}));
@@ -996,6 +1002,7 @@ fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
         && task.failed == 0
         && task.warnings.is_empty()
         && !task.cancelled
+        && (!task.open_documents || !task.moved_on)
         && show_existing(app, ctx, &task.existing)
     {
         return;
@@ -1834,6 +1841,32 @@ mod document_tests {
         let request = lightcraft_engine::cmd::library::import_params(&app.session, &params).unwrap();
         assert_eq!(request.opts.mode, lightcraft_engine::import::ImportMode::Add);
         assert!(task.open_documents);
+    }
+
+    #[test]
+    fn finished_native_opens_keep_the_view_the_user_chose_while_importing() {
+        for duplicate in [false, true] {
+            let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
+            let id = app.session.catalog.photos().next().unwrap().id.0;
+            app.run("library.source", json!({"kind": "picks"})).unwrap();
+            app.run("library.filter", json!({"text": "the user's search"})).unwrap();
+            app.ui.view = ViewMode::PhotoGrid;
+            let source = app.session.source;
+            let selection = app.session.selection.clone();
+            let mut task = ImportTask::new(Vec::new(), json!({"mode": "add"}), app.session.undo.len(), false, &app.session);
+            task.open_documents = true;
+            task.moved_on = true;
+            task.first = (!duplicate).then_some(id);
+            task.imported = usize::from(!duplicate);
+            if duplicate {
+                task.existing.push(id);
+            }
+            finish(&mut app, &egui::Context::default(), task);
+            assert_eq!(app.session.source, source);
+            assert_eq!(app.session.selection, selection);
+            assert_eq!(app.session.filter.text, "the user's search");
+            assert_eq!(app.ui.view, ViewMode::PhotoGrid);
+        }
     }
 
     #[test]

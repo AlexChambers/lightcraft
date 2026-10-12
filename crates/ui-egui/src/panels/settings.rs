@@ -1062,7 +1062,7 @@ pub(crate) fn can_switch_library(app: &LightcraftApp) -> Result<(), String> {
     if crate::lightroom_import::is_running(app) {
         return Err("wait for Lightroom catalog import to finish before switching libraries".into());
     }
-    if app.import.is_some() || app.scan.is_some() {
+    if app.import.as_ref().is_some_and(crate::import::ImportTask::blocks_library_switch) || app.scan.is_some() {
         return Err("wait for the import to finish before switching libraries".into());
     }
     Ok(())
@@ -1076,8 +1076,8 @@ pub(crate) fn can_switch_library(app: &LightcraftApp) -> Result<(), String> {
 /// and a dialog offers Import Lightroom Catalog… instead; returns `{opened: false,
 /// lightroomCatalog: <.lrcat path or null>, path}`.
 pub fn open_library(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
-    crate::import::check_library_switch(app)?;
     can_switch_library(app)?;
+    crate::import::check_library_switch(app)?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(x) => x.to_string(),
         None => {
@@ -1168,8 +1168,8 @@ pub fn open_library_name(app: &LightcraftApp) -> Option<String> {
 /// `path` itself, or a new folder named after the default library. The folder must not hold a
 /// library already, nor anything else.
 pub fn new_library(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
-    crate::import::check_library_switch(app)?;
     can_switch_library(app)?;
+    crate::import::check_library_switch(app)?;
     let name = match p.get("name") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(valid_library_name(s)?),
@@ -1314,7 +1314,7 @@ mod tests {
 
     fn app_with_import() -> LightcraftApp {
         let mut app = LightcraftApp::new(lightcraft_engine::Session::new(), crate::Services::default());
-        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false));
+        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false, &app.session));
         app
     }
 
@@ -1341,7 +1341,7 @@ mod tests {
         app.services.pick_folder = Some(Box::new(|| None));
         assert!(crate::menus::ui_enabled(&app, "app.openLibrary"));
         assert!(crate::menus::ui_enabled(&app, "app.newLibrary"));
-        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false));
+        app.import = Some(crate::import::ImportTask::new(vec!["a.jpg".into()], json!({"mode": "add"}), 0, false, &app.session));
         assert!(!crate::menus::ui_enabled(&app, "app.openLibrary"));
         assert!(!crate::menus::ui_enabled(&app, "app.newLibrary"));
     }

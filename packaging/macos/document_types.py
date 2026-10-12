@@ -32,7 +32,7 @@ RASTER = {"jpg", "jpeg", "png", "tif", "tiff", "webp", "psd", "jxl", "gif", "bmp
 # CoreTypes and its RawCameraTypes bundle supply these on the supported macOS
 # releases (14, 15, 26). Reference their identifiers without redeclaring their tags.
 # The SDK's UTTypeJPEGXL constant arrived later than the public.jpeg-xl declaration.
-# Only X3F and KDC need fallback identifiers. See docs/macos-open.md for the policy.
+# X3F, KDC and MEF use fallback identifiers. See docs/macos-open.md for the policy.
 SYSTEM_TYPES = {
     "public.jpeg", "public.png", "public.tiff", "org.webmproject.webp",
     "public.jpeg-xl", "public.avif",

@@ -477,8 +477,10 @@ mod independent_round2 {
             let unreadable = dir.join("unreadable.png");
             std::fs::copy(dir.join("photo.png"), &unreadable).unwrap();
             std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
-            assert!(std::fs::read(&unreadable).is_err());
-            pending.enqueue(vec![Ok(unreadable)], &mut app);
+            // Root reads through permission bits (FreeBSD CI runs tests as root).
+            if std::fs::read(&unreadable).is_err() {
+                pending.enqueue(vec![Ok(unreadable)], &mut app);
+            }
         }
         let batches = pending.batches.len();
         for _ in 0..batches {

@@ -108,6 +108,24 @@
 				</array>
 			</dict>
 		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>ai.storyteller.lightcraft.image.mef</string>
+			<key>UTTypeDescription</key>
+			<string>MEF image</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.camera-raw-image</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mef</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
@@ -155,6 +173,7 @@
 				<string>erf</string>
 				<string>3fr</string>
 				<string>fff</string>
+				<string>mef</string>
 			</array>
 			<key>LSItemContentTypes</key>
 			<array>
@@ -191,6 +210,7 @@
 				<string>com.epson.raw-image</string>
 				<string>com.hasselblad.3fr-raw-image</string>
 				<string>com.hasselblad.fff-raw-image</string>
+				<string>ai.storyteller.lightcraft.image.mef</string>
 			</array>
 		</dict>
 	</array>
