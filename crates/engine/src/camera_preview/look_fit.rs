@@ -1,6 +1,6 @@
 use super::colour::{PROXY, file_local_look};
 use super::mono::{fit_tone_only_with, monochrome};
-use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, search_ordered};
+use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, matrix_spread, search_ordered};
 use super::proxy::{CLIP_TOLERANCE, LensGeometry, MIN_PREVIEW_FRACTION, proxies, structure_agrees};
 use super::tone::{HighlightCheck, clipped_highlights, highlights};
 use super::{CameraLook, CameraTone, CameraTransform, HsvTable, Mat3, RawImage, Rgb32f, ToneMap, luminance_2020};
@@ -78,6 +78,17 @@ pub(super) fn fit_look(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool], co
 /// replace a look fitted away from edges). A photo that had no look gets one when the search
 /// without the clipped pixels finds it, and otherwise the [`fit_partial`] look when that is clearly
 /// closer to the camera JPEG than the neutral fallback.
+///
+/// The colour a photo's own matrix needs is asked of darker pixels in proportion to their luminance
+/// ([`matrix_spread`], issue #865) only where the fit sees no clipped pixels: the search on all
+/// pixels of a photo with clipped ones, and its refit, keep the fixed spread, so the look they give
+/// is the one they gave before. A photo that learns its colour only through the scaled spread had no
+/// such look to keep, and gets one fitted on what the sensor measured (the search without the
+/// clipped pixels). On a dark DMC-G10 scene the search on all pixels passed the gates only through
+/// its 56 clipped pairs (held-out RMS from 0.066 for the neutral fallback to 0.021; without them
+/// from 0.022 to 0.019, short of the 30% cut) and rendered 1.0 ΔE76 further from the camera JPEG
+/// than its partial look; the search without them finds a look away from edges that renders it
+/// 0.5 closer than the partial look.
 pub(super) fn fit_look_with(
     sensor: &Rgb32f,
     reference: &Rgb32f,
@@ -88,15 +99,15 @@ pub(super) fn fit_look_with(
     let unclipped = without_clipped(sensor, clipped);
     // from the proxies as they are: the retries' filters (clipped pixels, edges) don't remove them
     let bright = HighlightCheck { pairs: highlights(sensor, reference), clipped: clipped_highlights(sensor, reference, clipped), dro, grey: false };
-    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright) else {
+    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright, unclipped.is_none()) else {
         return unclipped
             .as_ref()
-            .and_then(|u| search_ordered(u, reference, colour, TONE_FITS, &bright))
+            .and_then(|u| search_ordered(u, reference, colour, TONE_FITS, &bright, true))
             .map(|(look, _)| look)
             .or_else(|| fit_partial(unclipped.as_ref().unwrap_or(sensor), reference, &bright));
     };
     let Some(unclipped) = unclipped else { return Some(look) };
-    let refit = fit_attempt(&unclipped, reference, &colour, attempt, &bright);
+    let refit = fit_attempt(&unclipped, reference, &colour, attempt, &bright, false);
     if refit.is_none() && lightcraft_pipeline::profiling() {
         eprintln!("[profile] camera look: no fit without the clipped pixels on the accepted attempt, keeping the fit on all pixels");
     }
@@ -237,7 +248,7 @@ pub(super) fn fit_dng_tone(
     };
     let look = TONE_FITS.iter().find_map(|&tone| {
         [false, true].into_iter().find_map(|away_from_edges| {
-            fit_attempt(fit_on, &reference, &colour, Attempt { tone, profile: true, away_from_edges, dark: true }, &bright)
+            fit_attempt(fit_on, &reference, &colour, Attempt { tone, profile: true, away_from_edges, dark: true }, &bright, false)
         })
     });
     let Some(look) = look else { return refuse("fit") };

@@ -5,7 +5,7 @@
 //! lime shirt olive that the camera kept lime): a hue/saturation table fitted to the residuals
 //! (applied like a DNG `ProfileHueSatMap`) corrects that when it also improves the held-out pixels.
 use lightcraft_color::{D50, D65, Mat3, PROPHOTO, REC2020, Xy, bradford, luminance_2020};
-use lightcraft_pipeline::tone::{CameraTone, ToneMap};
+use lightcraft_pipeline::tone::{CameraTone, GREY, ToneMap};
 use lightcraft_raster::{
     Rgb32f,
     resample::{Filter, fit, resize},
@@ -43,8 +43,8 @@ use look_fit::{
 use mono::{fit_dark_tone, fit_tone_only, monochrome, monochrome_look, to_prophoto};
 #[cfg(test)]
 use pairs::{
-    Attempt, Pairs, TONE_FITS, collect_pairs, colour_pair, displayed, fit_attempt, fit_pairs, fit_pairs_ordered, fit_pairs_with, fit_partial,
-    fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, rank_correlation_ties, search_ordered,
+    Attempt, MATRIX_SPREAD, Pairs, TONE_FITS, collect_pairs, colour_pair, displayed, fit_attempt, fit_pairs, fit_pairs_ordered, fit_pairs_with,
+    fit_partial, fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, matrix_spread, rank_correlation_ties, search_ordered,
 };
 #[cfg(test)]
 pub(crate) use proxy::LensGeometry;
@@ -80,7 +80,8 @@ use tone::{HighlightCheck, ToneFit, fit_tone, fit_tone_conditional, highlights};
 /// lens-corrected proxy when the file carries lens opcodes; validated A7CR distortion, including the lens data
 /// stored with each smart preview.
 /// 13: the partial look's second attempt with the bright pairs (#631's bird).
-pub const LOOK_VERSION: u32 = 13;
+/// 14: darker pixels count as coloured in proportion to their luminance (#865).
+pub const LOOK_VERSION: u32 = 14;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {

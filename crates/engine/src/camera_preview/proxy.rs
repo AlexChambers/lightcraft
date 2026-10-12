@@ -323,7 +323,8 @@ pub(crate) fn profile_pairs(raw: &RawImage, bytes: &[u8], lens: Option<&LensGeom
     let to_camera = transform.matrix.inverse()?;
     // clipped sensor pixels don't record the scene's colour (see `fit_look`)
     let sensor = without_clipped(&sensor, &clipped).unwrap_or(sensor);
-    let (pairs, _) = collect_pairs(&sensor, &reference, 0.05, None, false)?;
+    // the fixed spread, not `matrix_spread`: what the darker pixels would add to a pooled profile is not measured
+    let (pairs, _) = collect_pairs(&sensor, &reference, MATRIX_SPREAD, None, false)?;
     Some(pairs.into_iter().map(|(x, y)| (to_camera.apply(x), y)).collect())
 }
 
