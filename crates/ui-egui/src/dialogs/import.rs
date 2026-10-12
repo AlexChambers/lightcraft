@@ -38,7 +38,7 @@ pub use scan::{ScanTask, browse, open, poll_scan, running};
 #[cfg(test)]
 pub(crate) use scan::{stall_scan, stall_scan_of};
 pub(crate) use tags::{tag_field_width, tag_help, tag_toggle, unknown_tags_warning};
-pub use task::{ImportTask, start, start_paths, tick};
+pub use task::{ImportTask, start, start_documents, start_paths, tick};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
