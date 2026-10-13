@@ -6,7 +6,8 @@
 //!   [`semantic_masks`] reads a DNG's semantic masks (segmentation mattes, e.g. iPhone ProRAW's sky matte).
 //! - [`RawImage::normalized`] subtracts black, scales white to 1.0 and crops to the active area (applying DNG
 //!   `OpcodeList1`/`OpcodeList2`); [`demosaic`] turns CFA data into camera-RGB [`Rgb32f`];
-//!   [`RawImage::develop`] does all of it plus `OpcodeList3` and the default crop; [`RawImage::develop_binned`]
+//!   [`RawImage::develop`] does all of it plus `OpcodeList3` and the default crop ([`RawImage::develop_balanced`]
+//!   demosaics the mosaic white balanced, for pictures that will be); [`RawImage::develop_binned`]
 //!   produces the same at 1/k of the size straight from the mosaic (previews, thumbnails;
 //!   [`RawImage::develop_binned_masked`] with the mask of blocks holding clipped samples, for [`highlight`]).
 //! - [`color`] implements the DNG colour model (dual-illuminant interpolation, forward matrices, white balance)
@@ -864,6 +865,9 @@ impl RawImage {
 
     /// Full "raw → camera RGB" path: normalise, demosaic with `method`, apply `OpcodeList3`, then the default crop.
     /// The result is camera RGB (not white balanced), white level = 1.0, not oriented.
+    ///
+    /// The demosaic sees the mosaic as the sensor recorded it. A picture that will be white balanced should be
+    /// developed with [`Self::develop_balanced`].
     pub fn develop(&self, method: Method) -> Result<Rgb32f> {
         let n = self.normalized()?;
         // with no `OpcodeList3` to apply to the whole picture first, AHD demosaics just the default crop (the same
@@ -878,6 +882,94 @@ impl RawImage {
         let rgb = demosaic(&n, method);
         drop(n);
         Ok(self.finish_demosaiced(rgb))
+    }
+
+    /// [`Self::develop`] with the demosaic run on the white-balanced mosaic: each normalised sample is multiplied by
+    /// `wb`'s multiplier for its CFA colour (relative to green's) before the demosaic, and each channel of the result
+    /// is divided by it after. The result is camera RGB on [`Self::develop`]'s scale (white level = 1.0, not white
+    /// balanced), so highlight reconstruction's clip test and the colour model applied after it keep their units.
+    ///
+    /// Why (issue #1328): AHD, PPG and the X-Trans directional method complete red and blue from neighbouring colour
+    /// differences (C − G). A neutral surface has C = G only once it is white balanced; in camera RGB its R − G is
+    /// (1 / wb_r − 1) · G, which changes with brightness, so across a steep edge the bright side's difference drives
+    /// the dark side's red or blue to zero or below: green, cyan, yellow or magenta outlines along white edges and
+    /// beside clipped specular highlights. Balanced, a neutral edge has no colour difference to carry over.
+    ///
+    /// A constant-colour mosaic still comes back as that colour (to `f32` rounding). Bilinear interpolates each colour
+    /// from its own samples alone, so it gives the same either way and skips the scaling; so do monochrome and
+    /// already demosaiced data, and a `wb` that isn't three positive finite numbers (as [`Self::develop`]).
+    pub fn develop_balanced(&self, method: Method, wb: [f32; 3]) -> Result<Rgb32f> {
+        self.develop_balanced_with(method, wb, None).map(|(rgb, _)| rgb)
+    }
+
+    /// [`Self::develop_balanced`] and, per developed pixel, which of its channels had a clipped sample (at least
+    /// `clip`, normalised) of that colour within [`CLIP_REACH`] px of the mosaic: the demosaic made those channels
+    /// partly from clipped samples, so they are only lower bounds, however far below the clip they come out. The
+    /// mask is [`highlight::reconstruct_masked`]'s (bits [`highlight::CLIPPED_R`], …, one entry per pixel), as
+    /// binned previews have had since #548. Without it a channel interpolated beside clipped samples counts as
+    /// unclipped and keeps the colour the clip gave it: magenta or green rims around clipped skies and lights.
+    ///
+    /// The mask is `None` when no sample is clipped, there is no single-plane CFA, or an `OpcodeList3` moves the
+    /// picture off the mosaic's geometry (highlight reconstruction then tells clipping by value, as before).
+    pub fn develop_balanced_masked(&self, method: Method, wb: [f32; 3], clip: f32) -> Result<(Rgb32f, Option<Vec<u8>>)> {
+        self.develop_balanced_with(method, wb, Some(clip))
+    }
+
+    fn develop_balanced_with(&self, method: Method, wb: [f32; 3], clip: Option<f32>) -> Result<(Rgb32f, Option<Vec<u8>>)> {
+        let mut n = self.normalized()?;
+        let mask = clip.and_then(|clip| self.clip_mask(&n, clip));
+        let gains = balance_gains(wb);
+        let rgb = match (n.cfa.clone(), gains) {
+            (Some(cfa), Some(gains)) if n.cpp == 1 && method != Method::Bilinear => {
+                scale_mosaic(&mut n.data, n.width, &cfa, gains);
+                let mut rgb = demosaic(&n, method);
+                drop(n);
+                lightcraft_raster::par_rows(&mut rgb.data, rgb.width, |_, row| {
+                    for p in row {
+                        p[0] /= gains[0];
+                        p[2] /= gains[2];
+                    }
+                });
+                rgb
+            }
+            _ => demosaic(&n, method),
+        };
+        Ok((self.finish_demosaiced(rgb), mask))
+    }
+
+    /// [`Self::develop_balanced_masked`]'s mask from the normalised mosaic `n`, cropped as the development is.
+    fn clip_mask(&self, n: &Normalized, clip: f32) -> Option<Vec<u8>> {
+        let cfa = n.cfa.as_ref()?;
+        let (w, h) = (n.width, n.height);
+        if !self.opcodes.list3.is_empty() || n.cpp != 1 || w == 0 || h == 0 || n.data.len() != w * h || clip.is_nan() || clip <= 0.0 {
+            return None;
+        }
+        use rayon::prelude::*;
+        if !n.data.par_iter().any(|&v| v >= clip) {
+            return None;
+        }
+        let bit = |c: u8| [highlight::CLIPPED_R, highlight::CLIPPED_G, highlight::CLIPPED_B].get(c as usize).copied().unwrap_or(0);
+        // per row: the colours of clipped samples within CLIP_REACH columns
+        let mut rows = vec![0u8; w * h];
+        rows.par_chunks_mut(w).zip(n.data.par_chunks(w)).enumerate().for_each(|(y, (row, samples))| {
+            let own: Vec<u8> = samples.iter().enumerate().map(|(x, &v)| if v >= clip { bit(cfa.color_at(x, y)) } else { 0 }).collect();
+            for (x, o) in row.iter_mut().enumerate() {
+                let (a, b) = (x.saturating_sub(CLIP_REACH), (x + CLIP_REACH).min(w - 1));
+                *o = own.get(a..=b).map_or(0, |s| s.iter().fold(0, |m, v| m | v));
+            }
+        });
+        // then within CLIP_REACH rows, for the developed (cropped) pixels only
+        let c = self.develop_crop(w, h);
+        let mut mask = vec![0u8; c.width * c.height];
+        mask.par_chunks_mut(c.width.max(1)).enumerate().for_each(|(oy, out)| {
+            let y = c.y + oy;
+            for yy in y.saturating_sub(CLIP_REACH)..=(y + CLIP_REACH).min(h - 1) {
+                if let Some(src) = rows.get(yy * w + c.x..yy * w + c.x + c.width) {
+                    out.iter_mut().zip(src).for_each(|(o, s)| *o |= s);
+                }
+            }
+        });
+        Some(mask)
     }
 
     /// The last steps of [`Self::develop`] for camera RGB made some other way (a denoiser that demosaics too) from
@@ -905,6 +997,33 @@ impl RawImage {
         let c = self.crop.clipped(width, height);
         if c.width == 0 || c.height == 0 { Rect::new(0, 0, width, height) } else { c }
     }
+}
+
+/// How far (px, either way) a clipped mosaic sample marks its colour as clipped in
+/// [`RawImage::develop_balanced_masked`]: as far as the demosaic reaches (AHD's 5-tap green filter and colour
+/// differences, PPG's and the X-Trans method's 5 × 5 neighbourhoods).
+pub const CLIP_REACH: usize = 2;
+
+/// [`RawImage::develop_balanced`]'s per-colour gains: `wb` relative to its green multiplier (so green, and the
+/// demosaic's luminance-driven choices, stay on the sensor's scale), or `None` when `wb` isn't three positive finite
+/// numbers or is neutral already.
+fn balance_gains(wb: [f32; 3]) -> Option<[f32; 3]> {
+    if !wb.iter().all(|v| v.is_finite() && *v > 0.0) {
+        return None;
+    }
+    let gains = [wb[0] / wb[1], 1.0, wb[2] / wb[1]];
+    (gains.iter().all(|v| v.is_finite() && *v > 0.0) && gains != [1.0; 3]).then_some(gains)
+}
+
+/// Multiply every sample of a single-plane mosaic `width` samples wide by the gain of its CFA colour.
+fn scale_mosaic(data: &mut [f32], width: usize, cfa: &Cfa, gains: [f32; 3]) {
+    lightcraft_raster::par_rows(data, width, |y, row| {
+        // one period of the row's colours, repeated along it
+        let period: Vec<f32> = (0..cfa.width.max(1)).map(|x| gains.get(cfa.color_at(x, y) as usize).copied().unwrap_or(1.0)).collect();
+        for (v, g) in row.iter_mut().zip(period.iter().cycle()) {
+            *v *= g;
+        }
+    });
 }
 
 #[cfg(test)]

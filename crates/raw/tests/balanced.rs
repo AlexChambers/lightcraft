@@ -1,0 +1,325 @@
+//! `RawImage::develop_balanced`: the demosaic runs on the white-balanced mosaic (issue #1328).
+
+use lightcraft_raw::{BlackLevel, Cfa, ColorData, Method, OpcodeLists, Orientation, RawData, RawFormat, RawImage, Rect, Rgb32f, highlight};
+
+/// Daylight-like as-shot multipliers (a Sony body's are about 2.6 : 1 : 1.85).
+const DAYLIGHT: [f32; 3] = [2.5, 1.0, 1.6];
+const CLIP: f32 = 0.99;
+
+/// A floating-point raw (black 0, white 1) whose mosaic samples `scene` (white-balanced RGB) through `cfa`, divided
+/// by `wb` as a sensor records it, and clipped at the white level.
+fn raw_of(w: usize, h: usize, cfa: &Cfa, wb: [f32; 3], scene: impl Fn(usize, usize) -> [f32; 3]) -> RawImage {
+    let data = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let c = cfa.color_at(x, y) as usize;
+            (scene(x, y)[c] / wb[c]).min(1.0)
+        })
+        .collect();
+    RawImage {
+        format: RawFormat::Dng,
+        width: w,
+        height: h,
+        cpp: 1,
+        data: RawData::F32(data),
+        cfa: Some(cfa.clone()),
+        bits: 16,
+        black: BlackLevel::uniform(0.0),
+        white: vec![1.0],
+        active_area: Rect::new(0, 0, w, h),
+        crop: Rect::new(0, 0, w, h),
+        orientation: Orientation::Normal,
+        color: ColorData::default(),
+        wb_multipliers: None,
+        linearized: true,
+        opcodes: OpcodeLists::default(),
+        metadata: Default::default(),
+    }
+}
+
+/// What the decode does after the demosaic, up to the colour matrix: clipped highlights rebuilt, white balance.
+fn finish(mut img: Rgb32f, wb: [f32; 3]) -> Rgb32f {
+    highlight::reconstruct(&mut img, wb, CLIP);
+    img.data.iter_mut().for_each(|p| *p = [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]]);
+    img
+}
+
+fn layouts() -> Vec<(String, Cfa, Method)> {
+    let mut v = Vec::new();
+    for name in ["RGGB", "BGGR", "GRBG", "GBRG"] {
+        for m in [Method::Ahd, Method::Ppg] {
+            v.push((format!("{name} {m:?}"), Cfa::bayer(name).unwrap(), m));
+        }
+    }
+    v.push(("X-Trans directional".into(), Cfa::xtrans(), Method::Ahd));
+    v.push(("X-Trans directional (shifted)".into(), Cfa::xtrans().shifted(2, 3), Method::Ahd));
+    v
+}
+
+#[test]
+fn a_constant_colour_comes_back_exactly() {
+    let colours = [[0.3f32, 0.55, 0.8], [0.02, 0.9, 0.4], [0.7, 0.7, 0.7]];
+    let wbs = [DAYLIGHT, [1.3, 1.0, 3.1], [2.0, 1.2, 1.5], [1.0; 3]];
+    let mut cases = layouts();
+    for name in ["RGGB", "GBRG"] {
+        cases.push((format!("{name} Bilinear"), Cfa::bayer(name).unwrap(), Method::Bilinear));
+    }
+    for (name, cfa, method) in &cases {
+        for colour in colours {
+            for wb in wbs {
+                // the colour as camera RGB, i.e. what the mosaic holds
+                let raw = raw_of(23, 19, cfa, [1.0; 3], |_, _| colour);
+                let out = raw.develop_balanced(*method, wb).unwrap();
+                assert_eq!((out.width, out.height), (23, 19));
+                for p in &out.data {
+                    for c in 0..3 {
+                        assert!((p[c] - colour[c]).abs() <= 1e-6 * colour[c].max(1.0), "{name} wb {wb:?}: {p:?} for {colour:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_sample_keeps_its_own_value() {
+    let cfa = Cfa::bayer("GRBG").unwrap();
+    let raw = raw_of(40, 32, &cfa, [1.0; 3], |x, y| {
+        let v = 0.05 + 0.9 * (((x * 7 + y * 13) % 17) as f32 / 17.0);
+        [v * 0.6, v, v * 0.8]
+    });
+    let n = raw.normalized().unwrap();
+    for m in [Method::Ahd, Method::Ppg] {
+        let out = raw.develop_balanced(m, DAYLIGHT).unwrap();
+        for y in 0..32 {
+            for x in 0..40 {
+                let (c, s) = (cfa.color_at(x, y) as usize, n.data[y * 40 + x]);
+                assert!((out.get(x, y)[c] - s).abs() <= 1e-6, "{m:?} ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn neutral_or_unusable_white_balance_and_bilinear_develop_as_before() {
+    let cfa = Cfa::bayer("RGGB").unwrap();
+    let raw = raw_of(30, 22, &cfa, DAYLIGHT, |x, y| {
+        let v = if (x / 5 + y / 4) % 2 == 0 { 0.08 } else { 0.9 };
+        [v, v * 0.9, v * 1.1]
+    });
+    for method in [Method::Ahd, Method::Ppg] {
+        let plain = raw.develop(method).unwrap();
+        // multipliers count relative to green: equal ones are no white balance at all
+        for wb in [[1.0; 3], [2.0; 3], [f32::NAN, 1.0, 1.0], [0.0, 1.0, 1.5], [2.0, -1.0, 1.5], [f32::INFINITY, 1.0, 1.0]] {
+            assert_eq!(raw.develop_balanced(method, wb).unwrap(), plain, "{method:?} {wb:?}");
+        }
+        assert_ne!(raw.develop_balanced(method, DAYLIGHT).unwrap(), plain, "{method:?}");
+    }
+    // bilinear interpolates each colour on its own: nothing to balance
+    assert_eq!(raw.develop_balanced(Method::Bilinear, DAYLIGHT).unwrap(), raw.develop(Method::Bilinear).unwrap());
+    // already demosaiced and monochrome data are left alone
+    let mut mono = raw.clone();
+    mono.cfa = None;
+    assert_eq!(mono.develop_balanced(Method::Ahd, DAYLIGHT).unwrap(), mono.develop(Method::Ahd).unwrap());
+}
+
+/// What the lens makes of a sharp `scene` (white-balanced level, sampled at sub-pixel positions): each pixel the
+/// mean of 4 × 4 points of its area, then a blur of about one pixel (binomial [1 4 6 4 1] / 16 each way: a good lens
+/// and the sensor's microlenses). Any sharper and a single sample holds detail no demosaic can place.
+fn photograph(w: usize, h: usize, scene: impl Fn(f32, f32) -> f32) -> Vec<f32> {
+    let area: Vec<f32> = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as f32, (i / w) as f32);
+            (0..16).map(|k| scene(x + ((k % 4) as f32 + 0.5) / 4.0, y + ((k / 4) as f32 + 0.5) / 4.0)).sum::<f32>() / 16.0
+        })
+        .collect();
+    let blur = |v: &[f32], dx: isize, dy: isize| -> Vec<f32> {
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as isize, (i / w) as isize);
+                let at = |k: isize| v[(y + k * dy).clamp(0, h as isize - 1) as usize * w + (x + k * dx).clamp(0, w as isize - 1) as usize];
+                (at(-2) + 4.0 * at(-1) + 6.0 * at(0) + 4.0 * at(1) + at(2)) / 16.0
+            })
+            .collect()
+    };
+    blur(&blur(&area, 1, 0), 0, 1)
+}
+
+/// Issue #1328: on a dark neutral surface, neutral specular points of 1 to 3 px bright enough to clip green (the
+/// brightest clip every channel). Around them, the pixels with nothing clipped must stay neutral after highlight
+/// reconstruction and white balance: no channel below half the pixel's mean, none negative. Demosaiced from the
+/// unbalanced mosaic, red (or blue) beside a point fell to about zero or below: green and cyan rims, on 16 to 38 %
+/// of these pixels.
+#[test]
+fn specular_points_have_no_coloured_rims() {
+    let (w, h) = (96usize, 72usize);
+    // (x, y, size, white-balanced level): green clips at 1, blue at 1.6, red at 2.5
+    let mut points = Vec::new();
+    for (i, level) in [2.0f32, 4.0, 8.0].into_iter().enumerate() {
+        for (j, size) in [1.0f32, 2.0, 3.0].into_iter().enumerate() {
+            for k in 0..2 {
+                points.push((8.0 + j as f32 * 30.0 + k as f32 * 12.6, 9.0 + i as f32 * 22.0 + k as f32 * 7.3, size, level));
+            }
+        }
+    }
+    let light =
+        photograph(w, h, |x, y| points.iter().find(|&&(px, py, s, _)| (px..px + s).contains(&x) && (py..py + s).contains(&y)).map_or(0.04, |p| p.3));
+    let near = |x: usize, y: usize| {
+        let (x, y) = (x as f32, y as f32);
+        points.iter().any(|&(px, py, s, _)| x + 3.0 > px && x < px + s + 2.0 && y + 3.0 > py && y < py + s + 2.0)
+    };
+    for (name, cfa, method) in layouts() {
+        let raw = raw_of(w, h, &cfa, DAYLIGHT, |x, y| [light[y * w + x]; 3]);
+        // what the scene is about: green clipped at most points, every channel at the brightest
+        let n = raw.normalized().unwrap();
+        let clipped = |c: u8| (0..w * h).filter(|&i| cfa.color_at(i % w, i / w) == c && n.data[i] >= 1.0).count();
+        assert!(clipped(1) >= 20 && clipped(0) >= 2 && clipped(2) >= 4, "{name}: clipped R G B {} {} {}", clipped(0), clipped(1), clipped(2));
+        let developed = raw.develop_balanced(method, DAYLIGHT).unwrap();
+        let unclipped: Vec<bool> = developed.data.iter().map(|p| p.iter().all(|&v| v < CLIP)).collect();
+        let out = finish(developed, DAYLIGHT);
+        // X-Trans: its directional weights already keep colour differences from crossing an edge, and it has the
+        // same few pale pixels (a channel at 0.3 to 0.5 of the mean) either way
+        let floor = if cfa.is_bayer() { 0.5 } else { 0.25 };
+        let (mut rim, mut bad) = (0, Vec::new());
+        for y in 0..h {
+            for x in 0..w {
+                if !near(x, y) || !unclipped[y * w + x] {
+                    continue;
+                }
+                rim += 1;
+                let p = out.get(x, y);
+                let mean = (p[0] + p[1] + p[2]) / 3.0;
+                if p.iter().any(|&v| v < 0.0 || v < floor * mean) {
+                    bad.push((x, y, p));
+                }
+            }
+        }
+        assert!(rim > 500, "{name}: {rim} rim pixels");
+        assert!(bad.is_empty(), "{name}: {} of {rim} rim pixels coloured, e.g. {:?}", bad.len(), &bad[..bad.len().min(4)]);
+    }
+}
+
+/// Issue #1328: sharp neutral white-on-dark edges with nothing clipped (straight, diagonal, round, a 1 px line).
+/// The pixels along them must stay nearly neutral after white balance. From the unbalanced mosaic their colour
+/// spread (largest minus smallest channel) averaged 6 % of the edge's contrast on Bayer layouts (0.2 % to 0.7 %
+/// balanced), with yellow, green, cyan or magenta outlines up to 36 %.
+#[test]
+fn sharp_neutral_edges_stay_neutral() {
+    let (w, h) = (96usize, 80usize);
+    let (dark, bright) = (0.03f32, 0.85f32);
+    let shape = |x: f32, y: f32| {
+        let disc = (x - 70.0).powi(2) + (y - 24.0).powi(2) < 13.5f32.powi(2);
+        let bar = (10.0..30.0).contains(&x) && (8.0..40.0).contains(&y);
+        let slant = y > 46.0 && x * 0.6 + y > 70.0 && x < 60.0;
+        let line = (80.0..81.0).contains(&x) && y > 46.0;
+        disc || bar || slant || line
+    };
+    let light = photograph(w, h, |x, y| if shape(x, y) { bright } else { dark });
+    // pixels within 1 px of an edge
+    let inside = |x: usize, y: usize| shape(x as f32 + 0.5, y as f32 + 0.5);
+    let edge = |x: usize, y: usize| (x - 1..=x + 1).any(|xx| (y - 1..=y + 1).any(|yy| inside(xx, yy) != inside(x, y)));
+    for (name, cfa, method) in layouts() {
+        let raw = raw_of(w, h, &cfa, DAYLIGHT, |x, y| [light[y * w + x]; 3]);
+        let out = finish(raw.develop_balanced(method, DAYLIGHT).unwrap(), DAYLIGHT);
+        let (mut n, mut worst, mut sum) = (0, 0f32, 0f32);
+        for y in 2..h - 2 {
+            for x in 2..w - 2 {
+                if !edge(x, y) {
+                    continue;
+                }
+                let p = out.get(x, y);
+                assert!(p.iter().all(|&v| v >= 0.0), "{name}: negative channel at ({x}, {y}): {p:?}");
+                let spread = (p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2])) / (bright - dark);
+                worst = worst.max(spread);
+                sum += spread;
+                n += 1;
+            }
+        }
+        let mean = sum / n as f32;
+        assert!(n > 600, "{name}: {n} edge pixels");
+        // X-Trans: our directional method's own green interpolation softens edges (mean 9 %, worst 43 %, and
+        // negative channels, unbalanced)
+        let (mean_max, worst_max) = if cfa.is_bayer() { (0.02, 0.15) } else { (0.085, 0.35) };
+        assert!(mean < mean_max && worst < worst_max, "{name}: edge colour spread mean {mean:.3}, worst {worst:.3}");
+    }
+}
+
+/// Issue #1328: large clipped areas (a lamp, a patch of sky, every channel clipped) on bright and on dark neutral
+/// surfaces. The channels the demosaic interpolated from clipped samples are lower bounds: with the mask of
+/// [`RawImage::develop_balanced_masked`] highlight reconstruction rebuilds them, and the pixels around the clipped
+/// area stay neutral. Told by value alone, they keep the colour difference of the clipped samples (on the
+/// white-balanced mosaic clipped red and blue stand above clipped green): magenta rims.
+#[test]
+fn clipped_areas_have_no_coloured_rims() {
+    let (w, h) = (96usize, 72usize);
+    let lamp = |x: f32, y: f32| (x - 30.0).powi(2) + (y - 36.0).powi(2) < 14.0f32.powi(2) || ((62.0..80.0).contains(&x) && (20.0..52.0).contains(&y));
+    let light = photograph(w, h, |x, y| {
+        if lamp(x, y) {
+            6.0
+        } else if x < 48.0 {
+            0.7
+        } else {
+            0.05
+        }
+    });
+    // within 3 px of the clipped area, unclipped in the scene
+    let rim = |x: usize, y: usize| {
+        !lamp(x as f32 + 0.5, y as f32 + 0.5)
+            && (x.saturating_sub(3)..=(x + 3).min(w - 1))
+                .any(|xx| (y.saturating_sub(3)..=(y + 3).min(h - 1)).any(|yy| lamp(xx as f32 + 0.5, yy as f32 + 0.5)))
+    };
+    for (name, cfa, method) in layouts() {
+        let raw = raw_of(w, h, &cfa, DAYLIGHT, |x, y| [light[y * w + x]; 3]);
+        let (mut img, mask) = raw.develop_balanced_masked(method, DAYLIGHT, CLIP).unwrap();
+        highlight::reconstruct_masked(&mut img, DAYLIGHT, CLIP, [1.0; 3], &mask.expect("clipped samples"));
+        img.data.iter_mut().for_each(|p| *p = [p[0] * DAYLIGHT[0], p[1] * DAYLIGHT[1], p[2] * DAYLIGHT[2]]);
+        let (mut n, mut worst, mut sum) = (0, 0f32, 0f32);
+        for y in 2..h - 2 {
+            for x in 2..w - 2 {
+                if !rim(x, y) {
+                    continue;
+                }
+                let p = img.get(x, y);
+                let mean = (p[0] + p[1] + p[2]) / 3.0;
+                let spread = (p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2])) / mean.max(1e-3);
+                worst = worst.max(spread);
+                sum += spread;
+                n += 1;
+            }
+        }
+        let mean = sum / n as f32;
+        assert!(n > 600, "{name}: {n} rim pixels");
+        // (told by value: mean 7 to 17 %, worst 80 %; demosaiced unbalanced, channels below zero)
+        assert!(mean < 0.03 && worst < 0.6, "{name}: colour spread around the clipped area mean {mean:.3}, worst {worst:.3} of the pixel's mean");
+    }
+}
+
+#[test]
+fn the_clip_mask_marks_the_colours_of_clipped_samples_within_reach() {
+    let cfa = Cfa::bayer("RGGB").unwrap();
+    let (w, h) = (16usize, 12usize);
+    let mut raw = raw_of(w, h, &cfa, [1.0; 3], |_, _| [0.3; 3]);
+    // a clipped green sample at (5, 4), a clipped red one at (10, 8); developed with a default crop
+    if let RawData::F32(d) = &mut raw.data {
+        d[4 * w + 5] = 1.0;
+        d[8 * w + 10] = 1.0;
+    }
+    raw.crop = Rect::new(1, 1, 14, 10);
+    let (img, mask) = raw.develop_balanced_masked(Method::Ahd, DAYLIGHT, CLIP).unwrap();
+    assert_eq!(img, raw.develop_balanced(Method::Ahd, DAYLIGHT).unwrap(), "the same picture");
+    let mask = mask.unwrap();
+    assert_eq!(((img.width, img.height), mask.len()), ((14, 10), 140));
+    for y in 0..10usize {
+        for x in 0..14usize {
+            let (ax, ay) = (x + 1, y + 1);
+            let near = |sx: usize, sy: usize| ax.abs_diff(sx) <= 2 && ay.abs_diff(sy) <= 2;
+            let want = if near(5, 4) { highlight::CLIPPED_G } else { 0 } | if near(10, 8) { highlight::CLIPPED_R } else { 0 };
+            assert_eq!(mask[y * 14 + x], want, "({x}, {y})");
+        }
+    }
+    // nothing clipped, or an OpcodeList3 (defined on the developed picture): no mask
+    let clean = raw_of(w, h, &cfa, [1.0; 3], |_, _| [0.3; 3]);
+    assert!(clean.develop_balanced_masked(Method::Ahd, DAYLIGHT, CLIP).unwrap().1.is_none());
+    raw.opcodes.list3.push(lightcraft_raw::Opcode::FixVignetteRadial { k: [0.0; 5], center: [0.5, 0.5] });
+    assert!(raw.develop_balanced_masked(Method::Ahd, DAYLIGHT, CLIP).unwrap().1.is_none());
+}

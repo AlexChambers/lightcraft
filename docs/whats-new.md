@@ -520,6 +520,24 @@
 
 ## 2026-10-13
 
+### Cleaner edges in raw exports
+- Exports of raw photos and the 1:1 view no longer draw thin yellow, green or cyan outlines along sharp white edges
+  (a white boat against the sky, window frames), green and cyan rims around small bright reflections such as
+  sunlit wet rock or water, or magenta and green rims around blown-out lights and sky (issue #1328). The colours
+  were made while the sensor's red, green and blue samples were filled in to full pixels: that happened before
+  white balance, and the pixels next to blown-out samples were not recognised as blown out. Both are fixed.
+- Previews and thumbnails never showed it and are unchanged. Exports and 1:1 views of photos you have already edited
+  change along such edges and in fine detail. Even areas change by about 0.5 ΔE on average (their noise grain is
+  rendered slightly differently), with no shift in colour.
+
+### Slider drags on large raws
+- Dragging a slider no longer re-renders the edited photo's filmstrip thumbnail on every frame; it follows once you
+  let go. On a 64 MP raw the first of those renders decoded the whole file again, which held up the loupe's
+  previews for up to a second.
+- A thumbnail of the photo open in Detail is made from its already decoded preview instead of decoding the file
+  again.
+
+
 ### Edits keep up in a large library
 - A small edit (a keyword, a rating, a flag, a slider) no longer has the grid's list worked out again from every
   photo: only the photos the edit touched are asked about again and put at their place in the order. In a library of
