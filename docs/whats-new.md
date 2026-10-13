@@ -723,7 +723,7 @@
 
 ### Consistent edits while zoomed in
 
-- Zoom windows now include the surrounding image needed by Dehaze, Clarity,
+- Native zoom windows now include the surrounding image needed by Dehaze, Clarity,
   Texture, Highlights and Shadows, even when the visible window is small
   (issue #1146). Mask blurs and edge refinement receive their context too.
   Full-image renders keep their pixels in both existing process versions.

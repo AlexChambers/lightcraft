@@ -106,6 +106,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 | 2026-10-23 | minor | Gap 28: ⌘L / Ctrl+L (Library ▸ Enable Filters) puts the filter aside and brings it back as it was; the entry drops ⌘L; hours unchanged |
 | 2026-10-15 | minor | Gap 28: `\` shows / hides the Filter Bar in the grids; the entry drops `[` `]` (#509), flag cycling (#1490) and F1 (Help), already on main; ⌘L is the filter-bar key left; hours unchanged |
 | 2026-10-12 | minor | Gap 4: supplied mattes and hidden masks skip unused context; Defringe gets context, and window finishing is limited to requested pixels; sampling-grid and airlight differences remain, along with overlay and soft-proof gaps |
+| 2026-10-12 | minor | LR-VIEW-ZOOM: visible region failure status and NaN payload contract; status unchanged |
+| 2026-10-13 | minor | LR-VIEW-ZOOM: exact context is native-only; web keeps main's margin, pixels and memory use; remove admission estimator; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: add wasm32 render admission and visible region failure status; qualify NaN payload equality; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: bound exact preparation, share upstream pixels and reuse refinement intermediates; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM round 4: CPU/GPU reduced planes keep the full-frame sampling scale and origin; airlight and rounding limits remain; status unchanged |
