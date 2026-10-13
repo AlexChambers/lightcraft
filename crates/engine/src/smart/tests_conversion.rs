@@ -765,3 +765,32 @@ fn regression709_a_run_without_a_marker_keeps_no_thumbnail_of_a_proxy_it_replace
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Without a marker, only a write that replaced a usable proxy needs the clear after it: before a
+/// first build or a repair, no thumbnail can show the old picture. Each clear resets every
+/// texture and decoded source in the app.
+#[test]
+fn a_first_build_without_a_marker_does_not_reset_the_cache_per_proxy() {
+    let root = fixture("first-build-full");
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("library"), false).unwrap();
+    let dir = s.media.smart_dir.clone().unwrap();
+    drop(s);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("library"), false).unwrap();
+    let ids = ids(&s);
+    fail_markers(&root, std::io::ErrorKind::StorageFull, 2);
+    let before = s.media.rendered.generation();
+    let r = s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids})).unwrap();
+    assert_eq!(r["built"], json!(2), "{r}");
+    assert_eq!(s.media.rendered.generation() - before, 2, "one clear to free space and one at the end, not one per proxy");
+    // A conversion without a marker still clears after each proxy it replaces.
+    fail_markers(&root, std::io::ErrorKind::StorageFull, 2);
+    let before = s.media.rendered.generation();
+    let r = s.execute("library.smartPreviews", &json!({"format": "compact", "ids": ids})).unwrap();
+    assert_eq!(r["refreshed"], json!(2), "{r}");
+    assert_eq!(s.media.rendered.generation() - before, 4);
+    drop(s);
+    std::fs::remove_dir_all(root).unwrap();
+}

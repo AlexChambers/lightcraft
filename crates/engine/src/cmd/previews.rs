@@ -425,6 +425,7 @@ fn smart_run(
             if usable && !stale {
                 n.built += 1;
             } else {
+                let change = if stale { crate::media::Change::Replace } else { crate::media::Change::Write };
                 // a stale proxy is rebuilt from the original only: never from itself (the file
                 // fallback or a source decoded from a proxy would stamp the old look as current)
                 let source = if stale { source.and_then(original_only) } else { source };

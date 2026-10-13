@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 pub(crate) struct Prepared {
     files: Vec<(PathBuf, PathBuf)>,
+    /// Sources that do not decode (cut short, say): left in the old folder and reported.
+    skipped: Vec<String>,
     what: Existing,
     #[cfg(test)]
     from: PathBuf,
@@ -15,11 +17,12 @@ impl Prepared {
     /// Only called after the location is committed. A cleanup failure leaves a redundant
     /// source, never a missing destination. Retrying the move can remove redundant copies.
     pub(crate) fn cleanup(self, task: &TaskHandle) -> (usize, Vec<String>) {
-        let total = self.files.len();
-        let (mut done, mut failed) = (0, Vec::new());
+        let copied = self.files.len();
+        let total = copied + self.skipped.len();
+        let (mut done, mut failed) = (0, self.skipped);
         for (index, (src, dst)) in self.files.into_iter().enumerate() {
             #[cfg(test)]
-            super::tests_round3::checkpoint(&self.from, total + index);
+            super::tests_round3::checkpoint(&self.from, copied + index);
             #[cfg(not(test))]
             let _ = index;
             task.detail(&src.file_name().unwrap_or_default().to_string_lossy());
@@ -64,6 +67,7 @@ pub(crate) fn prepare(from: &Path, to: &Path, what: Option<Existing>, task: &Tas
         .ok_or_else(|| format!("{} smart previews are in {}: pass existing = move, leave or discard", files.len(), from.display()))?;
     let mut prepared = Prepared {
         files: Vec::new(),
+        skipped: Vec::new(),
         what,
         #[cfg(test)]
         from: from.to_path_buf(),
@@ -94,7 +98,14 @@ pub(crate) fn prepare(from: &Path, to: &Path, what: Option<Existing>, task: &Tas
                     || super::header(&dst).is_some_and(|h| h.0 == Format::Lossless));
             if !keep {
                 let bytes = super::read(src)?;
-                super::decode(&bytes)?;
+                // A source that does not decode (cut short, say) can't be verified at the new
+                // place. It stays in the old folder, which is no longer used, and is named in the
+                // result; Build Smart Previews rebuilds it in the new folder from its original.
+                if let Err(e) = super::decode(&bytes) {
+                    prepared.skipped.push(format!("{}: {e}; left in the old folder", src.display()));
+                    task.progress((index + 1) as u64, files.len() as u64);
+                    continue;
+                }
                 lightcraft_catalog::safe_file::write_atomic(&dst, &bytes).map_err(|e| format!("{}: {e}", dst.display()))?;
                 super::load(&dst)?;
             }

@@ -87,8 +87,10 @@ impl Invalidation {
 pub(crate) enum Change {
     /// Remove it (Discard Smart Previews): never refused, the drive may need the space.
     Remove,
-    /// Write it: a new, repaired, converted or refreshed proxy.
+    /// Write it where there was none, or over one that could not be read (a repair).
     Write,
+    /// Write it over a usable proxy: a format conversion or a newer camera look.
+    Replace,
 }
 
 /// One run of Build / Discard Smart Previews or of the look refresh. It clears the thumbnail
@@ -102,7 +104,7 @@ pub(crate) struct Pending {
     invalidation: Invalidation,
     marker: Option<PathBuf>,
     recorded: bool,
-    /// The drive was full: no marker, so every write is followed by a clear.
+    /// The drive was full: no marker, so every replacement is followed by a clear.
     unrecorded: bool,
     changed: bool,
 }
@@ -113,8 +115,11 @@ impl Pending {
     /// When the drive is out of space (it can refuse even an empty file), the thumbnail cache is
     /// cleared at once, in every namespace. That removes every thumbnail of the proxies about to
     /// change and frees space, and the marker is tried again. If that fails too, the run goes on
-    /// without a marker and clears the cache again after each proxy it writes, so no thumbnail
-    /// rendered from a proxy before its replacement outlives an exit. Any other failure (a
+    /// without a marker and clears the cache again after each proxy it replaces, so a thumbnail
+    /// rendered from a proxy before its replacement can outlive an exit only between that write
+    /// and the clear after it. A first build or a repair needs no such clear: no thumbnail shows
+    /// a picture it replaces, and each clear resets every texture and decoded source in the app.
+    /// Any other failure (a
     /// read-only folder, where nothing could be cleared either) stops a run that writes, before
     /// it changes anything. A discard goes ahead: what it leaves behind still shows the photo.
     pub(crate) fn before_change(&mut self, change: Change) -> Result<(), String> {
@@ -132,7 +137,7 @@ impl Pending {
                     match create_marker(&dir) {
                         Ok(marker) => self.marker = Some(marker),
                         Err(e) => {
-                            log::warn!("thumbnail cache: {}: {e}; continuing without a marker, clearing after each proxy", dir.display());
+                            log::warn!("thumbnail cache: {}: {e}; continuing without a marker, clearing after each replaced proxy", dir.display());
                             self.unrecorded = true;
                         }
                     }
@@ -146,10 +151,10 @@ impl Pending {
     }
 
     /// A proxy was written or removed: the thumbnail cache is cleared when the run ends, and
-    /// after each write while the run has no marker.
+    /// after each replacement while the run has no marker.
     pub(crate) fn changed(&mut self, change: Change) {
         self.changed = true;
-        if self.unrecorded && change == Change::Write {
+        if self.unrecorded && change == Change::Replace {
             self.invalidation.clear();
         }
     }
