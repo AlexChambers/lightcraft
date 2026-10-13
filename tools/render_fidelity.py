@@ -1645,7 +1645,11 @@ def render_cases(cases, run, identity, renderer, photo_ids, sliders=None, log=pr
                     else:
                         if lc_full.shape[:2] != lr_full.shape[:2] or list(lr_full.shape[:2]) != on["shape"]:
                             state[rid] = {"rejected": f"LightCraft renders {list(lc_full.shape[:2])}, Lightroom "
-                                                      f"exported {list(lr_full.shape[:2])}", "provenance": reg_prov}
+                                                      f"exported {list(lr_full.shape[:2])}" +
+                                                      ("; for a one-pixel resize mismatch, see docs/render-fidelity.md "
+                                                       "(LightCraft 0.7.1)" if max(abs(a - b) for a, b in
+                                                       zip(lc_full.shape[:2], lr_full.shape[:2])) == 1 else ""),
+                                          "provenance": reg_prov}
                         else:
                             shift, why, windows = register(lc_full, lr_full, le)
                             if shift is None:
@@ -2969,6 +2973,18 @@ def selftest(cli=None):
                 return stand_in(raw, long_edge, recipe)
 
             run = tmp / "run"
+            for missing_pixels in (1, 2):
+                run_size = tmp / f"run-size-{missing_pixels}"
+                open_run(run_size, run_binding(cases_path, "selftest", "selftest"), {})
+                render_cases(cases, run_size, _identity_of(run_size),
+                             _StandIn(lambda raw, le, recipe: stand_in(raw, le, recipe)[:, :-missing_pixels]),
+                             sorted(cases["photos"]), log=lambda *_: None)
+                size_scores = score_run(cases_path, cases, run_size)
+                check(f"e2e render: {missing_pixels}-pixel size mismatch is rejected with the right advice",
+                      not size_scores["rows"] and len(size_scores["rejected"]) == len(photo["pairs"])
+                      and all("LightCraft renders" in r["reason"] and "Lightroom exported" in r["reason"]
+                              and ("docs/render-fidelity.md" in r["reason"]) == (missing_pixels == 1)
+                              for r in size_scores["rejected"]), size_scores["rejected"])
             open_run(run, run_binding(cases_path, "selftest", "selftest"), {})
             render_cases(cases, run, _identity_of(run), _StandIn(flaky), sorted(cases["photos"]), log=lambda *_: None)
             check("e2e render: registered per session and reference",

@@ -94,6 +94,13 @@ matter.
    - Image Sizing: off (full size), or Resize to Fit Long Edge (for example 2048 px). Output Sharpening: off.
    - Metadata: All Metadata (the tool needs the develop settings Lightroom embeds); no watermark.
 
+LightCraft 0.7.1 can lose one pixel of the requested long edge when resizing. For example, a 2048 px Lightroom
+export can be `[1365, 2048]` while LightCraft renders `[1365, 2047]` (height, width). The tool rejects the pair.
+Use a build with the fix merged in [#1338](https://github.com/storytold/lightcraft/pull/1338), which fixes
+[#1312](https://github.com/storytold/lightcraft/issues/1312). With 0.7.1, use full size or a long edge that divides
+the photo's full-size long edge exactly, such as 2016 px for a 6048 px photo (6048 / 3).
+Use the same size for every export in the session.
+
 Without the presets (manual route): on the master set Detail > Sharpening Amount 0, Noise Reduction Luminance 0 and
 Color 0, and turn off Lens Corrections > Profile > Enable Profile Corrections and Remove Chromatic Aberration. Then,
 for each recipe, create a virtual copy and type the slider's value into its field. Export as in step 5.
@@ -274,6 +281,10 @@ to explain the columns. Small amounts (±1, ±2) give responses near the 0.02-st
   the two differ, not how visible that is.
 - **Cameras whose lens correction Lightroom always applies.** If Lightroom applies a built-in correction you can't
   turn off, the frames won't line up and registration rejects the photo.
+  This was [reported for Nikon Z lenses on a Z f](https://github.com/storytold/lightcraft/issues/523#issuecomment-6145341651)
+  with Lightroom Classic 15.5.1 and LightCraft 0.7.1: Lightroom applied built-in distortion correction even with
+  `LensProfileEnable="0"`, while LightCraft did not apply Nikon's embedded correction. The tool rejected the photos
+  with `reference not registered`. A non-CPU or adapted manual lens avoids this; a non-CPU 50 mm lens worked in that report.
 - **Low-texture scenes, possibly.** The framing check's 0.05 margin is empirical (the trial's real pairs cleared it
   by 0.10 or more). Smooth gradients, sky, fog or snow can make the orientations hard to tell apart, and such a pair
   is refused as ambiguous rather than scored.
