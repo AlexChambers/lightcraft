@@ -705,12 +705,37 @@ pub(crate) fn prepare(
 
 /// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
 /// a windowed render must dehaze with the frame's airlight, not that of the pixels it holds.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn frame_airlight(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, frame: &Frame, proxy_w: usize, proxy_h: usize) -> f32 {
-    let mut img = frame.sample(src, proxy_w, proxy_h);
+    let mut img = Rgb32f::clone(&frame_proxy(src, frame, proxy_w, proxy_h));
     white_balance(&mut img, info, s);
     let sigma = (0.02 * frame.px_per_long(proxy_w)).max(1.0) as f32;
     airlight(&gaussian(&img.map(dark_of), sigma))
+}
+
+/// How many airlight proxies [`frame_proxy`] keeps (one per photo and frame being zoomed into; each ≤ 1.8 MB).
+#[cfg(any(target_arch = "wasm32", test))]
+const FRAME_PROXIES_KEPT: usize = 4;
+
+/// `frame.sample(src, w, h)`, kept for the last few (source, frame, size): sampling a 64 MP original down to the
+/// airlight proxy reads all of it (~190 ms of CPU), and every window of a zoomed view with Dehaze asked for it again,
+/// on each pan and slider tick. The proxy is taken before white balance, so a WB change still hits.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
+    type Entry = (u64, Frame, usize, usize, Arc<Rgb32f>);
+    static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
+    let key = crate::optics::fingerprint(src);
+    let found = |c: &[Entry]| c.iter().find(|e| e.0 == key && e.1 == *frame && (e.2, e.3) == (w, h)).map(|e| e.4.clone());
+    if let Some(img) = found(&CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {
+        return img;
+    }
+    let img = Arc::new(frame.sample(src, w, h));
+    let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    c.push((key, frame.clone(), w, h, img.clone()));
+    if c.len() > FRAME_PROXIES_KEPT {
+        c.remove(0);
+    }
+    img
 }
 
 /// The airlight is estimated from every `AIRLIGHT_STEP`-th value of the dark channel.

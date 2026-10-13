@@ -915,7 +915,7 @@ pub fn render(
         }
     });
     lightcraft_pipeline::visualize::apply(&mut image, req.overlay, &plan, overlay_mask.as_ref(), all_overlay_alphas.as_deref());
-    // spots grew the window the render worked on: cut it back to the request
+    // Overlay paths finished the work image; return the requested window.
     if let Some(k) = crop {
         image = image.crop(k.x, k.y, k.w, k.h);
     }

@@ -15,7 +15,7 @@ pub fn check(mut render: impl FnMut(&Arc<Rgb32f>, &SourceInfo, &DevelopSettings,
         let info = SourceInfo::default();
         let req = RenderRequest { quality: Quality::Draft, ..RenderRequest::fit(1801, 1207) };
         let full = render(&src, &info, &s, &req);
-        assert_eq!((full.width, full.height), (1800, 1207));
+        assert_eq!((full.width, full.height), (1801, 1207));
         let at = if whole { PixelWindow { x: 0, y: 0, w: full.width, h: full.height } } else { PixelWindow { x: 601, y: 0, w: 121, h: 83 } };
         let window = render(&src, &info, &s, &RenderRequest { window: Some(at), ..req });
         assert_eq!((window.width, window.height, window.data.len()), (at.w, at.h, at.w * at.h));

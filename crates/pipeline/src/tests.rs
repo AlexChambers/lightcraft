@@ -1022,7 +1022,7 @@ fn sliver_crops_render_quickly_with_wide_stages_on() {
         s.light.highlights = -60.0;
         s.light.shadows = 60.0;
         let t = std::time::Instant::now();
-        let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(280, 180));
+        let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(280, 180)).unwrap();
         assert!(t.elapsed().as_secs_f64() < 20.0, "{rect:?}: {:?}", t.elapsed());
         assert!(r.image.width >= 1 && r.image.height >= 1, "{rect:?}");
     }
