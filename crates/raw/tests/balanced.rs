@@ -471,3 +471,123 @@ fn thin_twigs_against_a_clipped_sky_stay_continuous() {
         assert!(err < err_max && jump < jump_max, "{name}: twig level off by {err:.3} stop, {jump:.3} stop from pixel to pixel");
     }
 }
+
+/// Round 2 review of #1328: strongly coloured highlights (a warm sun clipping red, or red and green, or every
+/// channel at its core; red, yellow and green light tubes) keep their brightness just inside their bright edges.
+/// Rebuilding a pixel's interpolated channels from its measured one alone (blue, at an orange sun's edge) with the
+/// colour of the content around made a dark checkerboard line there: a CC0 sunset's pixel went from Y 0.87 to 0.21.
+#[test]
+fn coloured_highlights_keep_their_brightness_at_the_edges() {
+    let (w, h) = (96usize, 80usize);
+    // (tint, white-balanced level): an orange sun clipping red only, red and green, and every channel; light tubes
+    let suns = [([1.0f32, 0.3, 0.06], 3.0f32), ([1.0, 0.45, 0.08], 4.0), ([1.0, 0.5, 0.12], 40.0)];
+    let tubes = [([1.0f32, 0.15, 0.1], 3.5f32), ([1.0, 0.85, 0.15], 2.6), ([0.25, 1.0, 0.4], 2.0)];
+    let mut scenes: Vec<(String, Box<dyn Fn(f32, f32) -> Option<[f32; 3]>>)> = Vec::new();
+    for (tint, level) in suns {
+        // a disc with a soft rim (the sun's limb), on a dim warm sky
+        scenes.push((
+            format!("sun {tint:?} x{level}"),
+            Box::new(move |x: f32, y: f32| {
+                let r = ((x - 48.0).powi(2) + (y - 40.0).powi(2)).sqrt();
+                let k = if r < 16.0 { 1.0 } else { (-(r - 16.0) / 3.0).exp() };
+                (k > 0.0).then(|| std::array::from_fn(|c| tint[c] * level * k + 0.03))
+            }),
+        ));
+    }
+    for (tint, level) in tubes {
+        // a tube 4 px wide, upright and slanted, glowing a little
+        scenes.push((
+            format!("tube {tint:?} x{level}"),
+            Box::new(move |x: f32, y: f32| {
+                let d = ((x - 30.0).abs()).min((x - 0.5 * y - 45.0).abs() / 1.118);
+                let k = if d < 2.0 { 1.0 } else { 0.15 * (-(d - 2.0) / 2.0).exp() };
+                Some(std::array::from_fn(|c| tint[c] * level * k + 0.02))
+            }),
+        ));
+    }
+    let lum = |p: [f32; 3]| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+    for (scene_name, scene) in &scenes {
+        let lights: Vec<Vec<f32>> = (0..3).map(|c| photograph(w, h, |x, y| scene(x, y).map_or(0.03, |p| p[c]))).collect();
+        let truth = |x: usize, y: usize| -> [f32; 3] { std::array::from_fn(|c| lights[c][y * w + x]) };
+        for (name, cfa, method) in layouts() {
+            let raw = raw_of(w, h, &cfa, DAYLIGHT, truth);
+            let (mut img, mask) = raw.develop_balanced_masked(method, DAYLIGHT, CLIP).unwrap();
+            let mut by_value = img.clone();
+            highlight::reconstruct(&mut by_value, DAYLIGHT, CLIP);
+            highlight::reconstruct_masked(&mut img, DAYLIGHT, CLIP, [1.0; 3], &mask.expect("clipped samples"));
+            let (out, by_value) = (finish_wb(img, DAYLIGHT), finish_wb(by_value, DAYLIGHT));
+            // pixels the sensor measured in every channel (well below each clip), within 3 px of a clipped sample:
+            // their brightness must stay near what the lens let through
+            let clipped = |x: usize, y: usize| (0..3).any(|c| truth(x, y)[c] / DAYLIGHT[c] >= 1.0);
+            let (mut n, mut dark, mut dark_by_value) = (0, Vec::new(), 0);
+            for y in 3..h - 3 {
+                for x in 3..w - 3 {
+                    let t = truth(x, y);
+                    if (0..3).any(|c| t[c] / DAYLIGHT[c] > 0.9) || !(x - 3..=x + 3).any(|xx| (y - 3..=y + 3).any(|yy| clipped(xx, yy))) {
+                        continue;
+                    }
+                    n += 1;
+                    let ratio = |p: [f32; 3]| lum(p) / lum(t).max(1e-4);
+                    if ratio(out.get(x, y)) < 0.6 {
+                        dark.push((x, y, ratio(out.get(x, y))));
+                    }
+                    if ratio(by_value.get(x, y)) < 0.6 {
+                        dark_by_value += 1;
+                    }
+                }
+            }
+            assert!(n > 300, "{scene_name}, {name}: {n} edge pixels");
+            if !cfa.is_bayer() {
+                // X-Trans darkens a few pixels inside thin red and yellow tubes told by value too (as main does); the
+                // mask may add a few more, never many
+                assert!(
+                    dark.len() <= dark_by_value + n / 30,
+                    "{scene_name}, {name}: {} of {n} edge pixels darkened ({dark_by_value} by value)",
+                    dark.len()
+                );
+                continue;
+            }
+            assert!(
+                dark.is_empty(),
+                "{scene_name}, {name}: {} of {n} edge pixels darkened ({dark_by_value} by value), e.g. {:?}",
+                dark.len(),
+                &dark[..dark.len().min(3)]
+            );
+        }
+    }
+}
+
+/// Round 2 review of #1328: finite but huge samples (a floating-point DNG holding 1e37) must not overflow once
+/// balanced: the gains are applied only when every sample times the largest of them, and divided back by the
+/// smallest, stays far inside `f32`; otherwise the mosaic is demosaiced unbalanced, as `develop` does (finite here).
+/// Just inside that bound the gains apply, and every demosaic stays finite.
+#[test]
+fn huge_float_samples_develop_unbalanced_rather_than_overflow() {
+    let mut raw = raw_of(24, 20, &Cfa::bayer("RGGB").unwrap(), [1.0; 3], |_, _| [0.1; 3]);
+    raw.data = RawData::F32(vec![1e37; 24 * 20]);
+    raw.bits = 32;
+    let bytes = lightcraft_raw::write_dng(&raw, &lightcraft_raw::DngWriteOptions::default()).unwrap();
+    let decoded = lightcraft_raw::decode(&bytes).unwrap();
+    assert!(decoded.normalized().unwrap().data.iter().all(|v| v.is_finite() && *v > 1e36));
+    for method in [Method::Ahd, Method::Ppg] {
+        let plain = decoded.develop(method).unwrap();
+        assert!(plain.data.iter().flatten().all(|v| v.is_finite()), "{method:?} unbalanced");
+        for wb in [[64.0, 1.0, 1.0], [1.0, 1.0, 1.0 / 64.0], DAYLIGHT] {
+            let out = decoded.develop_balanced(method, wb).unwrap();
+            assert!(out.data.iter().flatten().all(|v| v.is_finite()), "{method:?} {wb:?}");
+            assert_eq!(out, plain, "{method:?} {wb:?}: develops unbalanced");
+        }
+    }
+    // just inside the bound the gains apply, and every demosaic stays finite on samples that large
+    for (name, cfa, method) in layouts() {
+        let (w, h) = (36usize, 36usize);
+        let mut raw = raw_of(w, h, &cfa, [1.0; 3], |_, _| [0.1; 3]);
+        raw.data = RawData::F32((0..w * h).map(|i| if (i % w + 2 * (i / w)) % 5 < 2 { 1.5e28 } else { 0.0 }).collect());
+        let plain = raw.develop(method).unwrap();
+        for wb in [[64.0, 1.0, 1.0], [1.0, 1.0, 1.0 / 64.0]] {
+            let out = raw.develop_balanced(method, wb).unwrap();
+            assert!(out.data.iter().flatten().all(|v| v.is_finite()), "{name} {wb:?}");
+            assert_ne!(out, plain, "{name} {wb:?}: balanced");
+        }
+    }
+}

@@ -81,6 +81,12 @@ const AGREE: (f32, f32) = (0.15, 0.4);
 /// colour left in a pale sky once a channel clipped is as much the estimate's error as the sky's, and darkening
 /// shows it.
 const PALE: (f32, f32) = (0.2, 0.4);
+/// How far (a factor) rebuilding the channels a full-size demosaic interpolated from clipped samples may darken a
+/// pixel against the reconstruction told by its values alone, and (its inverse) brighten it among strongly coloured
+/// content ([`reconstruct_masked`]; among paler content, as [`PALE`] tells, it may brighten it further).
+const CONTINUITY: f32 = 0.8;
+/// Weights of the white-balanced channels in [`CONTINUITY`]'s brightness.
+const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 #[inline]
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -385,6 +391,10 @@ pub const MEASURED_SHIFT: u8 = 6;
 /// are unknown; when one is, the pixel lies just outside clipped content and its other interpolated channel (read
 /// through green estimated from clipped samples) is unknown too: it is rebuilt from what it measured. The measured
 /// channel never counts as clipped unless it is, so a dark twig against a clipped sky keeps the level it measured.
+/// The rebuild may darken the pixel against the reconstruction told by value only to [`CONTINUITY`] of it; further,
+/// the colour it assumed is wrong for the pixel (a strongly coloured highlight whose measured channel is its
+/// weakest, the blue at an orange sun's rim) and the pixel is reconstructed by value. Among strongly coloured content
+/// it may brighten it only by as much; among neutral content (a white sky behind twigs) it may brighten it freely.
 ///
 /// A mask of the wrong length is ignored (clipping is then told by the values alone).
 pub fn reconstruct_masked(img: &mut Rgb32f, wb: [f32; 3], clip: f32, white: [f32; 3], mask: &[u8]) -> usize {
@@ -486,6 +496,92 @@ fn rebuild_clipped(img: &mut Rgb32f, wb: [f32; 3], clip: f32, white: [f32; 3], c
     };
     let rim_field = rims.as_ref().and_then(|l| l.first());
     let max_level = wb.iter().cloned().fold(0.0f32, f32::max) * clip;
+    // The white-balanced colour pixel (x, y) (values `p`) is rebuilt to, with clipped channels `cl` of which `sat` are
+    // saturated (the others unknown).
+    let solve = |x: usize, y: usize, p: [f32; 3], cl: [bool; 3], sat: [bool; 3]| -> [f32; 3] {
+        let q = [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]];
+        // the brightest the pixel can be said to be from its own values (an unknown one says nothing)
+        let known_top = (0..3).filter(|&c| !(cl[c] && !sat[c])).map(|c| q[c]).fold(0.0f32, f32::max);
+        // rebuilt with the colour of the reliable content around, and with neutral, blended by how much of it
+        // there is and how well the pixel agrees with it (blending the results, not the colours, keeps the
+        // estimate consistent with the pixel's own unclipped channels all the way)
+        let e = sample(field, 2.0, x, y);
+        let borrowed = [e[0], 1.0 - e[0] - e[1], e[1]];
+        let edge = rim_field.map(|rim| sample(rim, 4.0, x, y));
+        let mut trust = e[2].clamp(0.0, 1.0);
+        if trust > 0.0 {
+            let mut off = contradiction(p, q, cl, sat, borrowed, clip);
+            if off > AGREE.0 {
+                off = off.min(edge.map_or(0.0, |edge| {
+                    let s = edge[0] + edge[1] + edge[2];
+                    if s > 1e-6 { unlike([edge[0] / s, edge[1] / s, edge[2] / s], borrowed) } else { 0.0 }
+                }));
+            }
+            trust *= 1.0 - smoothstep(AGREE.0, AGREE.1, off);
+        }
+        // either applies only as far as the pixel lies past the rim nearest its clip (in any channel); nearer, the
+        // pixel is rebuilt with the rim's colour
+        let at_rim = edge.and_then(|edge| {
+            // stops between pixel and rim in each channel; a clipped channel's true value lies at least as far
+            // above the rim's as its clip, and no further below (see [`bound`])
+            let ratio = (0..3)
+                .map(|c| {
+                    if cl[c] && !sat[c] {
+                        return 1.0;
+                    }
+                    let (a, b) = (q[c].max(1e-12), edge[c].max(1e-12));
+                    if a >= b {
+                        return a / b;
+                    }
+                    match bound(p, cl, clip, c) {
+                        w if w <= 0.0 => b / a,
+                        w if w >= 1.0 => 1.0,
+                        w => (b / a).powf(1.0 - w),
+                    }
+                })
+                .fold(1.0f32, f32::max);
+            let past = ratio.log2().min(64.0);
+            let k = smoothstep(NEAR_RIM, NEAR_RIM + DEPTH, past);
+            let s = edge[0] + edge[1] + edge[2];
+            (k < 1.0 && s > 1e-6).then(|| rebuild(p, q, cl, sat, [edge[0] / s, edge[1] / s, edge[2] / s], clip, max_level)).flatten().map(|a| (a, k))
+        });
+        let past_rim = |b: [f32; 3]| -> [f32; 3] {
+            let Some((a, k)) = at_rim else { return b };
+            std::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
+        };
+        let local = (trust > 0.0).then(|| rebuild(p, q, cl, sat, borrowed, clip, max_level)).flatten().map(past_rim);
+        let plain = (trust < 1.0).then(|| rebuild(p, q, cl, sat, neutral, clip, max_level)).flatten().map(past_rim);
+        let mut out = match (local, plain) {
+            (Some(a), Some(b)) => std::array::from_fn(|c| b[c] + (a[c] - b[c]) * trust),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => {
+                let v = known_top.max(max_level);
+                white.map(|c| c * v)
+            }
+        };
+        // Fade into the fully clipped neutral on the way from the first channel clipping (no change: continuous
+        // with the unclipped neighbours) to the last one clipping (all of it: continuous with the fully clipped
+        // ones). The way is measured in stops: how far the rebuilt clipped channels lie above their clip,
+        // against how far the lowest unclipped channel still lies below its own.
+        let above = (0..3).filter(|&c| sat[c]).map(|c| (out[c] / q[c].max(1e-9)).max(1.0).log2()).fold(0.0f32, f32::max);
+        let lowest = (0..3).filter(|&c| !cl[c]).map(|c| p[c]).fold(f32::MAX, f32::min);
+        let below = (clip / lowest.max(1e-6)).log2().max(0.0);
+        let way = if above > 0.0 && lowest < clip { above / (above + below) } else { 0.0 };
+        // The brightness goes over in the second half of the way, and so does the colour of a strongly coloured
+        // pixel; a pale one's goes over from the start ([`PALE`]).
+        let u = [out[0] / white[0], out[1] / white[1], out[2] / white[2]];
+        let (lo, hi) = (u[0].min(u[1]).min(u[2]), u[0].max(u[1]).max(u[2]));
+        let saturation = if hi > 0.0 && hi.is_finite() { 1.0 - lo.max(0.0) / hi } else { 1.0 };
+        let start = 0.5 * smoothstep(PALE.0, PALE.1, saturation);
+        let (t_level, t_colour) = (smoothstep(0.5, 1.0, way), smoothstep(start, start + 0.5, way));
+        if t_colour > 0.0 {
+            let level = (out[0] + out[1] + out[2]) / total;
+            let full = known_top.max(max_level);
+            let v = level + (full - level) * t_level;
+            out = std::array::from_fn(|c| out[c] + (white[c] * v - out[c]) * t_colour);
+        }
+        out
+    };
     img.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
             let p = *px;
@@ -496,89 +592,38 @@ fn rebuild_clipped(img: &mut Rgb32f, wb: [f32; 3], clip: f32, white: [f32; 3], c
             // saturated channels bound their true value from below; the others among the clipped are unknown
             let un = unknown(y * w + x, &p);
             let sat: [bool; 3] = std::array::from_fn(|c| cl[c] && !un[c]);
-            let q = [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]];
-            // the brightest the pixel can be said to be from its own values (an unknown one says nothing)
-            let known_top = (0..3).filter(|&c| !(cl[c] && !sat[c])).map(|c| q[c]).fold(0.0f32, f32::max);
-            // rebuilt with the colour of the reliable content around, and with neutral, blended by how much of it
-            // there is and how well the pixel agrees with it (blending the results, not the colours, keeps the
-            // estimate consistent with the pixel's own unclipped channels all the way)
-            let e = sample(field, 2.0, x, y);
-            let borrowed = [e[0], 1.0 - e[0] - e[1], e[1]];
-            let edge = rim_field.map(|rim| sample(rim, 4.0, x, y));
-            let mut trust = e[2].clamp(0.0, 1.0);
-            if trust > 0.0 {
-                let mut off = contradiction(p, q, cl, sat, borrowed, clip);
-                if off > AGREE.0 {
-                    off = off.min(edge.map_or(0.0, |edge| {
-                        let s = edge[0] + edge[1] + edge[2];
-                        if s > 1e-6 { unlike([edge[0] / s, edge[1] / s, edge[2] / s], borrowed) } else { 0.0 }
+            let mut out = solve(x, y, p, cl, sat);
+            if un.iter().any(|&u| u) {
+                // Brightness continuity: rebuilding the unknown channels may darken the pixel against the
+                // reconstruction told by value only to `CONTINUITY` of it. Further, the colour the rebuild assumed is
+                // wrong for it (a strongly coloured highlight whose measured channel is its weakest: the blue of an
+                // orange sun's rim, rebuilt with too little of the sun's colour where most of the content around is
+                // clipped), and the pixel is reconstructed by value instead. It may brighten the pixel by as much
+                // among strongly coloured content (where it would put a pale pixel), and further as the content
+                // around gets paler: among neutral content (a white sky behind twigs) the reconstruction told by
+                // value keeps the colour the demosaic took from clipped samples, and the rebuild's is the content's.
+                let v = by_value(&p, clip);
+                let alt = if v.iter().any(|&b| b) { solve(x, y, p, v, v) } else { [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]] };
+                let luma = |c: [f32; 3]| LUMA[0] * c[0] + LUMA[1] * c[1] + LUMA[2] * c[2];
+                let ratio = luma(out) / luma(alt).max(1e-9);
+                let coloured = || {
+                    // how strongly coloured the reliable content around is, and the rim nearest the clip
+                    let e = sample(field, 2.0, x, y);
+                    let around = [[e[0], 1.0 - e[0] - e[1], e[1]]].into_iter().chain(rim_field.map(|rim| {
+                        let e = sample(rim, 4.0, x, y);
+                        [e[0], e[1], e[2]]
                     }));
+                    around
+                        .map(|c| {
+                            let u = [c[0] / white[0], c[1] / white[1], c[2] / white[2]];
+                            let (lo, hi) = (u[0].min(u[1]).min(u[2]), u[0].max(u[1]).max(u[2]));
+                            if hi > 1e-9 && hi.is_finite() { smoothstep(PALE.0, PALE.1, 1.0 - lo.max(0.0) / hi) } else { 0.0 }
+                        })
+                        .fold(0.0f32, f32::max)
+                };
+                if !ratio.is_finite() || ratio < CONTINUITY || (ratio > 1.0 / CONTINUITY && ratio.log2() * coloured() > -CONTINUITY.log2()) {
+                    out = alt;
                 }
-                trust *= 1.0 - smoothstep(AGREE.0, AGREE.1, off);
-            }
-            // either applies only as far as the pixel lies past the rim nearest its clip (in any channel); nearer, the
-            // pixel is rebuilt with the rim's colour
-            let at_rim = edge.and_then(|edge| {
-                // stops between pixel and rim in each channel; a clipped channel's true value lies at least as far
-                // above the rim's as its clip, and no further below (see [`bound`])
-                let ratio = (0..3)
-                    .map(|c| {
-                        if cl[c] && !sat[c] {
-                            return 1.0;
-                        }
-                        let (a, b) = (q[c].max(1e-12), edge[c].max(1e-12));
-                        if a >= b {
-                            return a / b;
-                        }
-                        match bound(p, cl, clip, c) {
-                            w if w <= 0.0 => b / a,
-                            w if w >= 1.0 => 1.0,
-                            w => (b / a).powf(1.0 - w),
-                        }
-                    })
-                    .fold(1.0f32, f32::max);
-                let past = ratio.log2().min(64.0);
-                let k = smoothstep(NEAR_RIM, NEAR_RIM + DEPTH, past);
-                let s = edge[0] + edge[1] + edge[2];
-                (k < 1.0 && s > 1e-6)
-                    .then(|| rebuild(p, q, cl, sat, [edge[0] / s, edge[1] / s, edge[2] / s], clip, max_level))
-                    .flatten()
-                    .map(|a| (a, k))
-            });
-            let past_rim = |b: [f32; 3]| -> [f32; 3] {
-                let Some((a, k)) = at_rim else { return b };
-                std::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
-            };
-            let local = (trust > 0.0).then(|| rebuild(p, q, cl, sat, borrowed, clip, max_level)).flatten().map(past_rim);
-            let plain = (trust < 1.0).then(|| rebuild(p, q, cl, sat, neutral, clip, max_level)).flatten().map(past_rim);
-            let mut out = match (local, plain) {
-                (Some(a), Some(b)) => std::array::from_fn(|c| b[c] + (a[c] - b[c]) * trust),
-                (Some(a), None) | (None, Some(a)) => a,
-                (None, None) => {
-                    let v = known_top.max(max_level);
-                    white.map(|c| c * v)
-                }
-            };
-            // Fade into the fully clipped neutral on the way from the first channel clipping (no change: continuous
-            // with the unclipped neighbours) to the last one clipping (all of it: continuous with the fully clipped
-            // ones). The way is measured in stops: how far the rebuilt clipped channels lie above their clip,
-            // against how far the lowest unclipped channel still lies below its own.
-            let above = (0..3).filter(|&c| sat[c]).map(|c| (out[c] / q[c].max(1e-9)).max(1.0).log2()).fold(0.0f32, f32::max);
-            let lowest = (0..3).filter(|&c| !cl[c]).map(|c| p[c]).fold(f32::MAX, f32::min);
-            let below = (clip / lowest.max(1e-6)).log2().max(0.0);
-            let way = if above > 0.0 && lowest < clip { above / (above + below) } else { 0.0 };
-            // The brightness goes over in the second half of the way, and so does the colour of a strongly coloured
-            // pixel; a pale one's goes over from the start ([`PALE`]).
-            let u = [out[0] / white[0], out[1] / white[1], out[2] / white[2]];
-            let (lo, hi) = (u[0].min(u[1]).min(u[2]), u[0].max(u[1]).max(u[2]));
-            let saturation = if hi > 0.0 && hi.is_finite() { 1.0 - lo.max(0.0) / hi } else { 1.0 };
-            let start = 0.5 * smoothstep(PALE.0, PALE.1, saturation);
-            let (t_level, t_colour) = (smoothstep(0.5, 1.0, way), smoothstep(start, start + 0.5, way));
-            if t_colour > 0.0 {
-                let level = (out[0] + out[1] + out[2]) / total;
-                let full = known_top.max(max_level);
-                let v = level + (full - level) * t_level;
-                out = std::array::from_fn(|c| out[c] + (white[c] * v - out[c]) * t_colour);
             }
             *px = [out[0] / wb[0], out[1] / wb[1], out[2] / wb[2]];
         }

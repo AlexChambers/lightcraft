@@ -347,9 +347,12 @@ impl Ages {
     fn of(p: &lightcraft_catalog::Photo) -> Ages {
         Ages { look: preview_fitted_look(p), source: p.develops_raw() }
     }
-    /// Whether the complete proxy at `path` is out of date in a way that applies to this photo.
+    /// Whether the complete proxy at `path` is out of date in a way that applies to this photo: for the look (an older
+    /// fit, or a Compact proxy's older encoding, [`crate::smart::is_stale`]) or for the raw decode. Never when any of
+    /// its versions comes from a newer build: rewriting it would take that one back (a build with all of them is the
+    /// one to bring it up to date).
     fn stale(self, path: &std::path::Path) -> bool {
-        crate::smart::is_stale_for(path, self.look) || (self.source && crate::smart::source_stale(path))
+        !crate::smart::from_newer_build(path) && (crate::smart::is_stale_for(path, self.look) || (self.source && crate::smart::source_stale(path)))
     }
 }
 
