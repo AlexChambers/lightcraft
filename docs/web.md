@@ -193,18 +193,21 @@ lightcraft-bench {"first_frame_ms":…,"thumbs_done_ms":…,"slider_draft_ms":[�
 
 ## Render memory and large zoom windows
 
-The CPU renderer estimates the peak live image storage of the requested plan
-before it allocates work images. It counts sampling copies only when needed,
-active filters, output depth, and the largest allocation phase. The worker
-counts shared sources and stage buffers once across its caches and can release
-those caches before rendering. Admission leaves 64 MiB of the wasm32 address
-space for the runtime and allocator. Decoding, encoded input and browser memory
-availability remain separate limits.
+Web zoom windows keep main's earlier margin policy, so the #1146 difference
+between a window and the full render remains on web. The renderer uses the
+requested rectangle with bounded spot reads, picks automatic spot sources from
+main's 512 px whole-frame proxy, and estimates Dehaze airlight from a
+white-balanced 384 px proxy. It uses main's window-local guided-filter grids.
+This policy applies to every web window; there is no memory-based selection.
 
-A zoom window normally includes all spatial filter support and exact full-frame
-Dehaze preparation. If that plan exceeds the web memory budget, the renderer
-uses the earlier window policy: the requested rectangle with bounded spot reads,
-and a white-balanced 384 px Dehaze proxy. These extreme web windows are
-approximate. Full renders keep the exact plan. If neither window plan fits, the
-renderer returns a recoverable error and accepts smaller subsequent requests.
-Native rendering keeps its existing exact-plan limits.
+Exact context expansion and full-resolution Dehaze preparation can exceed the
+wasm32 address space. They ship on native CPU and GPU only. Web full renders,
+exports and worker sequences keep main's allocation path and cache retention,
+including scalar mask-refinement buffers. The render admission estimator and
+its cache-release retry have been removed.
+
+This preserves main's web memory use and pixels, including its allocation
+failures. Large allocations can still trap; this change does not make them
+recoverable. Fallible large allocations are a possible follow-up before exact
+windows are enabled on web. Decoding, encoded input, allocator fragmentation
+and the memory available to the browser remain limits.

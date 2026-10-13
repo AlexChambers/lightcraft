@@ -1,8 +1,15 @@
 # Spatial context for zoom windows
 
-A window render prepares the surrounding pixels needed by its active local filters,
+A native window render prepares the surrounding pixels needed by its active local filters,
 then returns the requested rectangle. The CPU and GPU use the same calculation in
 `pipeline::plan` and `crates/pipeline/src/window.rs` (issue #1146).
+
+The web build keeps main's earlier margin policy, automatic spot-source pick,
+and 384 px Dehaze proxy. The #1146 difference between zoom windows and full
+renders remains on web. Exact context expansion can exceed wasm32 memory;
+web full renders and exports keep main's buffers and cache retention too.
+Fallible large allocations are a possible follow-up before bringing exact
+windows to web. The design and measurements below describe native rendering.
 
 ## Why the old margin was insufficient
 
@@ -140,21 +147,20 @@ Dehaze frame and the source sampled by that preparation at 67,108,864 pixels (64
 a conservative 4 GiB temporary-storage estimate that includes NR scratch and
 work copies. The limit applies before Metal delegates a statistic to the CPU.
 An oversized request returns an actionable error through `pipeline::render`,
-`render_cached`, native render jobs and the web worker. It never substitutes a
+`render_cached` and native render jobs. It never substitutes a
 smaller statistic or truncates filter support. These APIs now return `Result`.
 Full renders (`window=None`) keep their existing operators and pixels.
 
-The wasm32 CPU path and web worker also check a conservative 3 GiB render
-budget before allocating work images. The estimate includes the source and its
-sampling copies, old stage entries and their sources, work images, mask alphas
-and means, peak grouped-refinement scratch, and any separate full Dehaze pass.
-It applies when the work rectangle equals the full frame and when `window=None`.
-The worker counts all views, releases reusable caches on pressure, then checks
-again. Rejected jobs return an error and a smaller job can run in the same
-worker. The remaining 1 GiB of the wasm32 address space is reserved for runtime
-state, encoded input and allocation overhead. This estimate can reject a render
-that might fit; native limits are unchanged. It does not budget source decoding
-or guarantee that a browser will supply the full address space.
+On wasm32, compile-time gates keep main's requested window, bounded spot reads,
+whole-frame automatic source pick and white-balanced Dehaze proxy. Guided
+filters use main's window-local reduced grids. Full renders and exports also
+use main's sampling copies, scalar mask-refinement buffers and mask lifetimes;
+workers retain sources and stage entries as main does. There is no render
+admission estimator, cache-release retry or exact/approximate selection. Web
+windows can still differ from full renders, and allocations that exceed the
+wasm32 address space can still trap as on main. Fallible large allocations
+would let a later change return recoverable errors without estimating every
+allocation.
 
 Detail keeps the preview when Region or RegionBefore fails and shows a small
 status message suggesting a lower zoom. The message disappears at Fit or when
@@ -165,8 +171,8 @@ size and then adds the window. Source selection therefore matches the equivalent
 full render, including a smaller preview source and crop-driven source selection.
 `RenderJob::draft` changes quality, not the source. The web `WireJob` keeps the
 source level, dimensions and window; `WorkerCore::render` passes the decoded
-source and its metadata to the same cached CPU pipeline. The tests include a
-601 by 403 source rendered into an 1800 by 1207 frame. This covers a source
+source and its metadata to the CPU pipeline with the wasm32 policy. The tests include a
+601 by 403 source rendered into an 1800 by 1207 frame. On native this covers a source
 smaller than the requested virtual frame without a second airlight proxy.
 
 The CPU and GPU alpha caches incorporate #1147's implementation and tests

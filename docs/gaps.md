@@ -77,6 +77,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | LR-VIEW-ZOOM: visible region failure status and NaN payload contract; status unchanged |
+| 2026-10-13 | minor | LR-VIEW-ZOOM: exact context is native-only; web keeps main's margin, pixels and memory use; remove admission estimator; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: add wasm32 render admission and visible region failure status; qualify NaN payload equality; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: bound exact preparation, share upstream pixels and reuse refinement intermediates; status unchanged |
 | 2026-10-12 | minor | Gap 4: supplied mattes and hidden masks skip unused context; inactive-mask tone bases keep their support when Clarity reads them, Defringe gets context, and window finishing is limited to requested pixels; sampling-grid and airlight differences remain, along with overlay and soft-proof gaps |

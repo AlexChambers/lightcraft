@@ -22,7 +22,7 @@ stronger Light sliders, issue #196) without changing a single photo someone has 
 - Changes to how a file is decoded or which camera colour it gets change the source, not how settings
   are interpreted; the process doesn't reach that stage today.
 
-Window context fixes (issue #1146) expand only the work area of a window render.
+Native window context fixes (issue #1146) expand only the work area of a window render.
 The full-frame path and the filters are unchanged, so V1 and V2 full-render pixels
 stay byte-identical and no process version is added. This includes the existing
 dependence of Clarity on a tone base selected by hidden or empty masks. Rendering

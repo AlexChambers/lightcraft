@@ -92,28 +92,8 @@ impl Mattes {
         }
     }
 
-    /// Peak orientation and float conversion storage in matte_alpha. Mattes
-    /// are sampled one at a time; a small output can still read a large matte.
-    pub(crate) fn sampling_bytes(&self, mask: &Mask, frame: &Frame, w: usize) -> u64 {
-        mask.components
-            .iter()
-            .flat_map(|component| {
-                let shape = if matches!(component.shape, MaskShape::Background) { &MaskShape::Subject } else { &component.shape };
-                self.for_shape(shape)
-            })
-            .map(|matte| {
-                let (mw, mh) = if frame.orient.swaps_axes() { (matte.height, matte.width) } else { (matte.width, matte.height) };
-                let k = mw as f64 / frame.ow * frame.ow.max(frame.oh) / frame.px_per_long(w).max(1e-9);
-                let f = if k >= 2.0 { (k.floor() as usize).min(64) } else { 1 };
-                let converted = (mw.div_ceil(f) as u64).saturating_mul(mh.div_ceil(f) as u64).saturating_mul(4);
-                let oriented = if frame.orient == Orientation::Normal { 0 } else { (mw as u64).saturating_mul(mh as u64) };
-                converted.saturating_add(oriented)
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
     /// Whether evaluation uses a supplied matte instead of a spatial heuristic.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn uses_matte(&self, shape: &MaskShape) -> bool {
         // Background evaluates Subject and then inverts its alpha.
         let shape = if matches!(shape, MaskShape::Background) { &MaskShape::Subject } else { shape };
@@ -201,10 +181,6 @@ impl<P> AlphaCache<P> {
     pub fn keep(&mut self, mattes: Option<&Arc<Mattes>>, slots: Vec<(u64, Arc<P>)>) {
         self.mattes = mattes.cloned();
         self.slots = slots;
-    }
-
-    pub(crate) fn mattes(&self) -> Option<&Arc<Mattes>> {
-        self.mattes.as_ref()
     }
 
     /// The alphas held.
@@ -356,6 +332,8 @@ fn evaluate_one_with_refinement(
     refinement: &mut RefinementCache,
     keys: AlphaKeys,
 ) -> Plane {
+    #[cfg(target_arch = "wasm32")]
+    let _ = (refinement, keys);
     let mut alpha = Plane::new(w, h);
     let mut first = true;
     for comp in &m.components {
@@ -380,6 +358,9 @@ fn evaluate_one_with_refinement(
         // the width of a soft brush edge or gradient)
         let k = (m.refine / 100.0).clamp(0.0, 1.0) as f32;
         let sigma = (0.04 * frame.output_long(w, h) as f32 * k).max(1.0);
+        #[cfg(target_arch = "wasm32")]
+        let refined = guided_cross(log_l, &alpha, sigma, 0.02);
+        #[cfg(not(target_arch = "wasm32"))]
         let refined = guided_cross_cached(
             log_l,
             &alpha,
@@ -587,9 +568,15 @@ fn frame_px(frame: &Frame, w: usize) -> f32 {
     frame.px_per_long(w) as f32
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn smooth_plane(p: &mut Plane, sigma: f32) {
     let owned = std::mem::replace(p, Plane::new(0, 0));
     *p = lightcraft_raster::blur::gaussian_owned(owned, sigma.max(0.5));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn smooth_plane(p: &mut Plane, sigma: f32) {
+    *p = lightcraft_raster::blur::gaussian(p, sigma.max(0.5));
 }
 
 /// The union (max) of `mattes` (0..255, over the EXIF-oriented source) at output resolution,
@@ -866,12 +853,38 @@ pub fn auto_refine(r: f64) -> (f32, f32) {
 
 /// Guided filter of `p` steered by `guide` (He et al.), clamped to 0..1: `p`'s edges snap to the
 /// guide's.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
     guided_cross_cached(guide, p, sigma, eps, &mut RefinementCache::default(), 0, None)
 }
 
+// Keep main's separate scalar buffers on wasm32.
+#[cfg(target_arch = "wasm32")]
+pub fn guided_cross(guide: &Plane, p: &Plane, sigma: f32, eps: f32) -> Plane {
+    use lightcraft_raster::blur::gaussian;
+    let mi = gaussian(guide, sigma);
+    let mp = gaussian(p, sigma);
+    let cip = gaussian(&guide.zip_map(p, |a, b| a * b), sigma);
+    let cii = gaussian(&guide.map(|a| a * a), sigma);
+    let mut a = Plane::new(p.width, p.height);
+    let mut b = Plane::new(p.width, p.height);
+    for ((a, b), (((cii, mi), cip), mp)) in a.data.iter_mut().zip(&mut b.data).zip(cii.data.iter().zip(&mi.data).zip(&cip.data).zip(&mp.data)) {
+        let var = (cii - mi * mi).max(0.0);
+        let k = (cip - mi * mp) / (var + eps);
+        *a = k;
+        *b = mp - k * mi;
+    }
+    let (ma, mb) = (gaussian(&a, sigma), gaussian(&b, sigma));
+    let mut q = Plane::new(p.width, p.height);
+    for (q, ((ma, guide), mb)) in q.data.iter_mut().zip(ma.data.iter().zip(&guide.data).zip(&mb.data)) {
+        *q = (ma * guide + mb).clamp(0.0, 1.0);
+    }
+    q
+}
+
 /// At most 512 MiB per stage entry (two entries per view). No extra buffers
 /// survive eviction, hiding the masks, changing supplied mattes or clearing stages.
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const REFINEMENT_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone, Default)]
@@ -880,6 +893,7 @@ struct RefinementCache {
     means: Vec<(u64, u32, Arc<Plane>)>,
 }
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl RefinementCache {
     fn bytes(&self) -> usize {
         self.guide.as_ref().map_or(0, |(_, _, a, b)| (a.len() + b.len()) * 4) + self.means.iter().map(|(_, _, p)| p.len() * 4).sum::<usize>()
@@ -905,6 +919,7 @@ fn refinement_mean_key(m: &Mask, keys: AlphaKeys, ev: f32) -> u64 {
 /// horizontal recurrence vectorizable without changing V1/V2 pixels. Finite
 /// values (including signed zero) retain their bits; NaN payloads may differ.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn guided_cross_cached(guide: &Plane, p: &Plane, sigma: f32, eps: f32, cache: &mut RefinementCache, guide_key: u64, mean_key: Option<u64>) -> Plane {
     use lightcraft_raster::blur::gaussian_owned;
     let sig = sigma.to_bits();

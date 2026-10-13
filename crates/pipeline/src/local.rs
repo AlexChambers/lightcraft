@@ -10,6 +10,7 @@ use std::sync::Arc;
 use lightcraft_raster::{Plane, Rgb32f, par_join};
 
 use crate::geometry::Frame;
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::sampling::{GuidedGrid, ResampleTaps};
 use crate::{Prepared, Quality, SourceInfo, for_rows, masks, timed};
 
@@ -207,6 +208,7 @@ pub fn guided_fast(p: &Plane, sigma: f32, eps: f32) -> Plane {
     guided_apply(p, &up(&ma), &up(&mb))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, frame: &Frame) -> Plane {
     let step = guided_fast_step(sigma);
     let Some(grid) = GuidedGrid::for_window(p.width, p.height, step, frame.view) else {
@@ -217,8 +219,19 @@ fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, frame: &Frame) -> Plane {
     guided_apply(p, &crate::sampling::resize(&ma, &grid.up), &crate::sampling::resize(&mb, &grid.up))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn tone_base_window(l: &Plane, sigma: f32, detail: usize, frame: &Frame) -> Plane {
     if detail == 0 { guided_fast_window(l, sigma, BASE_EPS, frame) } else { guided_fast_window(&median_hv(l, detail), sigma, BASE_EPS, frame) }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, _frame: &Frame) -> Plane {
+    guided_fast(p, sigma, eps)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tone_base_window(l: &Plane, sigma: f32, detail: usize, _frame: &Frame) -> Plane {
+    tone_base(l, sigma, detail)
 }
 
 /// Separable median (`2r+1` px along each row, then each column; clamped edges). It keeps the
@@ -533,6 +546,7 @@ pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneS
 /// Plan context only for planes that can affect visible pixels. An inactive
 /// tone mask can still select the base that active Clarity reads, so retain its
 /// support (including the V2 median) without changing render plane selection.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn context_plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneSigmas {
     let mut sig = select_plane_sigmas(s, px_per_long, q, false);
     if sig.clarity.is_some() {
@@ -629,9 +643,26 @@ pub(crate) fn prepare(
         None => (None, 1.0),
     };
     let ev = s.light.exposure as f32;
+    #[cfg(target_arch = "wasm32")]
+    let masks = {
+        let _ = alphas;
+        timed("masks", || masks::evaluate(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes.map(|a| &**a)))
+    };
+    #[cfg(not(target_arch = "wasm32"))]
     let (cache, keys) = alphas;
+    #[cfg(not(target_arch = "wasm32"))]
     let masks = timed("masks", || masks::evaluate_cached(&s.masks, frame, img.width, img.height, &img, &log_l, ev, mattes, keys, cache));
     Prepared { img, log_l, base, clarity_blur, texture_blur, dark, chroma_blur, air, masks, px_per_long }
+}
+
+/// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
+/// a windowed render must dehaze with the frame's airlight, not that of the pixels it holds.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn frame_airlight(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, frame: &Frame, proxy_w: usize, proxy_h: usize) -> f32 {
+    let mut img = frame.sample(src, proxy_w, proxy_h);
+    white_balance(&mut img, info, s);
+    let sigma = (0.02 * frame.px_per_long(proxy_w)).max(1.0) as f32;
+    airlight(&gaussian(&img.map(dark_of), sigma))
 }
 
 /// The airlight is estimated from every `AIRLIGHT_STEP`-th value of the dark channel.
