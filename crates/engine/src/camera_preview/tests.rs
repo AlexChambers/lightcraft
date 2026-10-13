@@ -755,6 +755,7 @@ fn a_black_and_white_jpeg_adds_its_tone_on_top_of_the_colour_it_gets_otherwise()
         matrix: Mat3::IDENTITY,
         tone: dro_test_look(&std::array::from_fn(|i| 0.006 * 1.13f32.powi(i as i32)), &|x| x.sqrt()).tone,
         hue_sat: None,
+        preserve_luminance: false,
     };
     let camera = lightcraft_raw::spectral::find(Some("Canon"), "Canon EOS 600D").unwrap();
     let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 600D", Default::default());
@@ -1194,6 +1195,7 @@ fn dro_test_look(xs: &[f32; 32], f: &dyn Fn(f32) -> f32) -> CameraLook {
         matrix: Mat3([[1.6, -0.4, -0.2], [-0.2, 1.4, -0.2], [0.0, -0.3, 1.3]]),
         tone: CameraTone::new(xs.map(|x| [x, f(x)])).unwrap().with_chroma([1.3, 1.2, 1.1, 1.0, 1.0, 0.9, 0.6, 0.3]).unwrap(),
         hue_sat: Some(HsvTable { hue_divisions: 4, sat_divisions: 2, val_divisions: 1, data: vec![[5.0, 1.1, 1.0]; 8], srgb_value: false }),
+        preserve_luminance: false,
     }
 }
 
@@ -2088,7 +2090,7 @@ fn coloured_share(pairs: &[Pair], threshold: impl Fn(f32) -> f32) -> f64 {
 #[test]
 fn a_dark_muted_scene_learns_its_colour() {
     let (sensor, reference) = dark_scene(0.25);
-    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None, false).unwrap();
     let fixed = coloured_share(&pairs, |_| MATRIX_SPREAD);
     assert!(fixed < 0.05, "too few coloured pairs under the fixed spread: {fixed:.3}");
     assert!(coloured_share(&pairs, matrix_spread) > 0.5);
@@ -2125,6 +2127,23 @@ fn a_dark_muted_scene_learns_its_colour() {
     assert!(full < 0.25 * partial, "luminance-normalised colour error: full look {full:.4}, partial look {partial:.4}");
 }
 
+#[test]
+fn scaled_colour_clipping_requires_enough_dark_signal() {
+    let (mut sensor, mut reference) = dark_scene(0.25);
+    let clipped = vec![false; sensor.data.len()];
+    let shallow = fit_look(&sensor, &reference, &clipped, None).unwrap();
+    assert!(!shallow.preserve_luminance, "a scaled-spread look without deep shadows keeps its clipping");
+    for (src, dst) in sensor.data.iter_mut().zip(&mut reference.data).take(600) {
+        *src = src.map(|v| v * 0.03);
+        *dst = dst.map(|v| v * 0.03);
+    }
+    assert!(dark_colour_signal(&sensor, &reference, None));
+    let deep = fit_look(&sensor, &reference, &clipped, None).unwrap();
+    assert!(deep.preserve_luminance, "the scaled-spread matrix must keep the dark noise's luminance");
+    let profile = fit_look(&sensor, &reference, &clipped, Some((deep.matrix, deep.hue_sat.clone()))).unwrap();
+    assert!(!profile.preserve_luminance, "a supplied profile keeps its clipping");
+}
+
 /// Only pixels darker than middle grey are asked for less. From middle grey up the spread is the fixed 0.05 as
 /// before, less than 0.28 of a bright pixel's luminance, so no bright pair stops counting and a bright scene keeps
 /// its full look. A dark scene whose colours stay within 0.28 of their luminance from neutral learns no colour
@@ -2148,14 +2167,14 @@ fn the_colour_a_matrix_needs_is_unchanged_from_middle_grey_up() {
         let y = luminance_2020(p);
         p.map(|v| v * (0.3 + (y - 0.028) / (0.11 - 0.028) * 0.3) / y)
     });
-    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None, false).unwrap();
     let share = coloured_share(&pairs, matrix_spread);
     assert_eq!(share, coloured_share(&pairs, |_| MATRIX_SPREAD), "bright pairs are counted as before");
     assert!(share >= 0.05 && coloured_share(&pairs, |y| 0.28 * y) < 0.05, "{share:.3}");
     assert!(fit_pairs(&sensor, &reference).is_some(), "the bright scene keeps its full look");
     // the same colours in the dark
     let (sensor, reference) = dark_scene(0.025);
-    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None, false).unwrap();
     assert!(coloured_share(&pairs, matrix_spread) < 0.05);
     assert!(fit_pairs(&sensor, &reference).is_none(), "no colour matrix from a nearly neutral dark scene");
     let look = fit_look(&sensor, &reference, &vec![false; sensor.data.len()], None).expect("the partial look");
@@ -2285,7 +2304,7 @@ fn jpeg_noise_in_a_neutral_dark_scene_teaches_no_colour_matrix() {
         (sensor, reference)
     };
     let (sensor, reference) = scene(false, 0.003);
-    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None).unwrap();
+    let (pairs, _) = collect_pairs(&sensor, &reference, f32::NEG_INFINITY, None, false).unwrap();
     assert!(coloured_share(&pairs, |_| MATRIX_SPREAD) < 0.05 && coloured_share(&pairs, matrix_spread) > 0.1, "noise counts as colour");
     let look = fit_look(&sensor, &reference, &vec![false; sensor.data.len()], None).expect("the partial look");
     assert_eq!(look.matrix, Mat3::IDENTITY, "no matrix learnt from noise: {:?}", look.matrix.0);

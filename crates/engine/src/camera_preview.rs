@@ -24,6 +24,8 @@ mod pairs;
 mod proxy;
 mod tone;
 
+pub(crate) use pairs::clip_colour;
+
 #[cfg(test)]
 pub(crate) use colour::{PROFILE_PROXY, dng_colour, dng_tone_eligible};
 #[cfg(test)]
@@ -43,9 +45,9 @@ use look_fit::{
 use mono::{fit_dark_tone, fit_tone_only, monochrome, monochrome_look, to_prophoto};
 #[cfg(test)]
 use pairs::{
-    Attempt, MATRIX_SPREAD, MATRIX_SPREAD_FROM, MIN_MATRIX_DETERMINANT, Pairs, TONE_FITS, collect_pairs, collect_pairs_by, colour_pair, displayed,
-    fit_attempt, fit_pairs, fit_pairs_ordered, fit_pairs_with, fit_partial, fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, matrix_spread,
-    rank_correlation_ties, search_ordered,
+    Attempt, MATRIX_SPREAD, MATRIX_SPREAD_FROM, Pairs, TONE_FITS, collect_pairs, colour_pair, dark_colour_signal, displayed, fit_attempt, fit_pairs,
+    fit_pairs_ordered, fit_pairs_with, fit_partial, fit_partial_on, fit_tone_with_shadows, jpeg_clipped, luma, matrix_spread, rank_correlation_ties,
+    search_ordered,
 };
 #[cfg(test)]
 pub(crate) use proxy::LensGeometry;
@@ -81,7 +83,7 @@ use tone::{HighlightCheck, ToneFit, fit_tone, fit_tone_conditional, highlights};
 /// lens-corrected proxy when the file carries lens opcodes; validated A7CR distortion, including the lens data
 /// stored with each smart preview.
 /// 13: the partial look's second attempt with the bright pairs (#631's bird).
-/// 14: darker pixels count as coloured in proportion to their luminance (#865).
+/// 14: dark-scene colour fits use thresholds scaled by luminance (#865) and keep luminance when clipping negative colour noise.
 pub const LOOK_VERSION: u32 = 14;
 
 #[derive(Clone, Debug)]
@@ -90,6 +92,8 @@ pub(crate) struct CameraLook {
     pub tone: CameraTone,
     /// Hue/saturation correction after `matrix`, in linear ProPhoto RGB (DNG `ProfileHueSatMap`).
     pub hue_sat: Option<HsvTable>,
+    /// Clipping negative channels keeps luminance for a matrix learnt through the scaled spread.
+    pub preserve_luminance: bool,
 }
 
 #[cfg(test)]
