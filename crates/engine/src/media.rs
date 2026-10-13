@@ -728,6 +728,10 @@ impl MediaCache {
         if std::mem::take(&mut self.clear_after_source) {
             self.rendered.clear();
         }
+        #[cfg(test)]
+        if let Some(then) = AFTER_SOURCE.with(|h| h.borrow_mut().take()) {
+            then();
+        }
         r
     }
 
@@ -1787,6 +1791,13 @@ pub struct ProbeInfo {
 }
 
 pub type FileProbe = Arc<dyn Fn(&str) -> Result<ProbeInfo, String> + Send + Sync>;
+
+#[cfg(test)]
+thread_local! {
+    /// Run once, on this thread, right after the next source is taken ([`MediaCache::source_ref`]): a test lets a
+    /// proxy refresh finish between a job's source and the rest of its construction there (#1328).
+    pub(crate) static AFTER_SOURCE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 mod thumbnail_hash_tests {

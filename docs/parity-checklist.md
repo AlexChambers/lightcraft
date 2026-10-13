@@ -797,6 +797,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | patch | LR-CLOUD-SMARTPREVIEW: raws' proxies record the raw decode version in both formats and are refreshed for it (#1328); a newer proxy is never rewritten and the markers only move up; status and counts unchanged |
 | 2026-10-13 | minor | LR-IMP-FORMATS: full-size developments demosaic the mosaic white balanced as shot and tell highlight reconstruction which channels were interpolated from clipped samples (issue #1328: no yellow, green, cyan or magenta outlines on neutral edges and around clipped highlights; measured channels kept, so dark detail against a clipped sky stays); LR-EDIT-LIGHT-HIGHLIGHTS notes the full-size clip mask; LR-CLOUD-SMARTPREVIEW: raws' proxies record and refresh on the raw decode's version; statuses unchanged |
 | 2026-10-13 | patch | LR-CLOUD-SMARTPREVIEW: with PR #850 merged, Compact proxies are stored at JPEG quality 97 and rebuilt for an older encode version; a Lossless proxy's own `enc` is not read as that version; status and counts unchanged |
 | 2026-10-13 | patch | LR-CLOUD-SMARTPREVIEW: a thumbnail clear moves the generation on under a short lock and removes the files after it, reading none from disk meanwhile (100,000 files held drawing for 6.7 s); status and counts unchanged |
