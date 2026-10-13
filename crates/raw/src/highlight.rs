@@ -358,6 +358,8 @@ pub const CLIPPED_B: u8 = 4;
 /// had a clipped sample in the block. Those channels count as clipped with their mean as the lower bound of their
 /// true value, so one clipped specular sample among many unclipped ones neither escapes reconstruction nor
 /// (as the block's maximum would) lifts the channel to the clip level, which reads as a coloured speckle (#548).
+/// The same for a full-size demosaic ([`crate::RawImage::develop_balanced_masked`]), whose mask marks the colours
+/// with a clipped sample within reach of the demosaic: values interpolated from them are lower bounds too (#1328).
 /// A mask of the wrong length is ignored (clipping is then told by the values alone).
 pub fn reconstruct_masked(img: &mut Rgb32f, wb: [f32; 3], clip: f32, white: [f32; 3], mask: &[u8]) -> usize {
     if mask.len() != img.data.len() {
