@@ -238,8 +238,8 @@ fn smart_run(
     cache: &crate::media::Invalidation,
 ) -> std::result::Result<SmartCounts, String> {
     let mut n = SmartCounts::default();
-    // Cleared once, when the run ends; recorded on disk before the first usable proxy is
-    // replaced, so a quit or crash before that clear makes the next opening use new thumbnail keys.
+    // Cleared once, when the run ends; recorded on disk before the first proxy is written or
+    // removed, so a quit or crash before that clear makes the next opening use new thumbnail keys.
     let mut pending = cache.pending();
     if !discard {
         // a chosen folder on another drive must be there: never recreate it on this one
@@ -258,10 +258,13 @@ fn smart_run(
         // depend on having the original online.
         let path = crate::smart::existing_file_path(dir, path);
         if discard {
-            // (no marker: a discard replaces no picture, and on a full drive it must free space)
-            if std::fs::remove_file(&path).is_ok() {
-                n.removed += 1;
-                pending.changed();
+            if path.symlink_metadata().is_ok() {
+                // (never refused: on a full drive the discard frees the space)
+                pending.before_change(crate::media::Change::Remove)?;
+                if std::fs::remove_file(&path).is_ok() {
+                    n.removed += 1;
+                    pending.changed(crate::media::Change::Remove);
+                }
             }
         } else {
             // a complete, current proxy is kept; a missing or damaged one (cut short by a crash or a
@@ -275,9 +278,6 @@ fn smart_run(
             if usable && !stale {
                 n.built += 1;
             } else {
-                if stale {
-                    pending.before_replacing()?;
-                }
                 // a stale proxy is rebuilt from the original only: never from itself (the file
                 // fallback or a source decoded from a proxy would stamp the old look as current)
                 let source = if stale { source.and_then(original_only) } else { source };
@@ -286,23 +286,27 @@ fn smart_run(
                 // is offline, when it is the only copy — the sync is small next to the decode
                 let loaded = source.ok_or_else(|| "nothing to build from".to_string()).and_then(|s| s.load_source());
                 let unavailable = loaded.is_err();
-                let r = loaded
+                let encoded = loaded
                     .and_then(|src| crate::smart::encode_format(&src.image, src.info_or(Default::default()).camera_tone.as_ref(), storage))
                     .and_then(|bytes| match &previous {
                         Some((_, head)) => crate::smart::preserve_header(&bytes, head),
                         None => Ok(bytes),
-                    })
-                    .and_then(|b| {
-                        let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
-                        // Only create the leaf shard: do not recreate a missing external drive.
-                        if !parent.is_dir() {
-                            std::fs::create_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-                        }
-                        lightcraft_catalog::safe_file::write_atomic(&path, &b).map_err(|e| format!("{}: {e}", path.display()))
                     });
+                // recorded only once there is something to write: a run of offline originals changes nothing
+                if encoded.is_ok() {
+                    pending.before_change(crate::media::Change::Write)?;
+                }
+                let r = encoded.and_then(|b| {
+                    let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
+                    // Only create the leaf shard: do not recreate a missing external drive.
+                    if !parent.is_dir() {
+                        std::fs::create_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+                    }
+                    lightcraft_catalog::safe_file::write_atomic(&path, &b).map_err(|e| format!("{}: {e}", path.display()))
+                });
                 match r {
                     Ok(()) => {
-                        pending.changed();
+                        pending.changed(crate::media::Change::Write);
                         n.built += 1;
                         if stale {
                             n.refreshed += 1;

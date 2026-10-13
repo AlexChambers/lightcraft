@@ -32,22 +32,26 @@ fn ids(s: &Session) -> [u64; 2] {
     [photo_id(s, "first.tif").0, photo_id(s, "second.tif").0]
 }
 
-/// Two photos with Compact proxies. The first one's thumbnail, rendered from its proxy while
-/// the original was offline, is in the disk cache. Both originals are online again.
+fn write_original(path: &Path, scale: f32) {
+    let mut image = Rgb32f::new(96, 64);
+    for (i, p) in image.data.iter_mut().enumerate() {
+        let x = (i % 96) as f32 / 96.0;
+        let y = (i / 96) as f32 / 64.0;
+        *p = [x * 2.2 * scale - 0.02, y * 0.7 + 0.01, (x + y) * 0.6 * scale];
+    }
+    let encoded = lightcraft_codecs::EncodeImage::new(96, 64, 3, lightcraft_codecs::Samples::F32(image.data.as_flattened()));
+    let bytes = lightcraft_codecs::encode_tiff(&encoded, lightcraft_codecs::TiffCompression::Deflate, &Default::default()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
 fn write_originals(dir: &Path) {
     for (path, scale) in originals(dir).iter().zip([1.0f32, 0.55]) {
-        let mut image = Rgb32f::new(96, 64);
-        for (i, p) in image.data.iter_mut().enumerate() {
-            let x = (i % 96) as f32 / 96.0;
-            let y = (i / 96) as f32 / 64.0;
-            *p = [x * 2.2 * scale - 0.02, y * 0.7 + 0.01, (x + y) * 0.6 * scale];
-        }
-        let encoded = lightcraft_codecs::EncodeImage::new(96, 64, 3, lightcraft_codecs::Samples::F32(image.data.as_flattened()));
-        let bytes = lightcraft_codecs::encode_tiff(&encoded, lightcraft_codecs::TiffCompression::Deflate, &Default::default()).unwrap();
-        std::fs::write(path, bytes).unwrap();
+        write_original(path, scale);
     }
 }
 
+/// Two photos with Compact proxies. The first one's thumbnail, rendered from its proxy while
+/// the original was offline, is in the disk cache. Both originals are online again.
 fn fixture(tag: &str) -> PathBuf {
     let root = super::tests::temp(tag);
     write_originals(&root);
@@ -572,9 +576,9 @@ fn a_thumbnail_drive_that_stays_full_still_converts() {
 }
 
 #[test]
-fn discarding_needs_no_marker() {
+fn a_discard_goes_ahead_without_a_marker_but_a_first_build_does_not() {
     let root = fixture("discard-without-marker");
-    // A folder that cannot hold a marker (and has nothing cached).
+    // A folder that cannot hold a marker, where nothing can be cleared either.
     let thumbs = root.join("library/thumbs");
     std::fs::remove_dir_all(&thumbs).unwrap();
     std::fs::write(&thumbs, b"not a folder").unwrap();
@@ -584,6 +588,180 @@ fn discarding_needs_no_marker() {
     let r = s.execute("library.smartPreviews", &json!({"discard": true, "ids": ids})).unwrap();
     assert_eq!(r["removed"], json!(2), "{r}");
     assert_eq!(stats(s.media.smart_dir.as_ref().unwrap()).0, 0);
+    // A first build replaces the picture the old thumbnails show: like a conversion, it stops.
+    let build = s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids}));
+    assert!(build.as_ref().is_err_and(|e| e.to_string().contains("thumbnail")), "{build:?}");
+    assert_eq!(stats(s.media.smart_dir.as_ref().unwrap()).0, 0, "no proxy was written");
     drop(s);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_conversion_refused_for_a_permission_error_keeps_the_thumbnail_cache() {
+    let root = fixture("conversion-permission");
+    fail_markers(&root, std::io::ErrorKind::PermissionDenied, 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("library"), false).unwrap();
+    let cached = cached_thumbnails(&root);
+    assert!(cached > 0);
+    let ids = ids(&s);
+    assert!(s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids})).is_err());
+    assert_eq!(cached_thumbnails(&root), cached, "clearing frees no permission");
+    for id in ids {
+        let photo = s.catalog.photo(PhotoId(id)).unwrap();
+        assert_eq!(header(&file_path(s.media.smart_dir.as_ref().unwrap(), photo)).unwrap().0, Format::Compact);
+    }
+    drop(s);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Child modes for the interrupted discard, then interrupted first build, regression.
+#[test]
+#[ignore = "child process for the interrupted discard and build regression"]
+fn interrupted_discard_then_build_child() {
+    let root = PathBuf::from(std::env::var_os("LC_SMART_CHAIN_ROOT").unwrap());
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("library"), false).unwrap();
+    let ids = ids(&s);
+    if std::env::var("LC_SMART_CHAIN_MODE").unwrap() == "build" {
+        // A first build writes the first proxy, then the process ends while reading the second original.
+        let loader = s.media.file_loader.clone().unwrap();
+        s.media.file_loader = Some(Arc::new(move |path, edge| {
+            if path.ends_with("second.tif") {
+                std::process::exit(EXIT_CODE);
+            }
+            loader(path, edge)
+        }));
+        s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids})).unwrap();
+        panic!("the build finished without reading the second original");
+    }
+    // A thumbnail read held open on a FIFO keeps the discard's final clear waiting, so the
+    // process ends after the proxies are removed and before that clear, as with Quit Anyway.
+    set_online(&root, false);
+    s.media.clear_sources();
+    let mut job = s.thumb_job(photo_id(&s, "second.tif"), 128).unwrap();
+    let key = job.cache.as_ref().unwrap().1;
+    // (rendered aside: no deferred disk write of this key may land after the FIFO is made)
+    job.cache = Some((Arc::new(PreviewCache::memory(1_000_000)), key));
+    let shown = job.run().rendered.unwrap().image;
+    s.media.rendered.put(key, Arc::new(shown));
+    set_online(&root, true);
+    let hex = key.to_string();
+    let fifo = root.join("library/thumbs").join(&hex[..2]).join(format!("{hex}.jpg"));
+    std::fs::remove_file(&fifo).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    // a new cache object has an empty memory cache, so the read goes to the FIFO
+    s.open_library(root.join("library"), false).unwrap();
+    let reader = s.thumb_job(photo_id(&s, "second.tif"), 128).unwrap();
+    std::thread::spawn(move || reader.run());
+    // opening the writer waits for the reader, which then holds the cache's generation lock
+    let _writer = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    let proxies: Vec<PathBuf> = ids.iter().map(|id| file_path(s.media.smart_dir.as_ref().unwrap(), s.catalog.photo(PhotoId(*id)).unwrap())).collect();
+    std::thread::spawn(move || {
+        loop {
+            if proxies.iter().all(|p| !p.exists()) {
+                std::process::exit(EXIT_CODE);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
+    let _ = s.execute("library.smartPreviews", &json!({"discard": true, "ids": ids}));
+    panic!("the discard's final clear ran");
+}
+
+/// Each run is safe alone: an interrupted discard leaves thumbnails that still show the photo.
+/// But a first build after it replaces that picture, and if it is interrupted too, both runs
+/// must have left a marker.
+#[test]
+#[cfg(unix)]
+fn regression709_an_interrupted_discard_then_an_interrupted_first_build() {
+    let root = fixture("discard-then-build");
+    for mode in ["discard", "build"] {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "smart::tests_conversion::interrupted_discard_then_build_child", "--ignored"])
+            .env("LC_SMART_CHAIN_ROOT", &root)
+            .env("LC_SMART_CHAIN_MODE", mode)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(EXIT_CODE), "{mode}");
+    }
+    set_online(&root, false);
+    for _ in 0..2 {
+        let mut s = Session::new().with_fs();
+        s.open_library(root.join("library"), false).unwrap();
+        assert_fresh_thumbnail(&mut s, &root);
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "child process for the full-drive fallback regression"]
+fn full_drive_fallback_child() {
+    use std::sync::{Mutex, mpsc};
+    let root = PathBuf::from(std::env::var_os("LC_SMART_FALLBACK_ROOT").unwrap());
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("library"), false).unwrap();
+    // The thumbnail folder's drive is full: no marker can be created, then space comes back.
+    fail_markers(&root, std::io::ErrorKind::StorageFull, 2);
+    let (entered, waiting) = mpsc::channel();
+    let (release, blocked) = mpsc::channel::<()>();
+    let blocked = Mutex::new(blocked);
+    let loader = s.media.file_loader.clone().unwrap();
+    s.media.file_loader = Some(Arc::new(move |path, edge| {
+        if path.ends_with("third.tif") {
+            std::process::exit(EXIT_CODE);
+        }
+        if path.ends_with("second.tif") {
+            entered.send(()).unwrap();
+            blocked.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        }
+        loader(path, edge)
+    }));
+    let ids = [photo_id(&s, "first.tif").0, photo_id(&s, "second.tif").0, photo_id(&s, "third.tif").0];
+    s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids, "background": true})).unwrap();
+    waiting.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    // The first proxy is replaced. The grid shows the second photo from its old proxy, as when
+    // its drive still reads as offline, and that thumbnail is written to disk.
+    let second = root.join("second.tif");
+    std::fs::rename(&second, second.with_extension("offline")).unwrap();
+    s.media.clear_sources();
+    let job = s.thumb_job(photo_id(&s, "second.tif"), 128).unwrap();
+    let key = job.cache.as_ref().unwrap().1;
+    let shown = job.run().rendered.unwrap().image;
+    s.media.rendered.put(key, Arc::new(shown));
+    std::fs::rename(second.with_extension("offline"), &second).unwrap();
+    // The second proxy is replaced, then the process ends while reading the third original.
+    release.send(()).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(30));
+    panic!("the build did not reach the third original");
+}
+
+#[test]
+fn regression709_a_run_without_a_marker_keeps_no_thumbnail_of_a_proxy_it_replaced() {
+    let root = fixture("fallback-window");
+    let third = root.join("third.tif");
+    write_original(&third, 0.8);
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("library"), false).unwrap();
+    s.execute("library.import", &json!({"paths": [third]})).unwrap();
+    let id = photo_id(&s, "third.tif").0;
+    s.execute("library.smartPreviews", &json!({"format": "compact", "ids": [id]})).unwrap();
+    s.close_library().unwrap();
+    drop(s);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "smart::tests_conversion::full_drive_fallback_child", "--ignored"])
+        .env("LC_SMART_FALLBACK_ROOT", &root)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(EXIT_CODE));
+    set_online(&root, false);
+    std::fs::rename(&third, third.with_extension("offline")).unwrap();
+    for _ in 0..2 {
+        let mut s = Session::new().with_fs();
+        s.open_library(root.join("library"), false).unwrap();
+        let photo = s.catalog.photo(photo_id(&s, "second.tif")).unwrap().clone();
+        assert_eq!(header(&file_path(s.media.smart_dir.as_ref().unwrap(), &photo)).unwrap().0, Format::Lossless);
+        assert_thumbnail_matches_proxy(&mut s, "second.tif");
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

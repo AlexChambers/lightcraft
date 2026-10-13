@@ -1,5 +1,5 @@
 //! A proxy worker's invalidation follows cache replacements for the same library directory.
-//! Before a worker replaces its first usable proxy it records that on disk ([`Pending`]), so a
+//! Before a worker writes or removes its first proxy it records that on disk ([`Pending`]), so a
 //! process exit before its cache clear reopens the library with a new thumbnail namespace.
 
 use lightcraft_preview::PreviewCache;
@@ -25,7 +25,7 @@ static LIBRARIES: OnceLock<Mutex<HashMap<std::path::PathBuf, Weak<Current>>>> = 
 
 /// Marker files are empty and sit at the top of the thumbnail folder, outside the cache's
 /// two-digit shard folders, so pruning and clearing never touch them. A full drive can refuse
-/// even an empty file (APFS and HFS+ do); see [`Pending::before_replacing`].
+/// even an empty file (APFS and HFS+ do); see [`Pending::before_change`].
 const MARKER_PREFIX: &str = "smart-previews-changing-";
 /// The file names of the markers of workers still running in this process: opening their
 /// library keeps them. Names are unique (process, time, counter), so they match however the
@@ -78,64 +78,80 @@ impl Invalidation {
 
     /// The thumbnail changes of one proxy run (see [`Pending`]).
     pub(crate) fn pending(&self) -> Pending {
-        Pending { invalidation: self.clone(), marker: None, recorded: false, changed: false }
+        Pending { invalidation: self.clone(), marker: None, recorded: false, unrecorded: false, changed: false }
     }
 }
 
+/// What a run is about to do to a proxy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Change {
+    /// Remove it (Discard Smart Previews): never refused, the drive may need the space.
+    Remove,
+    /// Write it: a new, repaired, converted or refreshed proxy.
+    Write,
+}
+
 /// One run of Build / Discard Smart Previews or of the look refresh. It clears the thumbnail
-/// cache once, when it ends, if it changed a proxy. Before it replaces a usable proxy (a format
-/// conversion or a look refresh), [`Pending::before_replacing`] creates a durable marker in the
-/// thumbnail folder, which is removed after that clear. If the process ends in between, the
-/// marker stays: the next opening finds it ([`interrupted_runs`]) and takes a new thumbnail
-/// namespace before reading any thumbnail. Discarding, building a missing proxy and repairing a
-/// damaged one need no marker: no thumbnail can show a picture that they replace.
+/// cache once, when it ends, if it changed a proxy. Before its first change,
+/// [`Pending::before_change`] creates a durable marker in the thumbnail folder, which is removed
+/// after that clear. If the process ends in between, the marker stays: the next opening finds it
+/// ([`interrupted_runs`]) and takes a new thumbnail namespace before reading any thumbnail. Every
+/// change counts, even one that leaves correct thumbnails: an interrupted discard leaves those of
+/// the removed proxies, whose picture a later first build replaces.
 pub(crate) struct Pending {
     invalidation: Invalidation,
     marker: Option<PathBuf>,
     recorded: bool,
+    /// The drive was full: no marker, so every write is followed by a clear.
+    unrecorded: bool,
     changed: bool,
 }
 
 impl Pending {
-    /// Call before each proxy that replaces a usable one; only the first call does I/O.
+    /// Call before each proxy written or removed; only the first call does I/O.
     ///
-    /// When the marker can't be created (a full drive refuses even an empty file), the thumbnail
-    /// cache is cleared at once, in every namespace. That removes every thumbnail of the proxies
-    /// about to be replaced and frees space, and the marker is tried again. If the drive is still
-    /// full, the run goes on without it: an exit can leave no thumbnail of a replaced proxy,
-    /// because those were just removed and a proxy is only replaced from its online original.
-    /// Any other failure, such as a read-only folder where nothing can be cleared either, is an
-    /// error, and no proxy may change.
-    pub(crate) fn before_replacing(&mut self) -> Result<(), String> {
+    /// When the drive is out of space (it can refuse even an empty file), the thumbnail cache is
+    /// cleared at once, in every namespace. That removes every thumbnail of the proxies about to
+    /// change and frees space, and the marker is tried again. If that fails too, the run goes on
+    /// without a marker and clears the cache again after each proxy it writes, so no thumbnail
+    /// rendered from a proxy before its replacement outlives an exit. Any other failure (a
+    /// read-only folder, where nothing could be cleared either) stops a run that writes, before
+    /// it changes anything. A discard goes ahead: what it leaves behind still shows the photo.
+    pub(crate) fn before_change(&mut self, change: Change) -> Result<(), String> {
         if self.recorded {
             return Ok(());
         }
         let dir = self.invalidation.0.lock().unwrap_or_else(PoisonError::into_inner).cache.disk().map(|disk| disk.dir().to_path_buf());
         // (a memory-only cache does not outlive the process)
         if let Some(dir) = dir {
-            self.marker = match create_marker(&dir) {
-                Ok(marker) => Some(marker),
-                Err(first) => {
-                    log::warn!("thumbnail cache: {}: {first}; clearing it before smart previews change", dir.display());
+            match create_marker(&dir) {
+                Ok(marker) => self.marker = Some(marker),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded) => {
+                    log::warn!("thumbnail cache: {}: {e}; clearing it before smart previews change", dir.display());
                     self.invalidation.clear();
                     match create_marker(&dir) {
-                        Ok(marker) => Some(marker),
-                        Err(e) if matches!(e.kind(), std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded) => {
-                            log::warn!("thumbnail cache: {}: {e}; it was cleared, continuing without a marker", dir.display());
-                            None
+                        Ok(marker) => self.marker = Some(marker),
+                        Err(e) => {
+                            log::warn!("thumbnail cache: {}: {e}; continuing without a marker, clearing after each proxy", dir.display());
+                            self.unrecorded = true;
                         }
-                        Err(e) => return Err(format!("could not record the thumbnail cache change in {}: {e}", dir.display())),
                     }
                 }
-            };
+                Err(e) if change == Change::Remove => log::warn!("thumbnail cache: {}: {e}; discarding without a marker", dir.display()),
+                Err(e) => return Err(format!("could not record the thumbnail cache change in {}: {e}", dir.display())),
+            }
         }
         self.recorded = true;
         Ok(())
     }
 
-    /// A proxy was written or removed: the thumbnail cache is cleared when the run ends.
-    pub(crate) fn changed(&mut self) {
+    /// A proxy was written or removed: the thumbnail cache is cleared when the run ends, and
+    /// after each write while the run has no marker.
+    pub(crate) fn changed(&mut self, change: Change) {
         self.changed = true;
+        if self.unrecorded && change == Change::Write {
+            self.invalidation.clear();
+        }
     }
 }
 

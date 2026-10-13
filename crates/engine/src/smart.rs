@@ -17,6 +17,8 @@ mod format;
 pub(crate) mod migration;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod tests_conversion;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests_cut_short;
 #[cfg(test)]
 mod tests_lossless;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -148,6 +150,11 @@ pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>), String> {
     let (storage, head, body) = format::split(bytes)?;
     let (w, h) = format::dimensions(&head)?;
     let tone = head.get("tone").and_then(|t| serde_json::from_value::<CameraTone>(t.clone()).ok());
+    // A JPEG cut short still decodes, with the rest of the picture made up: a Compact payload
+    // must end where JPEG ends (the Lossless payload has its length and checksum).
+    if storage == Format::Compact && !body.ends_with(&[0xFF, 0xD9]) {
+        return Err("smart preview is cut short".into());
+    }
     let payload = if storage == Format::Lossless { format::payload(&head, body)? } else { body };
     let d = lightcraft_codecs::decode(payload, lightcraft_codecs::DecodeOptions { max_pixels: (w as u64) * (h as u64), ..Default::default() })
         .map_err(|e| e.to_string())?;
@@ -351,10 +358,11 @@ pub fn is_complete(path: &Path) -> bool {
     f.seek(SeekFrom::End(-2)).is_ok() && f.read_exact(&mut end).is_ok() && end == [0xFF, 0xD9]
 }
 
-/// Whether a bounded read decodes successfully, including the LCSP2 payload checksum.
+/// Whether the proxy is complete ([`is_complete`]: a Compact JPEG has no checksum, and one cut
+/// short can still decode) and a bounded read decodes it, including the LCSP2 payload checksum.
 /// Use this for decisions that keep a proxy instead of rebuilding it or retaining another copy.
 pub fn is_usable(path: &Path) -> bool {
-    load(path).is_ok()
+    is_complete(path) && load(path).is_ok()
 }
 
 /// The fit version a header records: a missing, negative, fractional or otherwise malformed value
