@@ -420,8 +420,8 @@ pub fn versions(path: &Path) -> Option<(u64, u64)> {
 }
 
 /// Whether the complete proxy at `path` was written by a newer build: its camera-look fit or raw decode version, or a
-/// Compact proxy's encode version, is above this build's. Such a proxy is never rewritten here: this build would put
-/// its own older look, decode or encoding in it and take that version back.
+/// Compact proxy's encode version, is above this build's. Such a proxy is never rewritten here, for staleness or for a
+/// format change: this build would put its own older look, decode or encoding in it and take that version back.
 pub fn from_newer_build(path: &Path) -> bool {
     complete_header(path).is_some_and(|(storage, h)| {
         header_version(&h, LOOK_FIELD) > u64::from(crate::camera_preview::LOOK_VERSION)

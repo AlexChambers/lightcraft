@@ -32,6 +32,8 @@ fn raw_of(w: usize, h: usize, cfa: &Cfa, wb: [f32; 3], scene: impl Fn(usize, usi
         color: ColorData::default(),
         wb_multipliers: None,
         linearized: true,
+        pixel_aspect: 1.0,
+        lens_metadata: Default::default(),
         opcodes: OpcodeLists::default(),
         metadata: Default::default(),
     }
@@ -589,5 +591,22 @@ fn huge_float_samples_develop_unbalanced_rather_than_overflow() {
             assert!(out.data.iter().flatten().all(|v| v.is_finite()), "{name} {wb:?}");
             assert_ne!(out, plain, "{name} {wb:?}: balanced");
         }
+    }
+}
+
+/// Batch 37's non-square pixels change the developed grid, so mosaic positions cannot mark it.
+#[test]
+fn non_square_pixels_keep_the_stretched_grid_without_a_mosaic_clip_mask() {
+    let cfa = Cfa::bayer("RGGB").unwrap();
+    let mut raw = raw_of(24, 18, &cfa, DAYLIGHT, |_, _| [3.0; 3]);
+    let (square, mask) = raw.develop_balanced_masked(Method::Ahd, DAYLIGHT, CLIP).unwrap();
+    assert_eq!((square.width, square.height), (24, 18));
+    assert_eq!(mask.unwrap().len(), 24 * 18);
+    for (aspect, height) in [(2.0, 36), (0.5, 9)] {
+        raw.pixel_aspect = aspect;
+        let (image, mask) = raw.develop_balanced_masked(Method::Ahd, DAYLIGHT, CLIP).unwrap();
+        assert_eq!((image.width, image.height), (24, height));
+        assert!(mask.is_none(), "the mosaic grid is not the stretched grid");
+        assert_eq!(image, raw.develop_balanced(Method::Ahd, DAYLIGHT).unwrap());
     }
 }

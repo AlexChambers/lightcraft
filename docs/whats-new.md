@@ -193,12 +193,12 @@
 - Bright coloured highlights (a setting sun, neon tubes) keep their brightness right up to their blown-out centre.
 - Previews of most cameras never showed it and don't change. Previews of cameras with smaller sensors (Bayer sensors
   under about 4600 pixels on the long side, about 12 megapixels and below; Fujifilm X-Trans under about 5760 pixels,
-  such as the 16 megapixel X-E1) were filled in the same way and are fixed too. Smart previews of raws that are out
-  of date are rebuilt from their originals once, in the background, when the library is next opened; ones whose
-  original is offline keep theirs until Build Smart Previews runs with it online. Lossless smart previews are
-  rebuilt as Lossless. Exports and 1:1
-  views of photos you have already edited change along such edges and in fine detail. Even areas change by about
-  0.5 ΔE on average (their noise grain is rendered slightly differently), with no shift in colour.
+  such as the 16 megapixel X-E1) were filled in the same way and are fixed too. Smart previews of raws that are out of
+  date are rebuilt from their originals once, in the background, when the library is next opened; ones whose original
+  is offline keep theirs until Build Smart Previews runs with it online. Lossless smart previews are rebuilt as
+  Lossless. Exports and 1:1 views of photos you have already edited change along such edges and in fine detail. Even
+  areas change by about 0.5 ΔE on average (their noise grain is rendered slightly differently), with no shift in
+  colour.
 
 ### Slider drags on large raws
 - Dragging a slider no longer re-renders the edited photo's filmstrip thumbnail on every frame; it follows once you

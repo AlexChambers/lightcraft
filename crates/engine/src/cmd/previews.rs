@@ -230,6 +230,9 @@ struct SmartCounts {
     /// Of those kept as they were: out of date, but the original can't be read now (offline), so
     /// the stored look stays and the next run with the original online rebuilds them.
     stale_kept: usize,
+    /// Of those kept as they were: written by a newer build (a look or raw decode version above this build's), so
+    /// neither refreshed nor converted to another format here.
+    newer_kept: usize,
     removed: usize,
     /// `[[id, why]]`
     failed: Vec<Value>,
@@ -299,9 +302,15 @@ fn smart_run(
             let previous = crate::smart::header(&path);
             let storage = format.or_else(|| previous.as_ref().map(|(f, _)| *f)).unwrap_or_default();
             let usable = crate::smart::is_usable(&path);
-            let stale = usable && (ages.stale(&path) || previous.as_ref().is_some_and(|(f, _)| *f != storage));
+            // A usable proxy from a newer build stays as it is, in its format too: rewritten here, it would take this
+            // build's older look or decode and versions (a deliberate downgrade is not offered; Discard is).
+            let newer = usable && crate::smart::from_newer_build(&path);
+            let stale = usable && !newer && (ages.stale(&path) || previous.as_ref().is_some_and(|(f, _)| *f != storage));
             if usable && !stale {
                 n.built += 1;
+                if newer {
+                    n.newer_kept += 1;
+                }
             } else {
                 let change = if stale { crate::media::Change::Replace } else { crate::media::Change::Write };
                 // a stale proxy is rebuilt from the original only: never from itself (the file
@@ -431,7 +440,7 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
     let task = task_for(s, &state);
     let r = smart_run(&dir, custom, discard, jobs, Some((&state, &task)), Some(format), &cache).map_err(|e| bad(C, e))?;
     Ok(
-        json!({"built": r.built, "repaired": r.repaired, "refreshed": r.refreshed, "staleKept": r.stale_kept, "removed": r.removed, "failed": r.failed}),
+        json!({"built": r.built, "repaired": r.repaired, "refreshed": r.refreshed, "staleKept": r.stale_kept, "newerKept": r.newer_kept, "removed": r.removed, "failed": r.failed}),
     )
 }
 
