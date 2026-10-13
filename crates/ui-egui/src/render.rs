@@ -1691,6 +1691,7 @@ mod region_failure_regression {
         h.app.ui.zoom = crate::state::Zoom::Percent(200.0);
         h.app.ui.before_after = crate::state::BeforeAfter::SideBySide;
         h.settle(Duration::from_secs(120));
+        let photo = h.app.session.active().unwrap();
         let message = "Zoom detail is unavailable. Try a lower zoom.";
         for locale in crate::i18n::Locale::ALL.iter().skip(1) {
             assert_ne!(locale.tr(message), message, "translation for {locale:?}");
@@ -1698,7 +1699,7 @@ mod region_failure_regression {
         for slot in [Slot::Region, Slot::RegionBefore] {
             h.app.renderer.textures.remove(&slot);
             h.app.region_tiles.clear();
-            h.app.renderer.failed.insert(slot, (0, "exact-render memory budget".into(), h.app.renderer.catalog_rev));
+            h.app.renderer.failed.insert(slot, (0, "exact-render memory budget".into(), h.app.renderer.catalog_rev, photo));
             h.step();
             assert!(h.painted_text().iter().any(|t| t == message), "{slot:?}: missing region status");
             if let Some(dir) = std::env::var_os("REGION_FAILURE_SCREENSHOT_DIR") {

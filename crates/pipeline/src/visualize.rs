@@ -431,14 +431,14 @@ mod tests {
             ..Default::default()
         });
         let o = Overlay::AllMasks { view: MaskView::WhiteOnBlack, color: [255, 0, 0], opacity: 100 };
-        let img = render(&src, &info, &s, &RenderRequest { overlay: o, ..RenderRequest::fit(80, 40) }).image;
+        let img = render(&src, &info, &s, &RenderRequest { overlay: o, ..RenderRequest::fit(80, 40) }).unwrap().image;
         let (in_l, in_r, mid) = (20 * 80 + 12, 20 * 80 + 60, 20 * 80 + 40);
         assert_eq!(img.data[in_l], [255; 4], "left mask region painted");
         assert_eq!(img.data[in_r], [255; 4], "right mask region painted");
         assert_eq!(img.data[mid], [0, 0, 0, 255], "between the masks: black");
         // a hidden mask is skipped
         s.masks[1].visible = false;
-        let img2 = render(&src, &info, &s, &RenderRequest { overlay: o, ..RenderRequest::fit(80, 40) }).image;
+        let img2 = render(&src, &info, &s, &RenderRequest { overlay: o, ..RenderRequest::fit(80, 40) }).unwrap().image;
         assert_eq!(img2.data[in_r], [0, 0, 0, 255], "hidden right mask not painted: black like everything outside");
         assert_eq!(img2.data[in_l], [255; 4], "visible left mask still painted");
         // parts round trip and a stable, distinct cache key

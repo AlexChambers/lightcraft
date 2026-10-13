@@ -332,48 +332,48 @@ fn main() {
         // first window of a photo: nothing cached (the GPU uploads the original: `shared_source`)
         row("window first (upload original):", &mut |g| {
             lightcraft_engine::gpu::trim_pool(0);
-            drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&StageCache::default()), g))
+            drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&StageCache::default()), g).unwrap())
         });
         let wc = [StageCache::default(), StageCache::default()];
         for g in backends {
-            drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&wc[*g as usize]), *g));
+            drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&wc[*g as usize]), *g).unwrap());
         }
         let mut step = 0usize;
         row("window pan (new window, warm src):", &mut |g| {
             step += 1;
             let w = win(fw / 2 + 512 * (step % 4 + 1), fh / 2);
-            drop(develop(&full, &info, &s, &at(w, Quality::Full), Some(&wc[g as usize]), g))
+            drop(develop(&full, &info, &s, &at(w, Quality::Full), Some(&wc[g as usize]), g).unwrap())
         });
         for g in backends {
-            drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&wc[*g as usize]), *g));
+            drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&wc[*g as usize]), *g).unwrap());
         }
         row("window exposure change (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.light.exposure = 0.3 + k * 0.01;
-            drop(develop(&full, &info, &t, &at(w0, Quality::Full), Some(&wc[g as usize]), g));
+            drop(develop(&full, &info, &t, &at(w0, Quality::Full), Some(&wc[g as usize]), g).unwrap());
         });
         row("window draft exposure drag (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.light.exposure = 0.3 + k * 0.01;
-            drop(develop(&full, &info, &t, &at(w0, Quality::Draft), Some(&wc[g as usize]), g));
+            drop(develop(&full, &info, &t, &at(w0, Quality::Draft), Some(&wc[g as usize]), g).unwrap());
         });
         row("window NR change (warm):", &mut |g| {
             let mut t = s.clone();
             k += 1.0;
             t.detail.nr_luminance = 30.0 + k % 50.0;
-            drop(develop(&full, &info, &t, &at(w0, Quality::Full), Some(&wc[g as usize]), g));
+            drop(develop(&full, &info, &t, &at(w0, Quality::Full), Some(&wc[g as usize]), g).unwrap());
         });
         // `DUMP=file`: the GPU window's raw RGBA bytes (A/B pixel comparisons between builds)
         if let (true, Some(path)) = (gpu, std::env::var_os("DUMP")) {
-            let g = develop(&full, &info, &s, &at(w0, Quality::Full), Some(&StageCache::default()), true).image;
+            let g = develop(&full, &info, &s, &at(w0, Quality::Full), Some(&StageCache::default()), true).unwrap().image;
             let bytes: Vec<u8> = g.data.iter().flatten().copied().collect();
             std::fs::write(path, bytes).expect("dump");
         }
         if gpu && std::env::var_os("GPU_ONLY").is_none() {
-            let c = develop(&full, &info, &s, &at(w0, Quality::Full), None, false).image;
-            let g = develop(&full, &info, &s, &at(w0, Quality::Full), None, true).image;
+            let c = develop(&full, &info, &s, &at(w0, Quality::Full), None, false).unwrap().image;
+            let g = develop(&full, &info, &s, &at(w0, Quality::Full), None, true).unwrap().image;
             let (max, mean) = diff(&c, &g);
             println!("gpu vs cpu, window: max {max} LSB, mean {mean:.4} LSB");
         }
