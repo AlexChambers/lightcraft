@@ -23,8 +23,14 @@ pub(crate) fn intercept(app: &mut LightcraftApp, command: &str, params: &Value) 
         return None;
     }
     let path = app.session.media.smart_dir.clone()?;
-    let ids =
-        if params.get("ids").is_some() || !app.session.selection.ids.is_empty() { app.session.targets(params) } else { app.session.visible_cloned() };
+    let ids = if params.get("ids").is_some() || params.get("id").is_some() || !app.session.selection.ids.is_empty() {
+        match app.session.targets(params) {
+            Ok(ids) => ids,
+            Err(error) => return Some(Err(error.to_string())),
+        }
+    } else {
+        app.session.visible_cloned()
+    };
     let ids: Vec<_> = ids
         .into_iter()
         .filter(|id| app.session.catalog.photo(*id).is_some_and(|p| matches!(p.source, lightcraft_catalog::Source::File { .. })))
@@ -234,6 +240,27 @@ mod tests {
         assert!(intercept(&mut app, "library.smartPreviews", &json!({})).is_none(), "Compact stays immediate");
         assert!(intercept(&mut app, "library.smartPreviews", &json!({"discard": true, "format": "lossless"})).is_none());
         assert!(available_space(&dir.join("missing/volume"), true).is_err(), "never report the system drive for a missing custom folder");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lossless_confirmation_validates_explicit_targets_before_checking_storage() {
+        let (mut app, dir) = app("invalid-targets");
+        app.session.selection.ids.clear();
+        app.session.selection.active = None;
+        for params in [json!({"ids": "bad"}), json!({"ids": [1, "bad"]}), json!({"id": "bad"})] {
+            let error = intercept(&mut app, "library.smartPreviews", &params).unwrap().unwrap_err();
+            assert!(error.contains("photo ids"), "{error}");
+            assert!(app.ui.dialog.is_none());
+            assert!(app.smart_preview_space.is_none());
+            assert!(app.session.preview_build.is_none());
+        }
+        let result = intercept(&mut app, "library.smartPreviews", &json!({"id": 2})).unwrap().unwrap();
+        assert_eq!(result["count"], 1);
+        let Some(Dialog::BuildSmartPreviews { params, .. }) = &app.ui.dialog else { panic!("cost dialog missing") };
+        assert_eq!(params["ids"], json!([2]), "an explicit id never expands to every visible photo");
+        finish_check(&mut app);
+        assert!(!dir.join("Smart Previews").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
