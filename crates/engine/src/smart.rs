@@ -100,8 +100,9 @@ pub(crate) const ENCODE_VERSION: u64 = 2;
 /// reconstruction, the colour model). `RENDER_CACHE_VERSION` covers renders and in-memory sources; this covers the
 /// persisted ones.
 ///
-/// 0: no field (before it existed); 1: sensors too small to bin at preview size (under about 4600 px on the long
-/// side) demosaic the white-balanced mosaic with the clip mask (#1328).
+/// 0: no field (before it existed); 1: raws that don't bin at preview size (`files::bin_factor` is `None`: Bayer
+/// sensors under about 4600 px on the long side, X-Trans under about 5760 px) demosaic the white-balanced mosaic with
+/// the clip mask (#1328).
 pub const SOURCE_VERSION: u32 = 1;
 
 /// The header field that records [`SOURCE_VERSION`].
@@ -411,6 +412,24 @@ pub fn is_stale(path: &Path) -> bool {
     })
 }
 
+/// The `(LOOK_VERSION, SOURCE_VERSION)` the complete proxy at `path` was written by (a missing or malformed one: 0), or
+/// `None` when it is incomplete or unreadable ([`is_complete`]). Read together, so a refresh can tell a proxy that is old in
+/// one but from a newer build in the other (which it must leave alone).
+pub fn versions(path: &Path) -> Option<(u64, u64)> {
+    complete_header(path).map(|(_, h)| (header_version(&h, LOOK_FIELD), header_version(&h, SOURCE_FIELD)))
+}
+
+/// Whether the complete proxy at `path` was written by a newer build: its camera-look fit or raw decode version, or a
+/// Compact proxy's encode version, is above this build's. Such a proxy is never rewritten here: this build would put
+/// its own older look, decode or encoding in it and take that version back.
+pub fn from_newer_build(path: &Path) -> bool {
+    complete_header(path).is_some_and(|(storage, h)| {
+        header_version(&h, LOOK_FIELD) > u64::from(crate::camera_preview::LOOK_VERSION)
+            || header_version(&h, SOURCE_FIELD) > u64::from(SOURCE_VERSION)
+            || (storage == Format::Compact && header_version(&h, ENC_FIELD) > ENCODE_VERSION)
+    })
+}
+
 /// Whether the complete proxy at `path` holds a source decoded by an older raw decode than this build's
 /// ([`SOURCE_VERSION`]); only a raw's proxy is out of date for it, which the caller knows. As [`is_stale`]: a proxy
 /// from a newer build, or one that is incomplete, is not.
@@ -437,6 +456,16 @@ fn marker(dir: &Path, name: &str) -> Vec<u64> {
     text.split_whitespace().map_while(|w| w.parse::<u64>().ok()).collect()
 }
 
+/// Record `versions` in the marker `name` in `dir`, each kept at the one recorded there if that is newer (a newer
+/// build checked the folder: no version in a marker goes back); versions after them that it records stay too.
+fn mark(dir: &Path, name: &str, versions: &[u64]) -> Result<(), String> {
+    let old = marker(dir, name);
+    let kept = versions.iter().enumerate().map(|(i, &v)| old.get(i).map_or(v, |&o| o.max(v))).chain(old.iter().skip(versions.len()).copied());
+    let text = kept.map(|v| v.to_string()).collect::<Vec<_>>().join(" ");
+    let path = dir.join(name);
+    lightcraft_catalog::safe_file::write_atomic(&path, format!("{text}\n").as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Whether the smart previews folder `dir` has been checked for out-of-date proxies at this build's
 /// camera-look fit version and encode version (or newer ones). A missing or unreadable marker counts
 /// as not, and so does one written before the encode version was recorded — it only says the look
@@ -453,17 +482,14 @@ pub fn source_checked(dir: &Path) -> bool {
 }
 
 /// Record that the proxies in `dir` were checked at this build's camera-look fit version and encode
-/// version.
+/// version (newer ones recorded stay).
 pub fn mark_look_checked(dir: &Path) -> Result<(), String> {
-    let path = dir.join(LOOK_MARKER);
-    let text = format!("{} {}\n", crate::camera_preview::LOOK_VERSION, ENCODE_VERSION);
-    lightcraft_catalog::safe_file::write_atomic(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+    mark(dir, LOOK_MARKER, &[u64::from(crate::camera_preview::LOOK_VERSION), ENCODE_VERSION])
 }
 
-/// Record that the raws' proxies in `dir` were checked at this build's [`SOURCE_VERSION`].
+/// Record that the raws' proxies in `dir` were checked at this build's [`SOURCE_VERSION`] (a newer one recorded stays).
 pub fn mark_source_checked(dir: &Path) -> Result<(), String> {
-    let path = dir.join(SOURCE_MARKER);
-    lightcraft_catalog::safe_file::write_atomic(&path, format!("{SOURCE_VERSION}\n").as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+    mark(dir, SOURCE_MARKER, &[u64::from(SOURCE_VERSION)])
 }
 
 /// Load the proxy at `path`.

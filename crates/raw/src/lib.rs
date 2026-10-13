@@ -859,8 +859,9 @@ impl RawImage {
     ///
     /// A constant-colour mosaic still comes back as that colour (to `f32` rounding). Bilinear interpolates each colour
     /// from its own samples alone, so it gives the same either way and skips the scaling; so do monochrome and
-    /// already demosaiced data, and a `wb` that isn't three positive finite numbers or whose multipliers differ by
-    /// more than a factor of 64 (as [`Self::develop`]).
+    /// already demosaiced data, a `wb` that isn't three positive finite numbers or whose red or blue multiplier differs
+    /// from green's by more than a factor of 64, and a mosaic with a non-finite sample or one whose magnitude, times
+    /// the largest gain or divided by the smallest, exceeds 1e30: those develop as [`Self::develop`].
     pub fn develop_balanced(&self, method: Method, wb: [f32; 3]) -> Result<Rgb32f> {
         self.develop_balanced_with(method, wb, None).map(|(rgb, _)| rgb)
     }
@@ -886,10 +887,14 @@ impl RawImage {
     fn develop_balanced_with(&self, method: Method, wb: [f32; 3], clip: Option<f32>) -> Result<(Rgb32f, Option<Vec<u8>>)> {
         let mut n = self.normalized()?;
         let mask = clip.and_then(|clip| self.clip_mask(&n, clip));
-        let gains = balance_gains(wb);
-        let rgb = match (n.cfa.clone(), gains) {
+        let rgb = match (n.cfa.clone(), balance_gains(wb)) {
             (Some(cfa), Some(gains)) if n.cpp == 1 && method != Method::Bilinear => {
-                scale_mosaic(&mut n.data, n.width, &cfa, gains);
+                if !scale_mosaic(&mut n.data, n.width, &cfa, gains) {
+                    // a sample too large for the gains, or not finite: the mosaic, read afresh, develops unbalanced
+                    drop(n);
+                    let n = self.normalized()?;
+                    return Ok((self.finish_demosaiced(demosaic(&n, method)), mask));
+                }
                 let mut rgb = demosaic(&n, method);
                 drop(n);
                 lightcraft_raster::par_rows(&mut rgb.data, rgb.width, |_, row| {
@@ -984,11 +989,17 @@ impl RawImage {
 /// further again). Wider would mark more measured detail as unknown for little gain.
 pub const CLIP_REACH: usize = 2;
 
-/// The largest factor between two colours' white-balance multipliers [`RawImage::develop_balanced`] applies: far
-/// beyond any camera's (red and blue relative to green lie between about 0.3 and 6), and small enough that the
-/// scaled mosaic, the demosaic's arithmetic on it and the division back stay finite and normal for any finite
-/// sample a decoder produces. Outside it the mosaic is demosaiced unbalanced, as [`RawImage::develop`].
+/// The largest factor between red's or blue's white-balance multiplier and green's that
+/// [`RawImage::develop_balanced`] applies: far beyond any camera's (red and blue relative to green lie between about
+/// 0.3 and 6). Outside it the mosaic is demosaiced unbalanced, as [`RawImage::develop`]. On its own it does not make
+/// the arithmetic safe: [`MAX_BALANCED`] bounds the samples too.
 const MAX_GAIN: f32 = 64.0;
+
+/// The largest sample magnitude (normalised, times the largest gain or divided by the smallest) the balanced demosaic
+/// accepts: the demosaics' arithmetic (sums of a few weighted samples, AHD's Lab distances on cube roots, X-Trans
+/// weights up to 1000) stays finite far above it. A mosaic with a larger or non-finite sample (a hostile
+/// floating-point DNG) is demosaiced unbalanced.
+const MAX_BALANCED: f32 = 1e30;
 
 /// [`RawImage::develop_balanced`]'s per-colour gains: `wb` relative to its green multiplier (so green, and the
 /// demosaic's luminance-driven choices, stay on the sensor's scale), or `None` when `wb` isn't three positive finite
@@ -1002,15 +1013,27 @@ fn balance_gains(wb: [f32; 3]) -> Option<[f32; 3]> {
     (gains.iter().all(|&g| safe(g)) && gains != [1.0; 3]).then_some(gains)
 }
 
-/// Multiply every sample of a single-plane mosaic `width` samples wide by the gain of its CFA colour.
-fn scale_mosaic(data: &mut [f32], width: usize, cfa: &Cfa, gains: [f32; 3]) {
+/// Multiply every sample of a single-plane mosaic `width` samples wide by the gain of its CFA colour. Whether every
+/// sample was finite and, times the largest gain or divided by the smallest, within [`MAX_BALANCED`] (checked in the
+/// same pass): when not, `data` is partly scaled and only fit to be dropped.
+fn scale_mosaic(data: &mut [f32], width: usize, cfa: &Cfa, gains: [f32; 3]) -> bool {
+    let (lo, hi) = (gains.iter().copied().fold(f32::MAX, f32::min), gains.iter().copied().fold(0.0f32, f32::max));
+    let limit = MAX_BALANCED / hi.max(1.0 / lo.max(f32::MIN_POSITIVE));
+    let fits = std::sync::atomic::AtomicBool::new(true);
     lightcraft_raster::par_rows(data, width, |y, row| {
         // one period of the row's colours, repeated along it
         let period: Vec<f32> = (0..cfa.width.max(1)).map(|x| gains.get(cfa.color_at(x, y) as usize).copied().unwrap_or(1.0)).collect();
+        let mut ok = true;
         for (v, g) in row.iter_mut().zip(period.iter().cycle()) {
+            // (false for a NaN or an infinity)
+            ok &= v.abs() <= limit;
             *v *= g;
         }
+        if !ok {
+            fits.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
     });
+    fits.into_inner()
 }
 
 #[cfg(test)]

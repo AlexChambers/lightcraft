@@ -190,10 +190,12 @@
   were made while the sensor's red, green and blue samples were filled in to full pixels: that happened before
   white balance, and the pixels next to blown-out samples were not recognised as blown out. Both are fixed.
 - Dark twigs, wires and leaf edges against a blown-out sky keep their brightness.
-- Previews and thumbnails of most cameras never showed it and don't change. Those of cameras with smaller sensors
-  (under about 4600 pixels on the long side, 12 megapixels and below) were filled in the same way and are fixed too,
-  and smart previews of raws are rebuilt once from their originals, in the background, when the library is next
-  opened (originals that are offline keep theirs until Build Smart Previews runs with them online). Exports and 1:1
+- Bright coloured highlights (a setting sun, neon tubes) keep their brightness right up to their blown-out centre.
+- Previews of most cameras never showed it and don't change. Previews of cameras with smaller sensors (Bayer sensors
+  under about 4600 pixels on the long side, about 12 megapixels and below; Fujifilm X-Trans under about 5760 pixels,
+  such as the 16 megapixel X-E1) were filled in the same way and are fixed too. Smart previews of raws that are out
+  of date are rebuilt from their originals once, in the background, when the library is next opened; ones whose
+  original is offline keep theirs until Build Smart Previews runs with it online. Exports and 1:1
   views of photos you have already edited change along such edges and in fine detail. Even areas change by about
   0.5 ΔE on average (their noise grain is rendered slightly differently), with no shift in colour.
 
