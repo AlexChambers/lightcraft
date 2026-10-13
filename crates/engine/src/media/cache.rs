@@ -368,6 +368,10 @@ impl MediaCache {
         if std::mem::take(&mut self.clear_after_source) {
             self.rendered.clear();
         }
+        #[cfg(test)]
+        if let Some(then) = super::AFTER_SOURCE.with(|h| h.borrow_mut().take()) {
+            then();
+        }
         r
     }
 

@@ -32,6 +32,12 @@ A full drive can refuse even an empty file. The run then clears the thumbnail ca
 
 Invalidation follows the cache currently attached to the same library, including reopening it while a conversion or look refresh is running, however the library's path is spelled (a symlink, `..` or a relative path). Switching to another library does not invalidate that other library's cache.
 
+## Raw decode version
+
+A raw's proxy keeps the preview-size source its decode made, so a change to the raw decode that gives different pixels at that size (issue #1328: Bayer sensors under about 4600 px and X-Trans sensors under about 5760 px on the long side demosaic the white-balanced mosaic) puts it out of date. Both formats record `source_version` in the header (`smart::SOURCE_VERSION`, missing counts as 0), and the writer owns that field: a rebuild never carries an old value over. A raw's proxy from an older decode is rebuilt from its original like one from an older camera-look fit: by Build Smart Previews, and once per version by the opening refresh (a `source-version` marker next to `look-version`). It keeps its format, and the rebuild takes the invalidation above. An offline original keeps its proxy until a build runs with it online. JPEG, PNG and other proxies never go stale for it.
+
+A proxy whose look or source version is newer than this build's is never rewritten automatically, even when its other version is older: a build that knows both brings it up to date. The `look-version` and `source-version` markers only move up. This protection holds for builds that have it. A build that knows only the look version (one with a newer camera-look fit and no source version) still sees a look-4, source-1 proxy as out of date and rewrites it as look 5 without a source version; a build with both changes then refreshes it again once the original is online. If an older build writes a proxy without a source version after the folder was marked checked, the next opening does not recheck it; Build Smart Previews does.
+
 ## Move the preview folder
 
 Settings runs folder changes on a worker and shows progress and cancellation in the activity stack. Builds and look refreshes must finish before a folder change starts. New builds wait until the folder change finishes.

@@ -96,6 +96,12 @@ pub struct MediaCache {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Pause after source acquisition so tests can finish a proxy refresh during job preparation.
+    pub(crate) static AFTER_SOURCE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 mod thumbnail_hash_tests;
 
 #[cfg(test)]

@@ -2655,6 +2655,216 @@ fn presets_apply_the_imported_profile_they_name() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
+/// The ARW's proxy of `f` replaced by an out-of-date one at a tenth of the original's brightness, and its thumbnail
+/// rendered from that proxy (original offline) into the disk cache; the original back online, the source-version
+/// marker reset. Returns the photo and its proxy file.
+fn old_proxy_with_its_thumbnail_cached(f: &mut SmartFixture) -> (lightcraft_catalog::PhotoId, std::path::PathBuf) {
+    let (id, file) = (f.ids[0], f.files[0].clone());
+    let mut old = (*crate::smart::load(&file).unwrap().image).clone();
+    old.data.iter_mut().flatten().for_each(|v| *v *= 0.1);
+    std::fs::write(&file, crate::smart::encode(&old, None).unwrap()).unwrap();
+    edit_smart_header(&file, |h| h["source_version"] = json!(0));
+    f.offline(true);
+    f.s.media.forget(id);
+    let held = f.s.thumb_job(id, 128).unwrap().run();
+    f.s.accept(&held);
+    f.offline(false);
+    std::fs::write(f.dir.join("source-version"), b"0\n").unwrap();
+    (id, file)
+}
+
+/// Photo `id`'s thumbnail as the cache serves it, and rendered afresh without it: mean 8-bit values.
+fn served_and_fresh_thumbnail(s: &mut Session, id: lightcraft_catalog::PhotoId, edge: usize) -> (f64, f64) {
+    let job = s.thumb_job(id, edge).unwrap();
+    let mut fresh = job.clone();
+    fresh.cache = None;
+    let mean =
+        |im: &lightcraft_raster::Rgba8| im.data.iter().map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0).sum::<f64>() / im.data.len() as f64;
+    (mean(&job.run().rendered.unwrap().image), mean(&fresh.run().rendered.unwrap().image))
+}
+
+/// The originals' loader of `f`, held at its first call until the returned gate opens (the receiver hears of that call).
+fn gated_loader(f: &mut SmartFixture) -> (std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>, std::sync::mpsc::Receiver<()>) {
+    let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (g, plain) = (gate.clone(), f.s.media.file_loader.clone().unwrap());
+    f.s.media.file_loader = Some(std::sync::Arc::new(move |p, e| {
+        let _ = tx.send(());
+        let (lock, cv) = &*g;
+        let mut open = lock.lock().unwrap();
+        while !*open {
+            open = cv.wait(open).unwrap();
+        }
+        drop(open);
+        plain(p, e)
+    }));
+    (gate, rx)
+}
+
+fn open(gate: &(std::sync::Mutex<bool>, std::sync::Condvar)) {
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+}
+
+/// Round 3 review of #1328: another library opened while the opening refresh rebuilds a proxy. The refresh's cache was
+/// retired by then, so its clear did nothing, and the rebuilt photo's old thumbnail stayed on disk for good (the proxy
+/// and the folder's marker current, nothing to repair it): reopened, the library served it (mean 25.6 against 76.6
+/// rendered from the new proxy). #1400's invalidation follows the library's folder, not the cache object.
+#[test]
+fn another_library_opened_during_a_refresh_leaves_no_old_thumbnail() {
+    let mut f = SmartFixture::new("smartswitch");
+    let (id, file) = old_proxy_with_its_thumbnail_cached(&mut f);
+    let old_cache = f.s.media.rendered.clone();
+    let (gate, reading) = gated_loader(&mut f);
+    let worker = crate::cmd::previews::refresh_stale_smart_previews(&mut f.s).unwrap();
+    reading.recv().unwrap();
+    let other = temp_dir("smartswitch-other");
+    f.s.open_library(&other, false).unwrap();
+    assert_eq!(old_cache.generation(), u64::MAX, "the first library's cache is retired");
+    open(&gate);
+    worker.join().unwrap();
+    assert!(!crate::smart::source_stale(&file) && crate::smart::source_checked(&f.dir));
+    f.offline(true);
+    f.s.open_library(&f.lib, false).unwrap();
+    let (served, fresh) = served_and_fresh_thumbnail(&mut f.s, id, 128);
+    f.offline(false);
+    let _ = std::fs::remove_dir_all(&other);
+    assert!((served - fresh).abs() < 3.0, "the old proxy's thumbnail came back: mean {served:.1}, the new proxy's {fresh:.1}");
+}
+
+/// Round 3 review of #1328: a refresh that finished after a thumbnail job took its (old, cached) source but before it
+/// read the cache generation gave that job the new generation, so the old proxy's thumbnail went into the cleared
+/// cache and was served from then on. #1400 reads the generation first and drops a job whose generation moved.
+#[test]
+fn a_refresh_between_a_jobs_source_and_its_generation_leaves_no_old_thumbnail() {
+    let mut f = SmartFixture::new("smartsplit");
+    let (id, _) = old_proxy_with_its_thumbnail_cached(&mut f);
+    let (gate, _reading) = gated_loader(&mut f);
+    let worker = crate::cmd::previews::refresh_stale_smart_previews(&mut f.s).unwrap();
+    crate::media::AFTER_SOURCE.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            open(&gate);
+            worker.join().unwrap();
+        }))
+    });
+    let before = f.s.media.rendered.generation();
+    let split = f.s.thumb_job(id, 256);
+    assert_ne!(f.s.media.rendered.generation(), before, "the refresh finished inside the job's construction");
+    if let Some(job) = split {
+        let r = job.run();
+        f.s.accept(&r);
+    }
+    let (served, fresh) = served_and_fresh_thumbnail(&mut f.s, id, 256);
+    assert!((served - fresh).abs() < 3.0, "the old proxy's thumbnail went into the cleared cache: mean {served:.1}, the new proxy's {fresh:.1}");
+}
+
+/// Round 3 review of #1328: a run that refreshes a proxy clears every rendered thumbnail, once; one that refreshes
+/// nothing (a repeat) keeps them.
+#[test]
+fn a_run_that_refreshes_nothing_keeps_the_rendered_thumbnails() {
+    let mut f = SmartFixture::new("smartrepeat");
+    let png = f.ids[2];
+    let job = f.s.thumb_job(png, 128).unwrap();
+    let key = job.cache.as_ref().unwrap().1;
+    job.run();
+    edit_smart_header(&f.files[0], |h| h["source_version"] = json!(0));
+    let g = f.s.media.rendered.generation();
+    let r = f.s.execute("library.smartPreviews", &json!({})).unwrap();
+    assert_eq!(r["refreshed"], 1, "{r}");
+    assert_eq!(f.s.media.rendered.generation(), g + 1);
+    assert!(f.s.media.rendered.get(key).is_none(), "cleared with the rest");
+    let job = f.s.thumb_job(png, 128).unwrap();
+    job.run();
+    let r = f.s.execute("library.smartPreviews", &json!({})).unwrap();
+    assert_eq!(r["refreshed"], 0, "{r}");
+    assert_eq!(f.s.media.rendered.generation(), g + 1);
+    assert!(f.s.media.rendered.get(key).is_some(), "a run that changes nothing clears nothing");
+}
+
+const SOURCE_REFRESH_EXIT: i32 = 83;
+
+#[test]
+#[ignore = "child process for the interrupted source refresh regression"]
+fn interrupted_source_refresh_child() {
+    let lib = std::path::PathBuf::from(std::env::var_os("LC1328_LIBRARY").unwrap());
+    let mut s = Session::new().with_fs();
+    let plain = s.media.file_loader.clone().unwrap();
+    let reads = std::sync::atomic::AtomicUsize::new(0);
+    // the opening refresh rebuilds the first raw's proxy, then the process ends while it reads the second's original
+    s.media.file_loader = Some(std::sync::Arc::new(move |p, e| {
+        if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            std::process::exit(SOURCE_REFRESH_EXIT);
+        }
+        plain(p, e)
+    }));
+    s.open_library(&lib, false).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(60));
+    panic!("the refresh did not read the second original");
+}
+
+/// Round 3 review of #1328: the process ends during the opening source-version refresh, after it rebuilt one raw's
+/// proxy and before the thumbnail clear at the end of its run. #1400's marker, recorded before the first rebuild,
+/// makes the next opening take a new thumbnail namespace: neither raw's thumbnail is one made from a proxy it replaced.
+#[test]
+fn a_source_refresh_cut_short_by_the_process_ending_leaves_no_old_thumbnail() {
+    let mut f = SmartFixture::new("smartexit");
+    for file in &f.files[..2] {
+        let mut old = (*crate::smart::load(file).unwrap().image).clone();
+        old.data.iter_mut().flatten().for_each(|v| *v *= 0.1);
+        std::fs::write(file, crate::smart::encode(&old, None).unwrap()).unwrap();
+        edit_smart_header(file, |h| h["source_version"] = json!(0));
+    }
+    f.offline(true);
+    for id in &f.ids[..2] {
+        f.s.media.forget(*id);
+        let held = f.s.thumb_job(*id, 128).unwrap().run();
+        f.s.accept(&held);
+    }
+    f.offline(false);
+    std::fs::write(f.dir.join("source-version"), b"0\n").unwrap();
+    f.s.close_library().unwrap();
+    drop(std::mem::take(&mut f.s));
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests_import::interrupted_source_refresh_child", "--ignored"])
+        .env("LC1328_LIBRARY", &f.lib)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(SOURCE_REFRESH_EXIT));
+    let refreshed = f.files[..2].iter().filter(|file| !crate::smart::source_stale(file)).count();
+    assert_eq!(refreshed, 1, "one proxy rebuilt before the end");
+    f.offline(true);
+    f.s = Session::new().with_fs();
+    f.s.open_library(&f.lib, false).unwrap();
+    for id in f.ids[..2].iter().copied() {
+        let (served, fresh) = served_and_fresh_thumbnail(&mut f.s, id, 128);
+        assert!((served - fresh).abs() < 3.0, "{id:?}: a thumbnail of a replaced proxy: mean {served:.1}, the proxy's {fresh:.1}");
+    }
+    f.offline(false);
+}
+
+/// #1328 on #1400: a Lossless (LCSP2) proxy records the raw decode version too, one from an older decode is rebuilt
+/// as Lossless, and the writer owns the field: the rebuild keeps a header field it doesn't know but never the old
+/// version.
+#[test]
+fn lossless_smart_previews_record_the_raw_decode_version_and_refresh_as_lossless() {
+    let mut f = SmartFixture::new("smartlossless");
+    let r = f.s.execute("library.smartPreviews", &json!({"format": "lossless"})).unwrap();
+    assert_eq!(r["refreshed"], 3, "converted: {r}");
+    let file = f.files[0].clone();
+    assert_eq!(crate::smart::header(&file).unwrap().0, crate::smart::Format::Lossless);
+    assert_eq!(smart_header(&file)["source_version"], json!(crate::smart::SOURCE_VERSION));
+    edit_smart_header(&file, |h| {
+        h["source_version"] = json!(0);
+        h["future_field"] = json!(7);
+    });
+    assert!(crate::smart::is_usable(&file) && crate::smart::source_stale(&file));
+    let r = f.s.execute("library.smartPreviews", &json!({"format": "lossless"})).unwrap();
+    assert_eq!((r["refreshed"].as_u64(), r["staleKept"].as_u64()), (Some(1), Some(0)), "{r}");
+    let head = smart_header(&file);
+    assert_eq!(crate::smart::header(&file).unwrap().0, crate::smart::Format::Lossless, "rebuilt in its format");
+    assert_eq!((head["source_version"].as_u64(), head["future_field"].as_u64()), (Some(u64::from(crate::smart::SOURCE_VERSION)), Some(7)), "{head}");
+}
+
 /// A raw container LightCraft shows by its embedded JPEG: a TIFF whose IFD0 points at one.
 fn write_raw(path: &Path) {
     use lightcraft_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
