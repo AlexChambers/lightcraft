@@ -278,6 +278,7 @@ fn smart_run(
             if usable && !stale {
                 n.built += 1;
             } else {
+                let change = if stale { crate::media::Change::Replace } else { crate::media::Change::Write };
                 // a stale proxy is rebuilt from the original only: never from itself (the file
                 // fallback or a source decoded from a proxy would stamp the old look as current)
                 let source = if stale { source.and_then(original_only) } else { source };
@@ -294,7 +295,7 @@ fn smart_run(
                     });
                 // recorded only once there is something to write: a run of offline originals changes nothing
                 if encoded.is_ok() {
-                    pending.before_change(crate::media::Change::Write)?;
+                    pending.before_change(change)?;
                 }
                 let r = encoded.and_then(|b| {
                     let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
@@ -306,7 +307,7 @@ fn smart_run(
                 });
                 match r {
                     Ok(()) => {
-                        pending.changed(crate::media::Change::Write);
+                        pending.changed(change);
                         n.built += 1;
                         if stale {
                             n.refreshed += 1;
