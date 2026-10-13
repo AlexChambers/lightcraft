@@ -73,7 +73,7 @@ pub struct DiskCache {
     namespace: u64,
     /// Bytes the cache may hold (changed in place by [`DiskCache::set_budget`]).
     budget: AtomicU64,
-    /// Bytes on disk (`None` until first scanned).
+    /// Bytes on disk (`None` until scanned, and again after a clear).
     total: Mutex<Option<u64>>,
     pub hits: AtomicU64,
     pub misses: AtomicU64,
@@ -391,10 +391,17 @@ impl DiskCache {
     }
 
     pub fn clear(&self) {
-        for (p, _, _) in self.scan() {
+        let files = self.scan();
+        #[cfg(test)]
+        crate::tests::during_clear(self);
+        for (p, _, _) in files {
             let _ = std::fs::remove_file(p);
         }
-        *self.total.lock().unwrap_or_else(|e| e.into_inner()) = Some(0);
+        // A thumbnail written while the files go (not in the listing) outlives the clear, so the
+        // size is unknown, not zero: the next check scans the nearly empty folder. A writer
+        // updates the total under the same lock as its file replacement, so none can put back
+        // a total from before this.
+        *self.total.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
