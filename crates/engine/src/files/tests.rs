@@ -611,6 +611,57 @@ fn coarse_binning_keeps_specular_points_neutral() {
         assert!(mean < 0.03 && worst < 0.2, "edge colour spread mean {mean:.3}, worst {worst:.3} of the edge's contrast");
     }
 
+    /// Review of #1328: full-size decodes of dark twigs and wires against a clipped sky keep the level their own
+    /// samples measured. With every colour within 2 px of a clipped sample taken as clipped, the pixel's own measured
+    /// channel included, the lines' pixels were rebuilt as the brightest neutral (a 0.1 green became 1.77, rendered
+    /// white).
+    #[test]
+    fn full_size_dark_lines_against_a_clipped_sky_keep_their_level() {
+        let (w, h) = (96usize, 72usize);
+        let dark = |x: f32, y: f32| {
+            (20.0..23.0).contains(&x)
+                || (30.0..34.0).contains(&y)
+                || ((x - y * 0.5 - 50.0).abs() < 3.0 && y < 60.0)
+                || (x - 78.0).powi(2) + (y - 56.0).powi(2) < 25.0
+        };
+        let level = |x: f32, y: f32| if dark(x, y) { 0.05 } else { 3.0 };
+        let bytes = photographed_dng(w, h, level);
+        let (img, _) = load_bytes(&bytes, 4096).unwrap();
+        assert_eq!((img.width, img.height), (w, h), "a full-size decode");
+        // the level the lens let through, from the scene itself (as `photographed_dng` blurs it)
+        let lit = |x: usize, y: usize| {
+            let k = [1.0f32, 4.0, 6.0, 4.0, 1.0];
+            let mut s = 0.0;
+            for (j, ky) in k.iter().enumerate() {
+                for (i, kx) in k.iter().enumerate() {
+                    let (sx, sy) = ((x + i).saturating_sub(2).min(w - 1), (y + j).saturating_sub(2).min(h - 1));
+                    s += kx
+                        * ky
+                        * (0..16).map(|q| level(sx as f32 + ((q % 4) as f32 + 0.5) / 4.0, sy as f32 + ((q / 4) as f32 + 0.5) / 4.0)).sum::<f32>()
+                        / 16.0;
+                }
+            }
+            s / 256.0
+        };
+        let (mut n, mut lifted) = (0, Vec::new());
+        for y in 3..h - 3 {
+            for x in 3..w - 3 {
+                let l = lit(x, y);
+                if l > 0.5 {
+                    continue;
+                }
+                n += 1;
+                let p = img.get(x, y);
+                let mean = (p[0] + p[1] + p[2]) / 3.0;
+                if mean > 2.0 * l + 0.05 {
+                    lifted.push((x, y, l, p));
+                }
+            }
+        }
+        assert!(n > 400, "{n} line pixels");
+        assert!(lifted.is_empty(), "{} of {n} dark pixels lifted, e.g. {:?}", lifted.len(), &lifted[..lifted.len().min(3)]);
+    }
+
     /// Issue #1328: full-size decodes of large clipped areas (a lamp, a patch of sky: every channel clipped) on bright
     /// and on dark neutral surfaces. The pixels around them must stay neutral. The channels interpolated from clipped
     /// samples are only lower bounds; told as clipped by value alone, they kept the clipped samples' colour

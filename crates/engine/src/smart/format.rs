@@ -72,7 +72,7 @@ fn checksum(bytes: &[u8]) -> String {
 
 pub(super) fn encode(img: &Rgb32f, info: Option<&lightcraft_pipeline::SourceInfo>) -> Result<Vec<u8>, String> {
     let mut head = serde_json::json!({"w": img.width, "h": img.height, "format": "tiff32", "enc": 1,
-        "look_version": crate::camera_preview::LOOK_VERSION});
+        super::LOOK_FIELD: crate::camera_preview::LOOK_VERSION, super::SOURCE_FIELD: super::SOURCE_VERSION});
     dimensions(&head)?;
     if img.width.checked_mul(img.height) != Some(img.data.len()) || img.data.iter().flatten().any(|v| !v.is_finite()) {
         return Err("invalid smart preview source pixels".into());
