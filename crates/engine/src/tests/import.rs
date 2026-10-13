@@ -2865,6 +2865,63 @@ fn lossless_smart_previews_record_the_raw_decode_version_and_refresh_as_lossless
     assert_eq!((head["source_version"].as_u64(), head["future_field"].as_u64()), (Some(u64::from(crate::smart::SOURCE_VERSION)), Some(7)), "{head}");
 }
 
+/// Round 4 review of #1328: a proxy from a newer build (either version above this build's) survives Build Smart
+/// Previews whatever format is stored or preferred. A format mismatch was a reason to rebuild of its own, so a Lossless
+/// proxy under the default Compact preference (or a Compact one under a Lossless preference) was rewritten by this
+/// build's older decode or look and stamped with its versions: (look + 1, 0), (look - 1, source + 1) and
+/// (look + 1, source + 1) all became (look, source) in the other format. The opening refresh kept them already. A
+/// Compact proxy from a newer encoding (#850's `enc`) is kept the same way.
+#[test]
+fn proxies_from_a_newer_build_survive_build_smart_previews_in_either_format() {
+    use crate::smart::Format;
+    let (look, source) = (u64::from(crate::camera_preview::LOOK_VERSION), u64::from(crate::smart::SOURCE_VERSION));
+    let (mut rewritten, mut unreported) = (Vec::new(), Vec::new());
+    for stored in [Format::Compact, Format::Lossless] {
+        for preferred in [Format::Compact, Format::Lossless] {
+            // (look, source, a Compact proxy's encode version: #850's, format-local in a Lossless header)
+            let enc = crate::smart::ENCODE_VERSION;
+            let mut cases = vec![(look + 1, 0, None), (look - 1, source + 1, None), (look + 1, source + 1, None)];
+            if stored == Format::Compact {
+                cases.push((look, source, Some(enc + 1)));
+            }
+            for (l, s, e) in cases {
+                let mut f = SmartFixture::new("smartnewerformat");
+                if stored == Format::Lossless {
+                    f.s.execute("library.smartPreviews", &json!({"format": "lossless"})).unwrap();
+                }
+                let name = if preferred == Format::Lossless { "lossless" } else { "compact" };
+                f.s.execute("library.smartPreviewsFormat", &json!({"format": name})).unwrap();
+                let file = f.files[0].clone();
+                assert_eq!(crate::smart::header(&file).unwrap().0, stored);
+                edit_smart_header(&file, |h| {
+                    h["look_version"] = json!(l);
+                    h["source_version"] = json!(s);
+                    if let Some(e) = e {
+                        h["enc"] = json!(e);
+                    }
+                });
+                let before = std::fs::read(&file).unwrap();
+                std::fs::write(f.dir.join("source-version"), b"0\n").unwrap();
+                std::fs::write(f.dir.join("look-version"), b"0 0\n").unwrap();
+                crate::cmd::previews::refresh_stale_smart_previews(&mut f.s).unwrap().join().unwrap();
+                let opening = std::fs::read(&file).unwrap() == before;
+                let r = f.s.execute("library.smartPreviews", &json!({"ids": [f.ids[0].0]})).unwrap();
+                let build = std::fs::read(&file).unwrap() == before;
+                if !(opening && build) {
+                    rewritten.push(format!(
+                        "{stored:?} under {preferred:?} at ({l}, {s}, enc {e:?}): opening kept {opening}, build kept {build}, now {:?} {r}",
+                        crate::smart::versions(&file)
+                    ));
+                } else if (r["refreshed"].as_u64(), r["newerKept"].as_u64()) != (Some(0), Some(1)) {
+                    unreported.push(format!("{stored:?} under {preferred:?} at ({l}, {s}, enc {e:?}): {r}"));
+                }
+            }
+        }
+    }
+    assert!(rewritten.is_empty(), "{rewritten:#?}");
+    assert!(unreported.is_empty(), "kept, but not counted as from a newer build: {unreported:#?}");
+}
+
 /// A raw container LightCraft shows by its embedded JPEG: a TIFF whose IFD0 points at one.
 fn write_raw(path: &Path) {
     use lightcraft_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};

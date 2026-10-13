@@ -916,8 +916,8 @@ impl RawImage {
     /// sky keeps its level.
     ///
     /// The mask is `None` when no sample is clipped, when there is no single-plane CFA, or when the file has any
-    /// `OpcodeList3` (its operations are defined on the developed picture, so the mosaic's positions might not be
-    /// the picture's): highlight reconstruction then tells clipping by value, as before.
+    /// `OpcodeList3`, or when non-square pixels stretch the picture (the mosaic's positions then differ from the
+    /// picture's): highlight reconstruction tells clipping by value, as before.
     pub fn develop_balanced_masked(&self, method: Method, wb: [f32; 3], clip: f32) -> Result<(Rgb32f, Option<Vec<u8>>)> {
         self.develop_balanced_with(method, wb, Some(clip))
     }
@@ -955,6 +955,10 @@ impl RawImage {
         if !self.opcodes.list3.is_empty() || n.cpp != 1 || w == 0 || h == 0 || n.data.len() != w * h || clip.is_nan() || clip <= 0.0 {
             return None;
         }
+        let c = self.develop_crop(w, h);
+        if stretched_height(c.height, self.pixel_aspect) != c.height {
+            return None;
+        }
         use rayon::prelude::*;
         if !n.data.par_iter().any(|&v| v >= clip) {
             return None;
@@ -971,7 +975,6 @@ impl RawImage {
             }
         });
         // then within CLIP_REACH rows, for the developed (cropped) pixels only
-        let c = self.develop_crop(w, h);
         let mut mask = vec![0u8; c.width * c.height];
         mask.par_chunks_mut(c.width.max(1)).enumerate().for_each(|(oy, out)| {
             let y = c.y + oy;
