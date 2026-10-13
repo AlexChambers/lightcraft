@@ -189,9 +189,13 @@
   sunlit wet rock or water, or magenta and green rims around blown-out lights and sky (issue #1328). The colours
   were made while the sensor's red, green and blue samples were filled in to full pixels: that happened before
   white balance, and the pixels next to blown-out samples were not recognised as blown out. Both are fixed.
-- Previews and thumbnails never showed it and are unchanged. Exports and 1:1 views of photos you have already edited
-  change along such edges and in fine detail. Even areas change by about 0.5 ΔE on average (their noise grain is
-  rendered slightly differently), with no shift in colour.
+- Dark twigs, wires and leaf edges against a blown-out sky keep their brightness.
+- Previews and thumbnails of most cameras never showed it and don't change. Those of cameras with smaller sensors
+  (under about 4600 pixels on the long side, 12 megapixels and below) were filled in the same way and are fixed too,
+  and smart previews of raws are rebuilt once from their originals, in the background, when the library is next
+  opened (originals that are offline keep theirs until Build Smart Previews runs with them online). Exports and 1:1
+  views of photos you have already edited change along such edges and in fine detail. Even areas change by about
+  0.5 ΔE on average (their noise grain is rendered slightly differently), with no shift in colour.
 
 ### Slider drags on large raws
 - Dragging a slider no longer re-renders the edited photo's filmstrip thumbnail on every frame; it follows once you

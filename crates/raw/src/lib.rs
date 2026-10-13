@@ -859,20 +859,26 @@ impl RawImage {
     ///
     /// A constant-colour mosaic still comes back as that colour (to `f32` rounding). Bilinear interpolates each colour
     /// from its own samples alone, so it gives the same either way and skips the scaling; so do monochrome and
-    /// already demosaiced data, and a `wb` that isn't three positive finite numbers (as [`Self::develop`]).
+    /// already demosaiced data, and a `wb` that isn't three positive finite numbers or whose multipliers differ by
+    /// more than a factor of 64 (as [`Self::develop`]).
     pub fn develop_balanced(&self, method: Method, wb: [f32; 3]) -> Result<Rgb32f> {
         self.develop_balanced_with(method, wb, None).map(|(rgb, _)| rgb)
     }
 
-    /// [`Self::develop_balanced`] and, per developed pixel, which of its channels had a clipped sample (at least
-    /// `clip`, normalised) of that colour within [`CLIP_REACH`] px of the mosaic: the demosaic made those channels
-    /// partly from clipped samples, so they are only lower bounds, however far below the clip they come out. The
-    /// mask is [`highlight::reconstruct_masked`]'s (bits [`highlight::CLIPPED_R`], …, one entry per pixel), as
-    /// binned previews have had since #548. Without it a channel interpolated beside clipped samples counts as
-    /// unclipped and keeps the colour the clip gave it: magenta or green rims around clipped skies and lights.
+    /// [`Self::develop_balanced`] and, per developed pixel, what [`highlight::reconstruct_masked`] needs to know
+    /// about the clipped samples around it (one entry per pixel). A pixel whose own sample is unclipped gets
+    /// [`highlight::FROM_CLIPPED_R`], … for each other colour it has a clipped sample (at least `clip`, normalised)
+    /// of within [`CLIP_REACH`] px, and the colour it measured ([`highlight::MEASURED_SHIFT`]): the demosaic made
+    /// those channels partly from clipped samples, so below the clip their values are unknown (above or below the
+    /// truth) and reconstruction rebuilds them from the measured one. Told by value alone, they kept the colour
+    /// difference the clip gave them: magenta or green rims around clipped skies and lights. A pixel whose own sample
+    /// clipped gets [`highlight::CLIPPED_R`], … for that colour only, and its other channels are told by value as
+    /// before. The pixel's own sample is a measurement whatever its neighbours did: a dark twig against a clipped
+    /// sky keeps its level.
     ///
-    /// The mask is `None` when no sample is clipped, there is no single-plane CFA, or an `OpcodeList3` moves the
-    /// picture off the mosaic's geometry (highlight reconstruction then tells clipping by value, as before).
+    /// The mask is `None` when no sample is clipped, when there is no single-plane CFA, or when the file has any
+    /// `OpcodeList3` (its operations are defined on the developed picture, so the mosaic's positions might not be
+    /// the picture's): highlight reconstruction then tells clipping by value, as before.
     pub fn develop_balanced_masked(&self, method: Method, wb: [f32; 3], clip: f32) -> Result<(Rgb32f, Option<Vec<u8>>)> {
         self.develop_balanced_with(method, wb, Some(clip))
     }
@@ -910,7 +916,8 @@ impl RawImage {
         if !n.data.par_iter().any(|&v| v >= clip) {
             return None;
         }
-        let bit = |c: u8| [highlight::CLIPPED_R, highlight::CLIPPED_G, highlight::CLIPPED_B].get(c as usize).copied().unwrap_or(0);
+        let bit = |c: u8| [highlight::FROM_CLIPPED_R, highlight::FROM_CLIPPED_G, highlight::FROM_CLIPPED_B].get(c as usize).copied().unwrap_or(0);
+        let own = |c: u8| [highlight::CLIPPED_R, highlight::CLIPPED_G, highlight::CLIPPED_B].get(c as usize).copied().unwrap_or(0);
         // per row: the colours of clipped samples within CLIP_REACH columns
         let mut rows = vec![0u8; w * h];
         rows.par_chunks_mut(w).zip(n.data.par_chunks(w)).enumerate().for_each(|(y, (row, samples))| {
@@ -928,6 +935,20 @@ impl RawImage {
             for yy in y.saturating_sub(CLIP_REACH)..=(y + CLIP_REACH).min(h - 1) {
                 if let Some(src) = rows.get(yy * w + c.x..yy * w + c.x + c.width) {
                     out.iter_mut().zip(src).for_each(|(o, s)| *o |= s);
+                }
+            }
+            // The pixel's own colour is measured, never interpolated: marked clipped only when its own sample is. A
+            // pixel whose own sample clipped keeps its interpolated channels as values (below the clip, they carry
+            // the dark structure beside it: a twig a pixel or two wide stays a line instead of breaking into dots).
+            for (ox, o) in out.iter_mut().enumerate() {
+                let x = c.x + ox;
+                let colour = cfa.color_at(x, y);
+                if n.data.get(y * w + x).is_some_and(|&v| v >= clip) {
+                    *o = own(colour);
+                } else if *o & !bit(colour) != 0 {
+                    *o = (*o & !bit(colour)) | ((colour.min(2) + 1) << highlight::MEASURED_SHIFT);
+                } else {
+                    *o = 0;
                 }
             }
         });
@@ -956,20 +977,29 @@ impl RawImage {
     }
 }
 
-/// How far (px, either way) a clipped mosaic sample marks its colour as clipped in
-/// [`RawImage::develop_balanced_masked`]: as far as the demosaic reaches (AHD's 5-tap green filter and colour
-/// differences, PPG's and the X-Trans method's 5 × 5 neighbourhoods).
+/// How far (px, either way) a clipped mosaic sample marks its colour as unknown in the pixels around it, for
+/// [`RawImage::develop_balanced_masked`]. A heuristic, not the demosaic's full reach: it covers the samples AHD's
+/// 5-tap green filter, PPG's and the X-Trans method's 5 × 5 neighbourhoods read directly, but their colour
+/// differences use neighbours' estimated greens, which read samples further out still (and AHD's homogeneity choice
+/// further again). Wider would mark more measured detail as unknown for little gain.
 pub const CLIP_REACH: usize = 2;
+
+/// The largest factor between two colours' white-balance multipliers [`RawImage::develop_balanced`] applies: far
+/// beyond any camera's (red and blue relative to green lie between about 0.3 and 6), and small enough that the
+/// scaled mosaic, the demosaic's arithmetic on it and the division back stay finite and normal for any finite
+/// sample a decoder produces. Outside it the mosaic is demosaiced unbalanced, as [`RawImage::develop`].
+const MAX_GAIN: f32 = 64.0;
 
 /// [`RawImage::develop_balanced`]'s per-colour gains: `wb` relative to its green multiplier (so green, and the
 /// demosaic's luminance-driven choices, stay on the sensor's scale), or `None` when `wb` isn't three positive finite
-/// numbers or is neutral already.
+/// numbers, is neutral already, or asks for a gain outside `1 / MAX_GAIN ..= MAX_GAIN`.
 fn balance_gains(wb: [f32; 3]) -> Option<[f32; 3]> {
     if !wb.iter().all(|v| v.is_finite() && *v > 0.0) {
         return None;
     }
     let gains = [wb[0] / wb[1], 1.0, wb[2] / wb[1]];
-    (gains.iter().all(|v| v.is_finite() && *v > 0.0) && gains != [1.0; 3]).then_some(gains)
+    let safe = |g: f32| g.is_finite() && (1.0 / MAX_GAIN..=MAX_GAIN).contains(&g);
+    (gains.iter().all(|&g| safe(g)) && gains != [1.0; 3]).then_some(gains)
 }
 
 /// Multiply every sample of a single-plane mosaic `width` samples wide by the gain of its CFA colour.

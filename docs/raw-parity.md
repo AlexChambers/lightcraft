@@ -185,7 +185,7 @@ sample files. A pointer for contributors, not legal advice.
 
 | Stage | Target | LightCraft | Status |
 |---|---|---|---|
-| Bayer demosaic | Adobe's own, plus AI "Raw Details" | AHD (default), PPG, bilinear (`crates/raw/src/demosaic`); full size only (exports, 1:1: previews and thumbnails bin the mosaic), run on the mosaic white balanced as shot and divided back after, so neutral edges stay neutral (#1328) | 🟡 quality unmeasured against Lightroom; no Raw Details |
+| Bayer demosaic | Adobe's own, plus AI "Raw Details" | AHD (default), PPG, bilinear (`crates/raw/src/demosaic`); at full size (exports, 1:1, and previews of sensors too small to bin; other previews and thumbnails bin the mosaic), run on the mosaic white balanced as shot and divided back after, so neutral edges stay neutral (#1328) | 🟡 quality unmeasured against Lightroom; no Raw Details |
 | X-Trans demosaic | ✅ | in-house edge-weighted directional, on the white-balanced mosaic as Bayer (#1328) | 🟡 unmeasured |
 | Foveon | ✅ (older bodies) | — | ⬜ |
 | Monochrome / LinearRaw | ✅ | handled, no demosaic | ✅ |
@@ -195,7 +195,7 @@ sample files. A pointer for contributors, not legal advice.
 | Black and white levels | per model, calibrated | read from each file (masked columns, maker notes, SR2SubIFD, CMP1) | 🟡 per-body bugs keep surfacing: A450–A700 SR2 black level and M/S ARW pedestal (#535, fixed); 5D Mark IV CR2 renders dark (#455, open); white-level pile-up in phone DNGs (#548, fixed) |
 | Crop masks and aspect | ✅ | DefaultCrop, Sony recorded size, Canon AspectInfo, Panasonic in-camera crops, Nikon CropArea, measured Nikon bodies without it (D4, D90, D5000, D600, D610) | 🟡 7RM3 / 7RM4 crop origin 8–32 px off (cosmetic) |
 | Lens metadata | ✅ read for profile selection | EXIF lens fields read; used only for the in-file corrections below | 🟡 |
-| Highlight reconstruction | ✅ | neutral clip, chromaticity diffusion (`highlight.rs`); told which channels hold or were interpolated from clipped samples (binned previews #548, full-size demosaic #1328) | 🟡 tuned by eye |
+| Highlight reconstruction | ✅ | neutral clip, chromaticity diffusion (`highlight.rs`); told which channels hold clipped samples (binned previews, #548) or were interpolated from them, rebuilt from the measured channel (full-size demosaic, #1328) | 🟡 tuned by eye |
 | AI denoise | ✅ Bayer and X-Trans, model bundled | Bayer only, user-installed weights, pure-Rust CPU / GPU | 🟡 no X-Trans, no shippable weights |
 | Super Resolution | ✅ | — | ⬜ |
 | HDR / panorama merge to raw DNG | ✅ | linear DNG (float16 HDR) with the source's colour tags | ✅ |
