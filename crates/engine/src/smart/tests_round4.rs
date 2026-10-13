@@ -204,7 +204,7 @@ fn namespace_switch_does_not_wait_for_an_old_thumbnail_read() {
     let job = s.thumb_job(id, 128).unwrap();
     let (old_cache, key) = job.cache.clone().unwrap();
     let hex = key.to_string();
-    let fifo = root.join("library/thumbs").join(&hex[..2]).join(format!("{hex}.jpg"));
+    let fifo = root.join("library/thumbs").join(&hex[..2]).join(format!("{hex}.{}", lightcraft_preview::disk::EXT));
     let jpeg = std::fs::read(&fifo).unwrap();
     std::fs::remove_file(&fifo).unwrap();
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());

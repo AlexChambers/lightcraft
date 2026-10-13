@@ -120,10 +120,14 @@ fn assert_thumbnail_matches_proxy(s: &mut Session, name: &str) {
     );
 }
 
-/// Files the thumbnail cache does not own, left at the top of its folder.
+/// Worker markers and unexpected files at the top of the thumbnail folder.
 fn loose_files(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root.join("library/thumbs")) else { return Vec::new() };
-    entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect()
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.file_name().is_none_or(|name| name != ".lightcraft-thumbs" && name != lightcraft_preview::disk::TAG))
+        .collect()
 }
 
 #[test]
@@ -647,7 +651,7 @@ fn interrupted_discard_then_build_child() {
     s.media.rendered.put(key, Arc::new(shown));
     set_online(&root, true);
     let hex = key.to_string();
-    let fifo = root.join("library/thumbs").join(&hex[..2]).join(format!("{hex}.jpg"));
+    let fifo = root.join("library/thumbs").join(&hex[..2]).join(format!("{hex}.{}", lightcraft_preview::disk::EXT));
     std::fs::remove_file(&fifo).unwrap();
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
     // a new cache object has an empty memory cache, so the read goes to the FIFO

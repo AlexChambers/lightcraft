@@ -251,6 +251,8 @@ impl RenderJob {
             }
             let histogram = Histogram::of_srgb8(&image);
             return RenderResult {
+                cache_generation: self.cache_generation,
+                cache_owner: self.cache_owner.clone(),
                 request_id: self.request_id,
                 source_key: self.source_key,
                 photo: self.photo,
