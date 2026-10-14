@@ -46,9 +46,11 @@ fn metal_window_and_cpu_fallback_stay_below_the_allocation_guard() {
     let src = std::sync::Arc::new(src);
     if lightcraft_gpu::available() {
         let result = lightcraft_gpu::try_render(&src, &SourceInfo::default(), &s, &req, None);
-        let error = result.err().expect("over-budget render must report an error");
-        // A smaller adapter can reject the work rectangle before the full pass.
-        assert!(error.reason().is_some_and(|e| e.contains("memory budget") || e.contains("storage-buffer limit")), "{error:?}");
+        match result {
+            Ok(rendered) => assert_eq!((rendered.image.width, rendered.image.height), (400, 300)),
+            // A smaller adapter can reject the work rectangle before the full pass.
+            Err(error) => assert!(error.reason().is_some_and(|e| e.contains("storage-buffer limit")), "{error:?}"),
+        }
     } else {
         eprintln!("skipped Metal allocation guard: no GPU adapter; checking CPU fallback");
     }

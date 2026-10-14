@@ -44,6 +44,6 @@ fn window_render_stays_below_the_allocation_guard() {
     let p = lightcraft_pipeline::plan(&src, &SourceInfo::default(), &s, &req);
     println!("PLAN work={}x{} requested=400x300 virtual=48000x32000", p.w, p.h);
     let result = lightcraft_pipeline::render(&src, &SourceInfo::default(), &s, &req);
-    let error = result.err().expect("over-budget render must report an error");
-    assert!(error.contains("memory budget"), "{error}");
+    let rendered = result.unwrap();
+    assert_eq!((rendered.image.width, rendered.image.height), (400, 300));
 }

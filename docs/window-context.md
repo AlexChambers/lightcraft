@@ -55,7 +55,7 @@ Defringe adds its shared min/max radius after spot source expansion, because
 spots copy already-defringed pixels. Defringe runs before noise reduction and
 local planes, so its support adds to theirs, including around spot source reads.
 
-Dehaze windows use the same full-resolution airlight statistic as a full render.
+Dehaze windows use the full-resolution airlight statistic when preparation fits its budget.
 The statistic and transmission formula for `window=None` are unchanged.
 
 ## Design and cost
@@ -128,27 +128,35 @@ That device-limit path keeps separate GPU window buffers; it does not share
 the full CPU preparation. The Metal measurements below fit the full buffers.
 
 Each renderer keeps two scalar entries keyed by source identity and the full
-linear-stage key. It also retains one full preparation, at most 1 GiB, with the
-sampled RGB, processed RGB and dark channel. A partial render copies its work
-rectangle from these buffers. It does not repeat white balance, noise reduction
-or the dark-channel blur for that rectangle. Pans use the same full preparation,
-so cache hits and fresh renders use the same floating-point arithmetic. A white
-balance or NR change can reuse the sampled RGB when the full geometry is unchanged.
-The stage byte counters include the retained full preparation.
+linear-stage key. It retains one exact preparation up to 1 GiB. Frames whose
+sampled RGB, processed RGB and dark channel together fit retain all three.
+Larger frames retain only processed RGB and the dark channel (16 bytes per
+pixel), and sample the work rectangle again. This keeps exact pans warm through
+67,108,864 pixels. White balance and NR edits on those larger frames still need
+another full preparation. The stage byte counters include retained buffers.
 
-Frames above the retention budget release this preparation after copying their
-work pixels. A warm edit reuses its work stages; a new window must prepare the
-full frame again. Source, framing, output dimensions, white balance, retouching,
-noise reduction and relevant source metadata still invalidate the scalar.
-Exposure, Dehaze amount and downstream color edits preserve it.
+Before allocating the full preparation, both renderers check a 4 GiB budget.
+The CPU image-storage peak is 32 bytes per pixel without NR, 44 with luminance
+NR, and 48 with colour NR. The GPU peak is 32 without NR, 48 with colour NR
+alone, and 52 when luminance NR is active. The
+estimator takes the maximum of sequential filtering, source orientation and
+prefilter sampling, and copying the work rectangle. It includes row scratch,
+Defringe's 52-byte peak and retouch scratch sized to the largest spot patch.
+It excludes the caller's source, existing stage entries and the GPU buffer
+pool, so it is not a process memory limit. Native NR consumes temporary buffers
+and reuses coefficient storage; wasm32 retains main's existing allocations.
 
-Before allocation, both renderers cap a window's work image, its exact
-Dehaze frame and the source sampled by that preparation at 67,108,864 pixels (64 Mi pixels). The full preparation also has
-a conservative 4 GiB temporary-storage estimate that includes NR scratch and
-work copies. The limit applies before Metal delegates a statistic to the CPU.
-An oversized request returns an actionable error through `pipeline::render`,
-`render_cached` and native render jobs. It never substitutes a
-smaller statistic or truncates filter support. These APIs now return `Result`.
+If the full exact preparation or its source exceeds these bounds, native CPU
+and GPU windows use main's cached 384-pixel airlight proxy. The proxy cache
+keeps four source and frame entries before white balance, as in e7cd00ef.
+Exposure, Dehaze and NR changes reuse that sampled proxy; white balance still
+runs on it. These windows retain full filter context, but approximate airlight
+can differ from a full-render crop by more than one code value. Exact frames
+keep the accuracy bounds below. A window work image itself remains limited to
+67,108,864 pixels. If complete filter support exceeds that bound, planning keeps
+main's bounded window margin. Such windows also approximate the missing filter
+context and do not carry the exact path's one-code-value bound. Requested
+windows that themselves exceed the work limit still report an error.
 Full renders (`window=None`) keep their existing operators and pixels.
 
 On wasm32, compile-time gates keep main's requested window, bounded spot reads,

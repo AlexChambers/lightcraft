@@ -846,6 +846,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 | 2026-10-13 | minor | LRC-LIB-KEYWORDS: the Keyword List marks a keyword that has an applied keyword inside it (a dot in its box); status unchanged |
 | 2026-10-12 | minor | LR-IMP-FORMATS: folder discovery includes SR2/SRF; MCP and CLI reuse the engine extension list. DSC-F828 remains preview-only; decoder support and row status unchanged |
 | 2026-10-15 | patch | KEYC-RATING: `\` shows / hides the Filter Bar in Photo Grid and Square Grid (Show Original in Detail); status unchanged (🟡) |
+| 2026-10-14 | patch | LR-VIEW-ZOOM: restore the native airlight proxy fallback, count sequential NR storage and retain exact large-frame pans; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: visible region failure status and NaN payload contract; status unchanged |
 | 2026-10-13 | minor | LR-VIEW-ZOOM: exact context is native-only; web keeps main's margin, pixels and memory use; remove admission estimator; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: add wasm32 render admission and visible region failure status; qualify NaN payload equality; status unchanged |

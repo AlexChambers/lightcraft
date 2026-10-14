@@ -14,6 +14,7 @@
 //! `ONLY=window`: a 1:1 zoom window cut from the full-size original (the loupe's `Slot::Region`):
 //! the first window of a photo, a pan, and exposure / draft / NR changes with a warm stage cache;
 //! `DUMP=file` writes the GPU window's RGBA bytes, for pixel A/B comparisons between builds.
+//! `DEHAZE=0` disables Dehaze in typical settings; the default is 10.
 //! Opening a photo, per file: `ONLY=source` (decode steps), `ONLY=load` (what the app's loaders
 //! cost: file read, decode, binning, embedded stand-ins, `load_bytes(2560)`, the fs loader),
 //! `ONLY=load1` (decode checksum + `load_bytes(2560)`; `LOADONLY=1`: only that, for a profiler),
@@ -71,7 +72,7 @@ fn typical() -> DevelopSettings {
     s.light.shadows = 30.0;
     s.effects.clarity = 15.0;
     s.effects.texture = 10.0;
-    s.effects.dehaze = 10.0;
+    s.effects.dehaze = std::env::var("DEHAZE").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
     s.detail.nr_luminance = 30.0;
     s.detail.nr_color = 25.0;
     s.detail.sharpen_amount = 40.0;
