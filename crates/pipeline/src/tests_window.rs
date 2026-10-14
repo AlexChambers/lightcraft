@@ -282,6 +282,24 @@ fn a_window_of_a_huge_frame_is_cheap() {
     assert_eq!((r.image.width, r.image.height), (256, 192));
 }
 
+#[test]
+fn oversized_filter_support_keeps_mains_bounded_window() {
+    let src = scene();
+    let mut s = DevelopSettings::default();
+    s.light.highlights = -40.;
+    s.light.shadows = 30.;
+    s.effects.clarity = 15.;
+    s.effects.dehaze = 10.;
+    s.detail.nr_luminance = 30.;
+    s.detail.nr_color = 25.;
+    let req = RenderRequest { window: Some(PixelWindow { x: 20_000, y: 12_000, w: 400, h: 300 }), ..RenderRequest::fit(48_000, 32_000) };
+    let p = crate::plan(&src, &SourceInfo::default(), &s, &req);
+    assert_eq!((p.w, p.h), (400, 300));
+    assert!(p.needs_airlight);
+    let out = render(&src, &SourceInfo::default(), &s, &req).unwrap();
+    assert_eq!((out.image.width, out.image.height), (400, 300));
+}
+
 // Hostile windows (from UI state) are clamped into the frame, never a panic or a huge buffer
 #[test]
 fn windows_outside_or_degenerate_are_clamped() {

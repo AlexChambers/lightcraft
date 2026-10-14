@@ -330,7 +330,9 @@ impl StageCache {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(full) = self.airlight_frame.value() {
-            add(Arc::as_ptr(&full.sampled) as usize, size(&full.sampled));
+            if let Some(sampled) = &full.sampled {
+                add(Arc::as_ptr(sampled) as usize, size(sampled));
+            }
             add(Arc::as_ptr(&full.lin) as usize, size(&full.lin));
             add(Arc::as_ptr(&full.dark) as usize, size(&full.dark));
         }
@@ -494,7 +496,14 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
                     h: full_h,
                 });
                 // Defringe also surrounds the source patches read by spots.
-                window::expand(work, full_w, full_h, optics::defringe_radius(s, px_per_long / optics::DEFRINGE_REF_LONG))
+                let work = window::expand(work, full_w, full_h, optics::defringe_radius(s, px_per_long / optics::DEFRINGE_REF_LONG));
+                if airlight::check_pixels(work.w, work.h).is_err() {
+                    // Preserve main's bounded window when complete support cannot
+                    // fit. Dehaze's full-frame budget check selects its proxy too.
+                    if req.depth == OutputDepth::U8 { spots::window_for_reads(s, &frame, full_w, full_h, px_per_long, win) } else { win }
+                } else {
+                    work
+                }
             };
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
@@ -681,35 +690,44 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let fixed_air = plan.fixed_air;
     #[cfg(not(target_arch = "wasm32"))]
     let fixed_air = if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
-        // A valid work entry already contains this full statistic and its work pixels.
-        let ready = cached
-            .as_ref()
-            .filter(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
-            .and_then(|_| shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)));
-        if let Some(air) = ready {
-            Some(air)
-        } else {
-            let saved = shared.and_then(|(a, c)| c.airlight_frame.get(a));
-            let prepared = match saved {
-                Some((key, value)) if key == full.lin_key => value,
-                other => {
-                    let sampled = other.filter(|(_, data)| data.geo == full.geo).map(|(_, data)| data.sampled.clone());
-                    if let Some((_, cache)) = shared {
-                        cache.airlight_frame.clear();
-                    }
-                    let data = Arc::new(airlight::prepare(src_img, info, full, Some(&plan), sampled)?);
-                    if let Some((src, cache)) = shared {
-                        cache.airlight_frame.put(src, full.lin_key, data.clone(), data.bytes());
-                    }
-                    data
-                }
-            };
-            let air = prepared.air;
-            prepared_work = Some(prepared.window(&plan));
-            if let Some((src, cache)) = shared {
-                cache.airlight.remember(src, full.lin_key, air);
+        let budget = shared.map_or(airlight::PREPARE_BUDGET, |(_, c)| c.airlight.budget());
+        if airlight::check_prepare_budget(full, Some(&plan), budget, false).is_err() || airlight::check_pixels(src_img.width, src_img.height).is_err()
+        {
+            if let Some((_, cache)) = shared {
+                cache.airlight_frame.clear();
             }
-            Some(air)
+            Some(airlight::proxy(src_img, info, full))
+        } else {
+            // A valid work entry already contains this full statistic and its work pixels.
+            let ready = cached
+                .as_ref()
+                .filter(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
+                .and_then(|_| shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)));
+            if let Some(air) = ready {
+                Some(air)
+            } else {
+                let saved = shared.and_then(|(a, c)| c.airlight_frame.get(a));
+                let prepared = match saved {
+                    Some((key, value)) if key == full.lin_key => value,
+                    other => {
+                        let sampled = other.filter(|(_, data)| data.geo == full.geo).and_then(|(_, data)| data.sampled.clone());
+                        if let Some((_, cache)) = shared {
+                            cache.airlight_frame.clear();
+                        }
+                        let data = Arc::new(airlight::prepare(src_img, info, full, Some(&plan), sampled)?);
+                        if let Some((src, cache)) = shared {
+                            cache.airlight_frame.put(src, full.lin_key, data.clone(), data.bytes());
+                        }
+                        data
+                    }
+                };
+                let air = prepared.air;
+                prepared_work = Some(prepared.window(&plan));
+                if let Some((src, cache)) = shared {
+                    cache.airlight.remember(src, full.lin_key, air);
+                }
+                Some(air)
+            }
         }
     } else {
         None
@@ -723,8 +741,8 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         None => Arc::new(frame.sample(src_img, w, h)),
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let sampled = match (&prepared_work, &cached) {
-        (Some(work), _) => work.sampled.clone(),
+    let sampled = match (prepared_work.as_ref().and_then(|work| work.sampled.clone()), &cached) {
+        (Some(sampled), _) => sampled,
         (_, Some(e)) => e.sampled.clone(),
         _ => {
             let sampling = frame.sample_plan(src_img.width, src_img.height, w, h);

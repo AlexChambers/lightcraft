@@ -5,12 +5,24 @@ use crate::{Plan, SourceInfo, local};
 use lightcraft_raster::Rgb32f;
 use std::sync::{Arc, Mutex, Weak};
 
-#[derive(Default)]
 pub struct AirlightCache {
     entries: Mutex<Vec<(Weak<Rgb32f>, u64, f32)>>,
+    budget: u64,
+}
+impl Default for AirlightCache {
+    fn default() -> Self {
+        Self::with_budget(PREPARE_BUDGET)
+    }
 }
 
 impl AirlightCache {
+    /// Limit exact preparation for this view. Smaller budgets use the cached proxy.
+    pub fn with_budget(budget: u64) -> Self {
+        Self { entries: Mutex::new(Vec::new()), budget }
+    }
+    pub fn budget(&self) -> u64 {
+        self.budget
+    }
     pub fn clear(&self) {
         self.entries.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
@@ -82,7 +94,7 @@ impl<T> FrameCache<T> {
 }
 
 /// Maximum pixels in a window's work image or exact-statistic image. A 61 MP source
-/// fits; a multi-gigapixel virtual frame must report an error before sampling it.
+/// fits; a larger exact-statistic frame uses the proxy before sampling it.
 /// Each RGB allocation is at most 768 MiB, including on the GPU's CPU fallback.
 pub const MAX_PIXELS: usize = 64 * 1024 * 1024;
 /// Temporary storage for preparing an exact statistic and retaining the work rectangle.
@@ -98,30 +110,93 @@ pub fn check_pixels(w: usize, h: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Bound the full pass before either renderer allocates it. The estimate includes
-/// sampling, RGB, dark-channel blur, selection, NR scratch and the copied work data.
-pub fn check_prepare(full: &Plan<'_>, work: Option<&Plan<'_>>) -> Result<(), String> {
-    check_pixels(full.w, full.h)?;
+/// Peak live CPU image storage, excluding the caller's source and existing caches.
+/// Two RGB images use 24 bytes/pixel. Luminance NR adds five scalar planes (20),
+/// colour NR adds two RGB buffers (24), and dark-channel blur adds two planes (8).
+/// These stages run sequentially. Cropping copies the retained 28-byte or
+/// 16-byte preparation. Row scratch is bounded separately.
+pub fn prepare_bytes(full: &Plan<'_>, work: Option<&Plan<'_>>, gpu: bool) -> u64 {
+    let n = (full.w as u64).saturating_mul(full.h as u64);
     let (lum, col) = local::nr_params(&full.settings, full.src_long, full.frame.output_long(full.w, full.h));
-    let bytes_per_pixel = if lum.is_some() || col.is_some() { 96 } else { 48 };
-    let full_bytes = (full.w as u64).saturating_mul(full.h as u64).saturating_mul(bytes_per_pixel);
-    let work_bytes = work.map_or(0, |p| (p.w as u64).saturating_mul(p.h as u64).saturating_mul(28));
-    if full_bytes.saturating_add(work_bytes) > PREPARE_BUDGET {
+    // GPU luminance NR peaks while writing RGB output with its input, log
+    // luminance, coefficients and filtered luminance still alive (28 bytes).
+    let scratch = if gpu && lum.is_some() {
+        28
+    } else if col.is_some() {
+        24
+    } else if lum.is_some() {
+        20
+    } else {
+        8
+    };
+    let filtering = n.saturating_mul(24 + scratch);
+    // CPU linear stages upload their result while the host image and sampled
+    // device image still exist. GPU red-eye also keeps input and output RGB.
+    let hybrid = if gpu && (!full.settings.spots.is_empty() || full.settings.profile.camera_local_tone || !full.eyes.is_empty()) {
+        n.saturating_mul(36)
+    } else {
+        0
+    };
+    let defringe = if crate::optics::defringe_radius(&full.settings, full.px_per_long / crate::optics::DEFRINGE_REF_LONG) > 0 {
+        n.saturating_mul(52)
+    } else {
+        0
+    };
+    let retouch =
+        n.saturating_mul(24).saturating_add(crate::spots::preparation_scratch(&full.settings.spots, &full.frame, full.w, full.h, full.px_per_long));
+    let retained = if n.saturating_mul(28) <= FrameCache::<Full>::BUDGET as u64 { 28 } else { 16 };
+    let cropping = n.saturating_mul(retained).saturating_add(work.map_or(0, |p| (p.w as u64).saturating_mul(p.h as u64).saturating_mul(retained)));
+    let sampling = full.frame.sample_plan(full.frame.src_w, full.frame.src_h, full.w, full.h);
+    let oriented = if full.frame.orient == lightcraft_geom::Orientation::Normal {
+        0
+    } else {
+        (sampling.ow as u64).saturating_mul(sampling.oh as u64).saturating_mul(12)
+    };
+    let prefilter =
+        sampling.prefilter.map_or(0, |(w, h)| (w as u64).saturating_mul((h as u64).saturating_add(sampling.oh as u64)).saturating_mul(12));
+    // Each active worker can hold row scratch. The filter allowance also covers selection
+    // (one f32 every seven pixels) and GPU subsample readback at the dark stage.
+    let row_scratch = (full.w.max(full.h) as u64).saturating_mul(24).saturating_mul(rayon::current_num_threads() as u64);
+    filtering
+        .max(hybrid)
+        .max(defringe)
+        .max(retouch)
+        .max(cropping)
+        .max(oriented.saturating_add(prefilter).saturating_add(n.saturating_mul(12)))
+        .saturating_add(row_scratch)
+}
+
+/// Bound the CPU full pass before allocating it.
+pub fn check_prepare(full: &Plan<'_>, work: Option<&Plan<'_>>) -> Result<(), String> {
+    check_prepare_budget(full, work, PREPARE_BUDGET, false)
+}
+
+pub fn check_prepare_budget(full: &Plan<'_>, work: Option<&Plan<'_>>, budget: u64, gpu: bool) -> Result<(), String> {
+    check_pixels(full.w, full.h)?;
+    if prepare_bytes(full, work, gpu) > budget {
         return Err("The exact Dehaze preparation exceeds its 4 GiB memory budget. Use a smaller source or reduce the zoom or output size.".into());
     }
     Ok(())
 }
 
+/// Main's cached 384-pixel proxy. It preserves a rendered window when exact
+/// preparation exceeds the budget, at the cost of approximate airlight.
+pub fn proxy(src: &Rgb32f, info: &SourceInfo, full: &Plan<'_>) -> f32 {
+    let k = (384.0 / full.w.max(full.h).max(1) as f64).min(1.0);
+    let (w, h) = (((full.w as f64 * k).round() as usize).max(1), ((full.h as f64 * k).round() as usize).max(1));
+    local::frame_airlight(src, info, &full.settings, &full.frame, w, h)
+}
+
 /// The exact full preparation. Work rectangles are copies, with no resampling.
 pub(crate) struct Full {
     pub geo: u64,
-    pub sampled: Arc<Rgb32f>,
+    pub sampled: Option<Arc<Rgb32f>>,
     pub lin: Arc<Rgb32f>,
     pub dark: Arc<lightcraft_raster::Plane>,
     pub air: f32,
 }
 pub(crate) struct Work {
-    pub sampled: Arc<Rgb32f>,
+    pub sampled: Option<Arc<Rgb32f>>,
     pub lin: Arc<Rgb32f>,
     pub dark: Arc<lightcraft_raster::Plane>,
 }
@@ -129,13 +204,13 @@ impl Full {
     pub fn window(&self, plan: &Plan<'_>) -> Work {
         let (x, y) = plan.frame.view.map_or((0, 0), |v| (v.x as usize, v.y as usize));
         Work {
-            sampled: Arc::new(self.sampled.crop(x, y, plan.w, plan.h)),
+            sampled: self.sampled.as_ref().map(|s| Arc::new(s.crop(x, y, plan.w, plan.h))),
             lin: Arc::new(self.lin.crop(x, y, plan.w, plan.h)),
             dark: Arc::new(self.dark.crop(x, y, plan.w, plan.h)),
         }
     }
     pub fn bytes(&self) -> usize {
-        self.sampled.len() * 12 + self.lin.len() * 12 + self.dark.len() * 4
+        self.sampled.as_ref().map_or(0, |s| s.len() * 12) + self.lin.len() * 12 + self.dark.len() * 4
     }
 }
 
@@ -156,6 +231,9 @@ pub(crate) fn prepare(
     let sigma = (0.02 * full.px_per_long as f32).max(1.0);
     let dark = lightcraft_raster::blur::gaussian_owned(dark, sigma);
     let air = local::airlight(&dark);
+    // Keep exact pans warm up to the pixel bound without keeping an extra RGB
+    // image. Small frames also retain sampled pixels for upstream edits.
+    let sampled = (img.len() * 28 <= FrameCache::<Full>::BUDGET).then_some(sampled);
     Ok(Full { geo: full.geo, sampled, lin: Arc::new(img), dark: Arc::new(dark), air })
 }
 
@@ -318,6 +396,57 @@ mod reuse_regression {
 #[cfg(test)]
 mod frame_budget_tests {
     use super::*;
+
+    #[test]
+    fn small_budget_renders_with_proxy_and_retries_exact_after_upstream_edits() {
+        use crate::{PixelWindow, RenderRequest, StageCache};
+        let src = Arc::new(Rgb32f::from_fn(1201, 803, |x, y| {
+            let l = 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0;
+            [l, l * 0.82, l * 1.15]
+        }));
+        let info = SourceInfo::default();
+        let mut s = lightcraft_develop::DevelopSettings::default();
+        s.effects.dehaze = 15.0;
+        s.detail.nr_color = 25.0;
+        let mut cache = StageCache { airlight: AirlightCache::with_budget(1), ..Default::default() };
+        for step in 0..4 {
+            s.light.exposure = step as f64 * 0.2;
+            if step == 2 {
+                s.detail.nr_color = 40.0;
+            }
+            let req = RenderRequest { window: Some(PixelWindow { x: 400 + step * 3, y: 300, w: 121, h: 83 }), ..RenderRequest::fit(1201, 803) };
+            let full = crate::plan(&src, &info, &s, &RenderRequest { window: None, ..req });
+            let plan = crate::plan(&src, &info, &s, &req);
+            assert!(check_prepare_budget(&full, Some(&plan), 1, false).is_err());
+            assert!(check_prepare(&full, Some(&plan)).is_ok());
+            let out = crate::render_cached(&src, &info, &s, &req, &cache).unwrap();
+            let fresh = StageCache { airlight: AirlightCache::with_budget(1), ..Default::default() };
+            assert_eq!(out.image, crate::render_cached(&src, &info, &s, &req, &fresh).unwrap().image);
+            assert!(cache.airlight_frame.value().is_none());
+            assert_eq!((out.image.width, out.image.height), (121, 83));
+        }
+        cache.airlight = AirlightCache::default();
+        let req = RenderRequest { window: Some(PixelWindow { x: 400, y: 300, w: 121, h: 83 }), ..RenderRequest::fit(1201, 803) };
+        let exact = crate::render_cached(&src, &info, &s, &req, &cache).unwrap();
+        assert!(cache.airlight_frame.value().is_some());
+        assert_eq!(exact.image, crate::render(&src, &info, &s, &req).unwrap().image);
+    }
+
+    #[test]
+    fn preparation_counts_sequential_nr_storage_and_crop_peak() {
+        let src = Rgb32f::new(3, 2);
+        let info = SourceInfo::default();
+        let mut s = lightcraft_develop::DevelopSettings::default();
+        let req = crate::RenderRequest::fit(6000, 4000);
+        for (lum, col, cpu, gpu) in [(0., 0., 32, 32), (30., 0., 44, 52), (0., 25., 48, 48), (30., 25., 48, 52)] {
+            s.detail.nr_luminance = lum;
+            s.detail.nr_color = col;
+            let p = crate::plan(&src, &info, &s, &req);
+            let rows = 6000 * 24 * rayon::current_num_threads() as u64;
+            assert_eq!(prepare_bytes(&p, None, false), 24_000_000 * cpu + rows);
+            assert_eq!(prepare_bytes(&p, None, true), 24_000_000 * gpu + rows);
+        }
+    }
 
     #[test]
     fn retained_frames_obey_the_budget_and_release_source_and_data() {

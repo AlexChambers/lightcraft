@@ -171,13 +171,33 @@ pub fn guided(p: &Plane, sigma: f32, eps: f32) -> Plane {
 /// Blurred guided-filter coefficients (mean a, mean b) of `p`; every pass row-parallel, and the
 /// two independent blurs of each step run side by side.
 fn guided_coeffs(p: &Plane, sigma: f32, eps: f32) -> (Plane, Plane) {
-    let (mean, corr) = par_join(|| gaussian(p, sigma), || gaussian(&p.map(|v| v * v), sigma));
-    let a = corr.zip_map(&mean, |c, m| {
-        let var = (c - m * m).max(0.0);
-        var / (var + eps)
-    });
-    let b = mean.zip_map(&a, |m, a| m - a * m);
-    par_join(|| gaussian(&a, sigma), || gaussian(&b, sigma))
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (mean, corr) = par_join(|| gaussian(p, sigma), || gaussian(&p.map(|v| v * v), sigma));
+        let a = corr.zip_map(&mean, |c, m| {
+            let var = (c - m * m).max(0.0);
+            var / (var + eps)
+        });
+        let b = mean.zip_map(&a, |m, a| m - a * m);
+        par_join(|| gaussian(&a, sigma), || gaussian(&b, sigma))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use lightcraft_raster::blur::gaussian_owned;
+        let (mut mean, mut corr) = par_join(|| gaussian(p, sigma), || gaussian_owned(p.map(|v| v * v), sigma));
+        for_rows(&mut corr.data, p.width, |y, row| {
+            for (c, m) in row.iter_mut().zip(mean.row(y)) {
+                let var = (*c - m * m).max(0.0);
+                *c = var / (var + eps);
+            }
+        });
+        for_rows(&mut mean.data, p.width, |y, row| {
+            for (m, a) in row.iter_mut().zip(corr.row(y)) {
+                *m -= a * *m;
+            }
+        });
+        par_join(|| gaussian_owned(corr, sigma), || gaussian_owned(mean, sigma))
+    }
 }
 
 /// `q = a·p + b` per pixel.
@@ -435,12 +455,18 @@ pub fn apply_nr(img: &mut Rgb32f, lum: Option<NrLum>, col: Option<NrColor>) {
             let y = luminance_2020(c).max(1e-6);
             [c[0] / y, c[1] / y, c[2] / y]
         });
+        #[cfg(target_arch = "wasm32")]
         let b = gaussian(&chroma, nr.sigma);
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = lightcraft_raster::blur::gaussian_owned(chroma, nr.sigma);
         for_rows(&mut img.data, w, |y, row| {
             for (x, p) in row.iter_mut().enumerate() {
                 let i = y * w + x;
                 let yl = luminance_2020(*p);
+                #[cfg(target_arch = "wasm32")]
                 let c0 = chroma.data[i];
+                #[cfg(not(target_arch = "wasm32"))]
+                let c0 = p.map(|v| v / yl.max(1e-6));
                 let cb = b.data[i];
                 *p = [0, 1, 2].map(|k| ((c0[k] + (cb[k] - c0[k]) * nr.t) * yl).max(0.0));
             }
@@ -657,7 +683,6 @@ pub(crate) fn prepare(
 
 /// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):
 /// a windowed render must dehaze with the frame's airlight, not that of the pixels it holds.
-#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn frame_airlight(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, frame: &Frame, proxy_w: usize, proxy_h: usize) -> f32 {
     let mut img = Rgb32f::clone(&frame_proxy(src, frame, proxy_w, proxy_h));
     white_balance(&mut img, info, s);
@@ -666,13 +691,11 @@ pub(crate) fn frame_airlight(src: &Rgb32f, info: &SourceInfo, s: &DevelopSetting
 }
 
 /// How many airlight proxies [`frame_proxy`] keeps (one per photo and frame being zoomed into; each ≤ 1.8 MB).
-#[cfg(any(target_arch = "wasm32", test))]
 const FRAME_PROXIES_KEPT: usize = 4;
 
 /// `frame.sample(src, w, h)`, kept for the last few (source, frame, size): sampling a 64 MP original down to the
 /// airlight proxy reads all of it (~190 ms of CPU), and every window of a zoomed view with Dehaze asked for it again,
 /// on each pan and slider tick. The proxy is taken before white balance, so a WB change still hits.
-#[cfg(any(target_arch = "wasm32", test))]
 fn frame_proxy(src: &Rgb32f, frame: &Frame, w: usize, h: usize) -> Arc<Rgb32f> {
     type Entry = (u64, Frame, usize, usize, Arc<Rgb32f>);
     static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
