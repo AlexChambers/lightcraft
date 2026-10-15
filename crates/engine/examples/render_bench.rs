@@ -444,7 +444,12 @@ fn main() {
                     format!("{b}")
                 })
                 .collect();
-            println!("{label:<38} {}: {}{}", if backends[0] { "gpu" } else { "cpu" }, cols[0], cols.get(1).map(|g| format!("  |  gpu: {g}")).unwrap_or_default());
+            println!(
+                "{label:<38} {}: {}{}",
+                if backends[0] { "gpu" } else { "cpu" },
+                cols[0],
+                cols.get(1).map(|g| format!("  |  gpu: {g}")).unwrap_or_default()
+            );
         }
         // `DUMP=file`: the GPU window's raw RGBA bytes (A/B pixel comparisons between builds)
         if let (true, Some(path)) = (gpu, std::env::var_os("DUMP")) {
