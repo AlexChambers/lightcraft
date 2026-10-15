@@ -65,6 +65,19 @@ fn best(n: usize, mut f: impl FnMut()) -> T {
     b
 }
 
+/// Prepare a stand-in outside the timed interval, then measure its replacement.
+fn best_after<S>(n: usize, mut prepare: impl FnMut() -> S, mut render: impl FnMut(S)) -> T {
+    let mut b = T(f64::MAX, f64::MAX);
+    for _ in 0..n {
+        let state = prepare();
+        let (t, c) = (Instant::now(), cpu_ms());
+        render(state);
+        b.1 = b.1.min(cpu_ms() - c);
+        b.0 = b.0.min(t.elapsed().as_secs_f64() * 1e3);
+    }
+    b
+}
+
 fn typical() -> DevelopSettings {
     let mut s = DevelopSettings::default();
     s.light.exposure = 0.3;
@@ -357,6 +370,26 @@ fn main() {
             lightcraft_engine::gpu::trim_pool(0);
             drop(develop(&full, &info, &s, &bounded(w0), Some(&StageCache::default()), g).unwrap())
         });
+        let cols: Vec<String> = backends
+            .iter()
+            .map(|&g| {
+                format!(
+                    "{}",
+                    best_after(
+                        n,
+                        || {
+                            lightcraft_engine::gpu::trim_pool(0);
+                            let cache = StageCache::default();
+                            drop(develop(&full, &info, &s, &bounded(w0), Some(&cache), g).unwrap());
+                            cache
+                        },
+                        |cache| drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&cache), g).unwrap())
+                    )
+                )
+            })
+            .collect();
+        let first = if backends[0] { "gpu" } else { "cpu" };
+        println!("{:<38} {first}: {}{}", "window exact after bounded:", cols[0], cols.get(1).map(|g| format!("  |  gpu: {g}")).unwrap_or_default());
         let wc = [StageCache::default(), StageCache::default()];
         for g in backends {
             drop(develop(&full, &info, &s, &at(w0, Quality::Full), Some(&wc[*g as usize]), *g).unwrap());
