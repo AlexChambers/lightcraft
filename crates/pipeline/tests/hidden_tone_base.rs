@@ -1,5 +1,5 @@
-//! Compatibility with main 76b53778: hidden and empty masks still select the tone
-//! base consumed by Clarity, even when no visible Highlights or Shadows are set.
+//! Compatibility with current main: hidden and empty masks do not select the
+//! tone base consumed by Clarity (#1214).
 use lightcraft_develop::{DevelopSettings, LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape, Process};
 use lightcraft_geom::Point;
 use lightcraft_pipeline::{PixelWindow, RenderRequest, SourceInfo, plan, render};
@@ -65,14 +65,14 @@ fn full_clarity_with_hidden_or_empty_tone_masks_matches_main() {
             for empty in [false, true] {
                 let s = settings(process, empty, local_clarity);
                 let full = render(&src, &info, &s, &req).unwrap().image;
-                assert_eq!(full.data, expected.data, "{process:?} local_clarity={local_clarity} empty={empty}");
+                assert_eq!(full.data, without_base.data, "{process:?} local_clarity={local_clarity} empty={empty}");
             }
         }
     }
 }
 
 #[test]
-fn clarity_windows_include_hidden_or_empty_tone_base_support() {
+fn clarity_windows_ignore_hidden_or_empty_tone_base_support() {
     let src = source();
     let info = SourceInfo::default();
     // These radii use the full-resolution guided filter. This isolates support
@@ -92,11 +92,11 @@ fn clarity_windows_include_hidden_or_empty_tone_base_support() {
                 let mut active_tone = s.clone();
                 active_tone.light.highlights = -80.0;
                 let tone_plan = plan(&src, &info, &active_tone, &window_req);
-                assert_eq!((p.w, p.h, p.keep), (tone_plan.w, tone_plan.h, tone_plan.keep), "Clarity consumes the same tone base");
+                assert!(tone_plan.w > p.w, "a visible tone adjustment needs more support");
                 let mut no_tone = s.clone();
                 no_tone.masks.remove(0);
                 let clarity_plan = plan(&src, &info, &no_tone, &window_req);
-                assert!(p.w > clarity_plan.w, "tone-base support exceeds Clarity's own support");
+                assert_eq!((p.w, p.h, p.keep), (clarity_plan.w, clarity_plan.h, clarity_plan.keep), "inactive masks add no tone-base support");
             }
         }
     }

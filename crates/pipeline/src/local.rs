@@ -633,9 +633,8 @@ pub(crate) fn context_plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Qua
 
 fn select_plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneSigmas {
     let ppl = px_per_long as f32;
-    let local_any = |f: fn(&lightcraft_develop::LocalAdjustments) -> bool| {
-        s.masks.iter().any(|m| (m.visible && !m.components.is_empty()) && f(&m.adjust))
-    };
+    let local_any =
+        |f: fn(&lightcraft_develop::LocalAdjustments) -> bool| s.masks.iter().any(|m| (m.visible && !m.components.is_empty()) && f(&m.adjust));
     let tone_active = s.light.highlights != 0.0 || s.light.shadows != 0.0 || local_any(|a| a.highlights != 0.0 || a.shadows != 0.0);
     // Edge-aware base at ~1.5% of the long edge (EV² epsilon: edges of > ~0.6 EV are preserved)
     // From V2 it is taken of the median at 0.15%: lines and texture finer than that are detail,

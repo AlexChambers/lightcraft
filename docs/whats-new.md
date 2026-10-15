@@ -729,6 +729,9 @@
   Texture, Highlights and Shadows, even when the visible window is small
   (issue #1146). Mask blurs and edge refinement receive their context too.
   Full-image renders keep their pixels in both existing process versions.
+- New native zoom windows first show a bounded preview. After it has stayed visible for 100 ms, the app requests
+  an exact replacement. Panning during that pause requests the next bounded preview immediately. Releasing a
+  drag with Dehaze on also shows the bounded preview first. Exact work already running still finishes.
 
 
 ### Canon CR2 highlights

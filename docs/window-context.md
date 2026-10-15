@@ -1,5 +1,9 @@
 # Spatial context for zoom windows
 
+The 2026-10-28 rebase onto main `59a5d00c` retains the #1214 hidden-mask fix.
+Compatibility tests compare inactive masks with the same settings without those masks.
+The recorded accuracy and performance runs below predate this rebase.
+
 A native window render prepares the surrounding pixels needed by its active local filters,
 then returns the requested rectangle. The CPU and GPU use the same calculation in
 `pipeline::plan` and `crates/pipeline/src/window.rs` (issue #1146).
@@ -21,9 +25,12 @@ the full render (`Plan::detail_scale`, `SourceInfo::native_long`).
 Native Detail, Before/After, Compare and Reference views first request a bounded
 window for a new photo or location. It uses the caller's margin, main's local
 filter grid and main's cached 384 px Dehaze proxy. Once that texture arrives,
-the view requests the exact window. The bounded texture stays visible until
-the exact result replaces it. A settled edit of the same location requests
-exact output directly.
+the view waits 100 ms before requesting the exact window. A newer pan or edit
+supersedes the waiting replacement without occupying the slot's worker. The
+bounded texture stays visible until the exact result replaces it. Running
+exact work is not cancelled. A settled edit of the same location requests
+exact output directly, except a released drag with Dehaze active: that release
+also requests a bounded window first when its matching draft is already shown.
 
 Draft windows during slider drags use the caller's margin and local filter
 grid. They reuse an exact airlight scalar only when its upstream key matches;
@@ -74,11 +81,9 @@ Supplied segmentation mattes skip the heuristic support that their evaluation
 bypasses. Background uses the Subject matte before inversion. Refine Edges still
 adds support when a matte is supplied. Hidden masks and masks without components
 add no unused support, and hidden Dehaze does not trigger the full-frame airlight calculation.
-Rendering still selects the same planes as main, including those selected by
-hidden and empty masks. This preserves existing V1/V2 pixels. Clarity consumes
-the tone base even with Highlights and Shadows at zero, so an inactive tone
-mask's base support remains in the context when global or visible local Clarity
-is active. CPU and GPU use the same render selector and context plan.
+Rendering retains main's #1214 fix: hidden and empty masks do not select the
+tone base Clarity reads. CPU and GPU use the same visible-mask selector and
+context plan.
 
 Auto Mask dab reads retain the existing spot/brush context calculation. Global
 Defringe adds its shared min/max radius after spot source expansion, because
@@ -273,7 +278,7 @@ must recompute the Sky heuristic and its refinement because its alpha changes.
 Radial and Subject refined alphas remain reusable. Measurements below separate
 that remaining work from the resolved airlight mismatch.
 
-## Current validation (2026-10-12)
+## Validation before this rebase (2026-10-12)
 
 The allocation regression executes a 400 by 300 window in a 48,000 by 32,000
 virtual frame under a 1 GiB allocation guard. On `8170b9dd`, it requested

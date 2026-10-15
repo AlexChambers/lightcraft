@@ -269,7 +269,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     } else {
         Vec::new()
     };
-    let windows = request_windows(app, &window_ctx, window_views);
+    let windows = request_windows(app, ui.ctx(), &window_ctx, window_views);
     let p = ui.painter_at(canvas);
     let draw = |slot: Slot, r: Rect, clip: Rect| draw_slot(app, &p, id, ppp, slot, r, clip);
     // soft proofing: a paper-white surround and the proof's name, as Lightroom shows it
@@ -589,10 +589,15 @@ fn proof_surround(app: &LightcraftApp, p: &egui::Painter, t: &Tokens, canvas: Re
 }
 
 /// Request the window renders, remember which sides have one, and release the slot of a side without.
-fn request_windows(app: &mut LightcraftApp, ctx: &WindowCtx, views: Vec<WindowView>) -> Vec<(WindowView, crate::region::RegionView)> {
+fn request_windows(
+    app: &mut LightcraftApp,
+    ui_ctx: &egui::Context,
+    ctx: &WindowCtx,
+    views: Vec<WindowView>,
+) -> Vec<(WindowView, crate::region::RegionView)> {
     let mut windows: Vec<(WindowView, crate::region::RegionView)> = Vec::new();
     for v in views {
-        if let Some(view) = request_window(app, ctx, &v) {
+        if let Some(view) = request_window(app, ui_ctx, ctx, &v) {
             windows.push((v, view));
         }
     }

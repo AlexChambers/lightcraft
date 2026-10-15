@@ -562,4 +562,3 @@ pub(super) fn region_failure_notice(ui: &mut egui::Ui, canvas: Rect, error: &str
     register(ui.ctx(), "notice:regionFailure:loupe", r);
     ui.interact(r, egui::Id::new("region-failure-notice"), Sense::hover()).on_hover_text(error);
 }
-
