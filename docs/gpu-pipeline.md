@@ -178,7 +178,9 @@ full-render preservation and benchmark (issue #1146).
   up to 1 GiB and counted in stage bytes. The source upload and unchanged full-frame
   sampling are reused. CPU and GPU enforce the same input and temporary-storage
   limits before the statistic allocates, including on the CPU fallback. Over-budget
-  windows return an error through the native job or web worker. See
+  preparation uses the 384 px proxy when its full-frame budget is exceeded.
+  An oversized requested work buffer returns an error through the native job
+  or web worker. See
   [window context](window-context.md) for invalidation rules, measurements and remaining costs.
 - Dehaze reads back sampled dark-channel values when computing airlight. The full-frame statistic
   has its own command encoder. Dropped buffers are recycled (exact size, ≤ 2 GB pool) once the
