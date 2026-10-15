@@ -429,24 +429,60 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn oversized_native_region_returns_an_error_and_worker_recovers() {
+    fn oversized_native_context_uses_the_proxy_and_worker_recovers() {
         use lightcraft_engine::pipeline::PixelWindow;
         let mut session = Session::with_demo();
         let id = session.visible_cloned()[0];
         let win = PixelWindow { x: 20000, y: 12000, w: 400, h: 300 };
         let mut job = session.region_job(id, 1920, 1280, win, false).unwrap();
-        Arc::make_mut(&mut job.settings).effects.dehaze = 100.0;
+        job.settings = Arc::new(DevelopSettings::default());
+        let settings = Arc::make_mut(&mut job.settings);
+        settings.effects.dehaze = 100.0;
+        settings.effects.clarity = 15.0;
+        settings.light.highlights = -40.0;
+        settings.light.shadows = 30.0;
         job.request.max_w = 48000;
         job.request.max_h = 32000;
         let mut wire = WireJob::from_job(&job, false, "Region");
         wire.max_edge = 600;
         let mut wire: WireJob = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
         let mut core = WorkerCore::default();
-        let error = core.render(&wire, None).err().expect("native memory-budget error");
+        // Keep the virtual frame 3:2. The first demo can be portrait, where
+        // clipping the work rectangle at the right edge keeps its context small.
+        let source = DecodedSource::new(
+            Arc::new(lightcraft_raster::Rgb32f::from_fn(600, 400, |x, y| {
+                let l = 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0;
+                [l, l * 0.82, l * 1.15]
+            })),
+            None,
+        );
+        let cost = source.bytes();
+        core.sources.insert(wire.source_key(), source, cost);
+        let rendered = core.render(&wire, None).unwrap();
+        assert_eq!((rendered.image.width, rendered.image.height), (win.w, win.h));
+        let source = core.sources.get(&wire.source_key()).cloned().unwrap();
+        let info = source.info_or(wire.info());
+        let request = wire.request();
+        let plan = lightcraft_engine::pipeline::plan(&source.image, &info, &wire.settings, &request);
+        let full = lightcraft_engine::pipeline::plan(&source.image, &info, &wire.settings, &RenderRequest { window: None, ..request });
+        assert!(lightcraft_engine::pipeline::airlight::check_prepare(&full, Some(&plan)).is_err());
+        assert_eq!((plan.w, plan.h), (win.w, win.h), "oversized filter support uses the bounded work image");
+        assert!(core.stages.values().all(|cache| cache.bytes() <= win.w * win.h * 64), "retain only bounded intermediate images");
+        let expected = lightcraft_engine::pipeline::render(&source.image, &info, &wire.settings, &request).unwrap();
+        assert_eq!(rendered.image, expected.image, "the wire preserves the proxy fallback's pixels");
+        job.source = SourceRef::Loaded(Box::new(source));
+        job.info = info;
+        let native = job.clone().run().rendered.unwrap();
+        let max = native.image.data.iter().flatten().zip(rendered.image.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(max <= 3, "native job and CPU worker fallback differ by {max}");
+
+        // A requested image above the bound still fails before any work image
+        // allocation. The same worker must accept a smaller request afterwards.
+        wire.window = Some([0, 0, 48000, 32000]);
+        let retained: usize = core.stages.values().map(|cache| cache.bytes()).sum();
+        let error = core.render(&wire, None).err().expect("requested window exceeds memory budget");
         assert!(error.contains("memory budget"), "{error}");
-        assert!(core.stages.values().all(|cache| cache.bytes() == 0), "reject before work allocation");
-        let error = job.clone().run().rendered.err().expect("native memory-budget error");
-        assert!(error.contains("memory budget"), "{error}");
+        assert_eq!(core.stages.values().map(|cache| cache.bytes()).sum::<usize>(), retained);
         wire.max_w = 600;
         wire.max_h = 400;
         wire.window = Some([16, 16, 121, 83]);
