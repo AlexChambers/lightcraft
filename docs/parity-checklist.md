@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (integration batch 36: slideshow module, print-ready PDF fixes, local adjustment presets, Layout Image loupe overlay, Delete in an album removes from it, new languages Czech, Polish, Italian-ready catalogs; many rows' notes updated by their PRs) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (LR-VIEW-ZOOM: bounded-first replacement and exact-cache isolation; integration batch 36: slideshow module, print-ready PDF fixes, local adjustment presets, Layout Image loupe overlay, Delete in an album removes from it, new languages Czech, Polish, Italian-ready catalogs; many rows' notes updated by their PRs) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
