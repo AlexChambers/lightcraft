@@ -440,8 +440,10 @@ fn an_all_masks_overlay_window_matches_the_whole_render() {
     }
     for view in [MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] {
         let overlay = Overlay::AllMasks { view, color: [255, 0, 0], opacity: 70 };
-        let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).image;
-        let w = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, window: Some(MID), ..RenderRequest::fit(W, H) }).image;
+        let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).unwrap().image;
+        let w = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, window: Some(MID), ..RenderRequest::fit(W, H) })
+            .unwrap()
+            .image;
         let (max, mean) = compare(&f, &w, MID);
         // (refine edges differs by a rounding step, as in `mask_edge_refinement_does_not_depend_on_the_window`)
         assert!(max <= 3 && mean <= 0.25, "{view:?}: max {max} (≤ 3), mean {mean:.3} (≤ 0.25)");
