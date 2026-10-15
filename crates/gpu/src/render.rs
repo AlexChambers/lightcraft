@@ -131,8 +131,13 @@ impl GpuStages {
 
     /// Drop everything (e.g. when memory is needed).
     pub fn clear(&self) {
-        self.lock().clear();
+        self.trim_images();
         self.airlight.clear();
+    }
+
+    /// Drop device buffers while retaining the small source-keyed airlight cache.
+    pub fn trim_images(&self) {
+        self.lock().clear();
         self.airlight_frame.clear();
         *self.source.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -708,19 +713,19 @@ pub fn render(
             }
             Some(lightcraft_pipeline::airlight::proxy(src, info, full))
         } else {
-            let ready = cached
-                .as_ref()
-                .filter(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
-                .and_then(|_| stages.and_then(|cache| cache.airlight.get(src, full.lin_key)))
-                .or_else(|| {
-                    // A device-limited full frame keeps only the CPU statistic.
-                    // A pan still reuses that scalar without another full pass.
-                    if !gpu.fits(full.w * full.h * 3) { stages.and_then(|cache| cache.airlight.get(src, full.lin_key)) } else { None }
-                });
+            let saved = stages.and_then(|cache| cache.airlight_frame.get(src));
+            // The full-frame statistic depends on the source and upstream settings,
+            // not on a retained window entry. Keep cropping a matching preparation
+            // when it survives, since that also saves the window's upstream work.
+            let ready = stages.and_then(|cache| cache.airlight.get(src, full.lin_key)).filter(|_| {
+                saved.as_ref().is_none_or(|(key, _)| *key != full.lin_key)
+                    || cached
+                        .as_ref()
+                        .is_some_and(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
+            });
             if let Some(air) = ready {
                 Some(air)
             } else {
-                let saved = stages.and_then(|c| c.airlight_frame.get(src));
                 let prepared = match saved {
                     Some((key, value)) if key == full.lin_key => Ok((value.air, Some(value))),
                     other => {
@@ -1085,6 +1090,8 @@ fn frame_airlight(
     stages: Option<&GpuStages>,
     sampled: Option<Arc<Buf>>,
 ) -> Result<(f32, Option<AirlightFrame>), String> {
+    #[cfg(test)]
+    tests::FRAME_AIRLIGHT_PASSES.with(|n| n.set(n.get() + 1));
     lightcraft_pipeline::airlight::check_prepare_budget(full, Some(plan), lightcraft_pipeline::airlight::PREPARE_BUDGET, true)?;
     lightcraft_pipeline::airlight::check_pixels(src.width, src.height)?;
     let (w, h) = (full.w, full.h);
@@ -1378,6 +1385,125 @@ fn masks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        pub(super) static FRAME_AIRLIGHT_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn gpu_stage_trimming_retains_only_matching_airlight_scalars() {
+        let Some(gpu) = crate::device() else {
+            lightcraft_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let _scope = crate::ctx::RenderScope::new(gpu);
+        let mut src = Arc::new(Rgb32f::from_fn(601, 403, |x, y| {
+            let l = 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0;
+            [l, l * 0.82, l * 1.15]
+        }));
+        let info = SourceInfo::default();
+        let mut s = DevelopSettings::default();
+        s.effects.dehaze = 40.0;
+        let req = RenderRequest { window: Some(PixelWindow { x: 201, y: 177, w: 121, h: 83 }), ..RenderRequest::fit(601, 403) };
+        let cache = lightcraft_pipeline::StageCache::default();
+        let stages = cache.extension::<GpuStages>();
+        render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap();
+        for step in 0..6 {
+            crate::trim_stages(&cache);
+            assert_eq!(stages.bytes(), 0);
+            assert_eq!(Arc::strong_count(&src), 1, "trimming must release the source too");
+            assert!(Arc::ptr_eq(&stages, &cache.peek_extension::<GpuStages>().unwrap()));
+            match step {
+                0 => s.light.exposure = 0.5,
+                1 => s.effects.dehaze = 80.0,
+                2 => s.detail.nr_color = 50.0,
+                3 => {
+                    s.wb.mode = lightcraft_develop::WbMode::Custom;
+                    s.wb.temp = 8500.0;
+                }
+                4 => s.crop.geometry.angle = 3.0,
+                5 => src = Arc::new((*src).clone()),
+                _ => {}
+            }
+            FRAME_AIRLIGHT_PASSES.with(|n| n.set(0));
+            let actual = render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap().image;
+            assert_eq!(FRAME_AIRLIGHT_PASSES.with(|n| n.get()), usize::from(step >= 2), "step={step}");
+            let fresh = render(gpu, &src, &info, &s, &req, None, None).unwrap().image;
+            let max = actual.data.iter().flatten().zip(fresh.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(max <= 1, "step={step} max={max}");
+        }
+        cache.clear();
+        assert!(cache.peek_extension::<GpuStages>().is_none(), "a full reset must still forget the statistic");
+    }
+
+    #[test]
+    fn evicted_gpu_windows_reuse_the_full_statistic() {
+        let Some(gpu) = crate::device() else {
+            lightcraft_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let _scope = crate::ctx::RenderScope::new(gpu);
+        let src = Arc::new(Rgb32f::from_fn(1201, 803, |x, y| {
+            let l = if (x / 3 + y / 5) % 7 == 0 { 0.003 } else { 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0 };
+            [l, l * 0.82, l * 1.15]
+        }));
+        let info = SourceInfo::default();
+        let mut s = DevelopSettings::default();
+        s.effects.dehaze = 40.0;
+        s.effects.clarity = 30.0;
+        s.detail.nr_luminance = 30.0;
+        s.detail.nr_color = 25.0;
+        let req = RenderRequest { window: Some(PixelWindow { x: 401, y: 277, w: 121, h: 83 }), ..RenderRequest::fit(1201, 803) };
+        let stages = GpuStages::default();
+        render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap();
+        let mut cold_ms = f64::MAX;
+        let mut reused_ms = f64::MAX;
+        let mut repeated_passes = 0;
+        for step in 0..5 {
+            s.light.exposure = step as f64 * 0.1;
+            let req = RenderRequest { window: Some(PixelWindow { x: 401 + step * 3, y: 277, w: 121, h: 83 }), ..req };
+            // Simulate app trimming at modest size. Both timed paths must upload
+            // their source, so the comparison isolates retained scalar reuse.
+            stages.trim_images();
+            FRAME_AIRLIGHT_PASSES.with(|n| n.set(0));
+            let start = std::time::Instant::now();
+            let reused = render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap().image;
+            reused_ms = reused_ms.min(start.elapsed().as_secs_f64() * 1000.0);
+            let passes = FRAME_AIRLIGHT_PASSES.with(|n| n.get());
+            repeated_passes += passes;
+            let start = std::time::Instant::now();
+            let fresh = render(gpu, &src, &info, &s, &req, None, None).unwrap().image;
+            cold_ms = cold_ms.min(start.elapsed().as_secs_f64() * 1000.0);
+            let max = reused.data.iter().flatten().zip(fresh.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            eprintln!("evicted window step={step} full_passes={passes} max={max}");
+            assert!(max <= 1, "scalar reuse changed requested pixels by {max} codes");
+        }
+        eprintln!("synthetic 1201x803, min of 5: fresh={cold_ms:.2} ms, scalar reuse={reused_ms:.2} ms");
+        assert_eq!(repeated_passes, 0, "a matching scalar must not require another full preparation");
+
+        for process in [lightcraft_develop::Process::V1, lightcraft_develop::Process::V2] {
+            s.process = process.version();
+            s.effects.dehaze = 100.0;
+            s.detail.nr_luminance = 80.0;
+            s.detail.nr_color = 70.0;
+            let req = RenderRequest { max_w: 1801, max_h: 1207, ..req };
+            let full = render(gpu, &src, &info, &s, &RenderRequest { window: None, ..req }, None, None).unwrap().image;
+            render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap();
+            for (x, y) in [(0, 0), (601, 0), (701, 477), (1680, 1124)] {
+                stages.trim_images();
+                let req = RenderRequest { window: Some(PixelWindow { x, y, w: 121, h: 83 }), ..req };
+                FRAME_AIRLIGHT_PASSES.with(|n| n.set(0));
+                let actual = render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap().image;
+                assert_eq!(FRAME_AIRLIGHT_PASSES.with(|n| n.get()), 0);
+                let fresh = render(gpu, &src, &info, &s, &req, None, None).unwrap().image;
+                let max = actual.data.iter().flatten().zip(fresh.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                assert!(max <= 1, "{process:?} ({x},{y}) max={max}");
+                let crop = full.crop(x, y, actual.width, actual.height);
+                let max = actual.data.iter().flatten().zip(crop.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                assert!(max <= 1, "full-render crop {process:?} ({x},{y}) max={max}");
+            }
+        }
+    }
 
     #[test]
     fn temporary_windows_preserve_exact_gpu_preparation() {

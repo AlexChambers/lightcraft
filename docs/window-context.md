@@ -165,6 +165,13 @@ pixel), and sample the work rectangle again. This keeps exact pans warm through
 67,108,864 pixels. White balance and NR edits on those larger frames still need
 another full preparation. The stage byte counters include retained buffers.
 
+GPU memory trimming releases image buffers but retains the two weak-source
+scalar entries. Exact windows can reuse a matching scalar after their work
+entries and full preparation are gone. A matching retained preparation still
+supplies the work rectangle when available. Source, geometry, white balance,
+NR and other upstream changes invalidate the statistic through the full linear
+key. Exposure and the Dehaze amount do not. A full cache reset still drops it.
+
 Before allocating the full preparation, both renderers check a 4 GiB budget.
 The CPU image-storage peak is 32 bytes per pixel without NR, 44 with luminance
 NR, and 48 with colour NR. The GPU peak is 32 without NR, 48 with colour NR

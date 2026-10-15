@@ -1119,7 +1119,7 @@ impl Renderer {
         let sizes: Vec<(Slot, usize)> = self.stages.iter().map(|(slot, c)| (*slot, c.bytes() + lightcraft_engine::gpu::stage_bytes(c))).collect();
         for slot in stage_trim_order(&sizes, self.stage_budget()) {
             if let Some(c) = self.stages.get(&slot) {
-                c.clear();
+                lightcraft_engine::gpu::trim_stages(c);
                 self.stages_trimmed += 1;
             }
         }

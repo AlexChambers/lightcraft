@@ -305,12 +305,18 @@ impl Default for StageCache {
 impl StageCache {
     /// Drop everything (e.g. when memory is needed).
     pub fn clear(&self) {
-        self.lock().clear();
+        self.trim_images();
         #[cfg(not(target_arch = "wasm32"))]
         self.airlight.clear();
+        *self.ext.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Drop CPU image buffers, retaining source-keyed scalars and the renderer extension.
+    /// The extension's owner must trim its buffers too.
+    pub fn trim_images(&self) {
+        self.lock().clear();
         #[cfg(not(target_arch = "wasm32"))]
         self.airlight_frame.clear();
-        *self.ext.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Per-view state of type `T` kept alongside this cache (created on first use). Lets another

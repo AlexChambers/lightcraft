@@ -714,6 +714,8 @@
 - With Dehaze on, panning a photo zoomed to 1:1 or moving a slider while zoomed no longer samples the whole
   original again to find the haze colour. On a 64 MP raw (Sony A7R VI) that took ~0.2 s of CPU per pan and per
   slider step; a slider step now takes ~5 ms on the GPU.
+- Native GPU windows keep the full-image haze statistic when memory trimming releases their image buffers.
+  Panning or releasing an exposure drag can reuse it without preparing the full image again.
 ### Thumbnails of raw files appear sooner
 - Grid thumbnails and the first picture in the loupe of an unedited raw now come from the smallest JPEG the camera
   stored that is big enough, not always from the largest one. On a Sony A7R VI file a 512 px thumbnail decodes
