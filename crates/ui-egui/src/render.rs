@@ -104,6 +104,15 @@ struct Queued {
     job: RenderJob,
 }
 
+struct ExactWait {
+    key: u64,
+    since: f64,
+    frame: u64,
+}
+
+/// Keep a bounded tile visible briefly before its exact replacement occupies the slot's worker.
+const EXACT_WINDOW_DELAY: f64 = 0.1;
+
 /// The texture of a render: its pixels as egui wants them. Renders are opaque, so the common case
 /// is a plain copy; only a pixel with alpha pays for premultiplying. (The generic conversion, on
 /// the UI thread, was most of the time a 5 MP zoom window took to show.)
@@ -203,6 +212,7 @@ pub struct Renderer {
     seq: u64,
     /// Slot → (key, priority) of the request in flight (queued or running).
     pending: HashMap<Slot, (u64, u32)>,
+    exact_waits: HashMap<Slot, ExactWait>,
     pub textures: HashMap<Slot, Tex>,
     /// The last [`Slot::HdrHistogram`] result: (photo, job key, histogram).
     pub live_hdr_histogram: Option<(PhotoId, u64, Histogram)>,
@@ -283,6 +293,7 @@ impl Renderer {
             queue: Vec::new(),
             seq: 0,
             pending: HashMap::new(),
+            exact_waits: HashMap::new(),
             textures: HashMap::new(),
             live_hdr_histogram: None,
             last_main_ms: 0.0,
@@ -427,6 +438,7 @@ impl Renderer {
     pub fn release(&mut self, slot: Slot) {
         self.textures.remove(&slot);
         self.stages.remove(&slot);
+        self.exact_waits.remove(&slot);
     }
 
     /// Run jobs through `offload` from now on (instead of the job pool / inline).
@@ -448,8 +460,39 @@ impl Renderer {
         self.wanted(slot) == Some(key)
     }
 
+    /// Request a window, allowing a new pan or edit to supersede an exact replacement before
+    /// it starts. Bounded windows, drafts and edits of an already exact tile start immediately.
+    pub fn request_window(&mut self, ctx: &egui::Context, slot: Slot, job: RenderJob, priority: u32) {
+        let job = self.job_for(slot, job);
+        if !self.request_needed(slot, job.key, priority) {
+            self.exact_waits.remove(&slot);
+            return;
+        }
+        let replacement = !cfg!(target_arch = "wasm32")
+            && job.request.window.is_some()
+            && job.request.quality == lightcraft_pipeline::Quality::Full
+            && job.request.depth == lightcraft_pipeline::OutputDepth::U8
+            && !job.request.is_bounded_window()
+            && self.pending.get(&slot).is_none_or(|p| p.0 != job.key)
+            && self.textures.get(&slot).is_some_and(|t| t.photo == job.photo && t.key == job.clone().bounded_window().key);
+        if replacement {
+            let now = ctx.input(|i| i.time);
+            let wait = self.exact_waits.entry(slot).or_insert(ExactWait { key: job.key, since: now, frame: self.frame });
+            if wait.key != job.key {
+                *wait = ExactWait { key: job.key, since: now, frame: self.frame };
+            }
+            wait.frame = self.frame;
+            if now - wait.since < EXACT_WINDOW_DELAY {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                return;
+            }
+        }
+        self.request(slot, job, priority);
+    }
+
     /// Request a render for `slot` (no-op if already current or pending at the same priority).
     pub fn request(&mut self, slot: Slot, job: RenderJob, priority: u32) {
+        self.exact_waits.remove(&slot);
         if matches!(slot, Slot::Slide(_)) {
             self.slides_live = true;
         }
@@ -554,6 +597,7 @@ impl Renderer {
     /// Is a request for `slot` queued or running?
     /// Drop every texture and cached stage (another library was opened: photo ids changed meaning).
     pub fn forget_all(&mut self) {
+        self.exact_waits.clear();
         self.request_ids.clear();
         self.shown_ids.clear();
         self.epoch = lightcraft_preview::next_tick();
@@ -607,9 +651,9 @@ impl Renderer {
         }
     }
 
-    /// Requests queued or running.
+    /// Requests waiting for a stable window, queued, or running.
     pub fn in_flight(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.exact_waits.len()
     }
 
     /// Why the last render for `slot` failed (until a render with another key succeeds).
@@ -727,6 +771,7 @@ impl Renderer {
         self.preview_generation = Some((Arc::downgrade(cache), generation));
         self.catalog_rev = session.catalog.revision;
         self.frame += 1;
+        self.exact_waits.retain(|_, wait| wait.frame.saturating_add(1) >= self.frame);
         self.trim_stages();
         // wasm: run one job per frame on this thread, timed with the host clock
         #[cfg(target_arch = "wasm32")]
@@ -741,7 +786,7 @@ impl Renderer {
         self.evict_variants();
         #[cfg(not(target_arch = "wasm32"))]
         self.trim_when_idle(ctx);
-        if !self.pending.is_empty() {
+        if self.in_flight() > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         changed
@@ -991,6 +1036,68 @@ impl Renderer {
         }
         self.textures.retain(|s, _| !matches!(s, Slot::Thumb(id) | Slot::ThumbQuick(id) if !keep.contains(id)));
         self.quick_tried.retain(|s, _| !matches!(s, Slot::ThumbQuick(id) if !keep.contains(id)));
+    }
+}
+
+#[cfg(test)]
+mod window_request_tests {
+    use super::*;
+
+    struct Blocked;
+    impl RenderOffload for Blocked {
+        fn try_start(&mut self, _: Slot, job: RenderJob) -> Option<RenderJob> {
+            Some(job)
+        }
+        fn finished(&mut self) -> Vec<(Slot, RenderResult, f64)> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn exact_replacements_wait_100_ms_and_failures_do_not_restart_the_wait() {
+        let mut session = Session::with_demo();
+        let photo = session.visible_cloned()[0];
+        let win = lightcraft_pipeline::PixelWindow { x: 100, y: 100, w: 121, h: 83 };
+        let job = session.region_job(photo, 1201, 803, win, true).unwrap();
+        for slot in [Slot::Region, Slot::RegionBefore, Slot::CompareRegion(0)] {
+            let ctx = egui::Context::default();
+            let mut r = Renderer::default();
+            r.set_offload(Box::new(Blocked));
+            let tex = ctx.load_texture("bounded", egui::ColorImage::filled([1, 1], egui::Color32::BLACK), egui::TextureOptions::LINEAR);
+            r.textures.insert(
+                slot,
+                Tex { key: job.clone().bounded_window().key, photo, tex, size: [1, 1], histogram: None, ms: 0.0, quick: None, pixels: None },
+            );
+            let request = |r: &mut Renderer, time| {
+                let input = crate::headless::HeadlessView::raw_input(egui::vec2(300.0, 200.0), 1.0, time, vec![]);
+                let mut output = ctx.run_ui(input, |_| r.request_window(&ctx, slot, job.clone(), 99));
+                output.textures_delta.clear();
+                output
+            };
+            request(&mut r, 1.0);
+            assert!(!r.is_pending(slot));
+            assert_eq!(r.in_flight(), 1);
+            let output = request(&mut r, 1.099);
+            assert!(
+                output.viewport_output.values().any(|v| v.repaint_delay <= std::time::Duration::from_millis(16)),
+                "the wait must wake an idle app"
+            );
+            assert_eq!(r.queued(), 0);
+            request(&mut r, 1.101);
+            assert_eq!(r.wanted(slot), Some(job.key));
+            assert_eq!(r.queued(), 1);
+            assert!(r.exact_waits.is_empty());
+            r.pending.clear();
+            r.queue.clear();
+            r.failed.insert(slot, (job.key, "render failed".into(), r.catalog_rev, photo));
+            request(&mut r, 1.2);
+            assert_eq!(r.in_flight(), 0, "a failed exact job must not keep headless settling busy");
+            r.failed.clear();
+            request(&mut r, 1.3);
+            assert_eq!(r.in_flight(), 1);
+            r.release(slot);
+            assert_eq!(r.in_flight(), 0, "closing the pane cancels its deferred replacement");
+        }
     }
 }
 

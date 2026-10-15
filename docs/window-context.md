@@ -21,9 +21,12 @@ the full render (`Plan::detail_scale`, `SourceInfo::native_long`).
 Native Detail, Before/After, Compare and Reference views first request a bounded
 window for a new photo or location. It uses the caller's margin, main's local
 filter grid and main's cached 384 px Dehaze proxy. Once that texture arrives,
-the view requests the exact window. The bounded texture stays visible until
-the exact result replaces it. A settled edit of the same location requests
-exact output directly.
+the view waits 100 ms before requesting the exact window. A newer pan or edit
+supersedes the waiting replacement without occupying the slot's worker. The
+bounded texture stays visible until the exact result replaces it. Running
+exact work is not cancelled. A settled edit of the same location requests
+exact output directly, except a released drag with Dehaze active: that release
+also requests a bounded window first when its matching draft is already shown.
 
 Draft windows during slider drags use the caller's margin and local filter
 grid. They reuse an exact airlight scalar only when its upstream key matches;

@@ -252,7 +252,7 @@ fn photo_tile(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, slot: Slo
             now: ui.input(|i| i.time),
         };
         let plain = shown_aspect.is_none_or(|a| crate::region::same_aspect(a, aspect));
-        let view = if plain { request_window(app, &tile) } else { None };
+        let view = if plain { request_window(app, ui.ctx(), &tile) } else { None };
         app.compare_windows[i as usize] = view;
         if view.is_none() {
             app.compare_tiles.retain(|(p, _), _| *p != i);
@@ -384,7 +384,7 @@ struct TileView {
 /// While a pinch or scroll runs, and while the photo is being edited (a slider drag in Reference
 /// view), the window there is stays: a new one per frame would render the photo's own pixels each
 /// time. It is drawn magnified or with the old value until the gesture is quiet.
-fn request_window(app: &mut LightcraftApp, v: &TileView) -> Option<crate::region::RegionView> {
+fn request_window(app: &mut LightcraftApp, ctx: &egui::Context, v: &TileView) -> Option<crate::region::RegionView> {
     let drawn_long = v.img.width().max(v.img.height()) * v.ppp;
     let frame_edge = app.ui.settings.window_frame_edge(drawn_long, v.native_long);
     if frame_edge as f32 <= v.whole_edge as f32 * crate::region::WINDOW_RATIO {
@@ -423,7 +423,7 @@ fn request_window(app: &mut LightcraftApp, v: &TileView) -> Option<crate::region
     app.compare_tiles.retain(|(p, key), t| *p != v.pane || (t.is_current(v.id, (fw, fh), look, false) && (Some(*key) == shown || *key == job.key)));
     app.compare_tiles.insert((v.pane, job.key), view);
     // after both panes' whole-frame renders (60): those are what a step to the next photo shows first
-    app.renderer.request(Slot::CompareRegion(v.pane), job, 58);
+    app.renderer.request_window(ctx, Slot::CompareRegion(v.pane), job, 58);
     Some(view)
 }
 

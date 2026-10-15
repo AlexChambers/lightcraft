@@ -361,7 +361,7 @@ struct WindowView {
 
 /// Ask for the window of `v` that holds what is on screen; remember it so its texture can be
 /// drawn where it belongs. `None`: no window is wanted (or possible) for this view.
-fn request_window(app: &mut LightcraftApp, c: &WindowCtx, v: &WindowView) -> Option<crate::region::RegionView> {
+fn request_window(app: &mut LightcraftApp, ctx: &egui::Context, c: &WindowCtx, v: &WindowView) -> Option<crate::region::RegionView> {
     let frame_edge = c.frame_edge?;
     // while a pinch or scroll runs the windows there are keep being drawn, magnified: no new one
     // per frame (zooming out would ask for ever wider ones)
@@ -422,7 +422,7 @@ fn request_window(app: &mut LightcraftApp, c: &WindowCtx, v: &WindowView) -> Opt
         *before != v.before || (t.is_current(c.id, (fw, fh), look, c.interacting) && (Some(*key) == shown || *key == job.key))
     });
     app.region_tiles.insert((v.before, job.key), view);
-    app.renderer.request(v.slot, job, 99);
+    app.renderer.request_window(ctx, v.slot, job, 99);
     Some(view)
 }
 
@@ -668,7 +668,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
     let mut windows: Vec<(WindowView, crate::region::RegionView)> = Vec::new();
     for v in window_views {
-        if let Some(view) = request_window(app, &window_ctx, &v) {
+        if let Some(view) = request_window(app, ui.ctx(), &window_ctx, &v) {
             windows.push((v, view));
         }
     }
@@ -3151,6 +3151,33 @@ mod bounded_window_tests {
         }
         .unwrap();
         h.app.renderer.job_for(slot, job)
+    }
+
+    #[test]
+    fn a_pan_supersedes_an_exact_window_before_it_starts() {
+        let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
+        let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+        let timeout = Duration::from_secs(120);
+        h.request("ui.set", serde_json::json!({"view":"detail", "right":"none", "filmstrip":false}), timeout);
+        h.request("engine.execute", serde_json::json!({"command":"develop.set", "params":{"control":"effects.dehaze", "value":10.0}}), timeout);
+        assert!(h.settle(timeout));
+        h.app.ui.zoom = crate::state::Zoom::Percent(200.0);
+        assert!(h.step_until(timeout, |h| h.app.region_view.is_some()));
+        let first = h.app.region_view.unwrap();
+        let exact = exact_job(&mut h, first, Slot::Region);
+        assert_eq!(first.key, exact.clone().bounded_window().key);
+        assert!(h.step_until(timeout, |h| h.app.renderer.textures.get(&Slot::Region).is_some_and(|t| t.key == first.key)));
+        assert!(!h.app.renderer.is_pending(Slot::Region), "the exact replacement must wait before entering the worker pool");
+        assert!(h.busy(), "headless settling must include the deferred replacement");
+        h.app.ui.pan = (0.8, 0.5);
+        h.step();
+        let pan = h.app.region_view.unwrap();
+        assert_ne!(pan.window, first.window);
+        let next = exact_job(&mut h, pan, Slot::Region);
+        assert_eq!(pan.key, next.clone().bounded_window().key);
+        assert_eq!(h.app.renderer.wanted(Slot::Region), Some(pan.key), "the new bounded request goes straight to the worker pool");
+        assert!(h.settle(timeout));
+        assert_eq!(h.app.renderer.textures[&Slot::Region].key, next.key, "the final window still becomes exact");
     }
 
     #[test]
