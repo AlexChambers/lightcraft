@@ -11,6 +11,11 @@ web full renders and exports keep main's buffers and cache retention too.
 Fallible large allocations are a possible follow-up before bringing exact
 windows to web. The design and measurements below describe native rendering.
 
+Noise reduction uses main's original-pixel detail scale, including when a
+preview source is smaller than the original photo. Exact full-frame airlight
+preparation, its memory estimate and window support use the same scale as
+the full render (`Plan::detail_scale`, `SourceInfo::native_long`).
+
 ## Show the bounded window before the exact result
 
 Native Detail, Before/After, Compare and Reference views first request a bounded
