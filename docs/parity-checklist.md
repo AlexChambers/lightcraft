@@ -797,6 +797,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | patch | LR-VIEW-ZOOM: integrate dev-null-undefined's bounded-first prototype, preserve exact caches and discard obsolete tile descriptors after replacement; status unchanged |
 | 2026-10-14 | patch | LR-VIEW-ZOOM: restore the native airlight proxy fallback, count sequential NR storage and retain exact large-frame pans; status unchanged |
 | 2026-10-12 | minor | LR-VIEW-ZOOM: visible region failure status and NaN payload contract; status unchanged |
 | 2026-10-13 | minor | LR-VIEW-ZOOM: exact context is native-only; web keeps main's margin, pixels and memory use; remove admission estimator; status unchanged |

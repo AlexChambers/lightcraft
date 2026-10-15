@@ -161,7 +161,8 @@ pub struct RenderRequest {
 
 /// A window of the (virtual) full output, in its pixels: what a zoomed view needs, rendered
 /// with full filter context on native. Dehaze can prepare the full frame within a memory
-/// budget; oversized native windows return an error. Web keeps the earlier margin policy
+/// budget, then falls back to the proxy. Oversized filter support uses the bounded margin.
+/// Requested work images above the pixel limit return an error. Web keeps the earlier margin policy
 /// and Dehaze proxy, so its windows can differ from full renders.
 /// The frame is the one `max_w × max_h` fits, after
 /// crop, straighten and flips, as drawn. Out-of-range windows are clamped into it.
@@ -186,6 +187,17 @@ impl PixelWindow {
 }
 
 impl RenderRequest {
+    /// Temporary native 8-bit windows only. Full frames, deep output and web
+    /// keep their existing rendering and cache policy.
+    pub fn is_bounded_window(&self) -> bool {
+        cfg!(not(target_arch = "wasm32")) && self.window.is_some() && self.depth == OutputDepth::U8 && self.bounded_window
+    }
+
+    /// Use the temporary local grid and proxy policy for a native 8-bit drag.
+    pub fn is_draft_window(&self) -> bool {
+        cfg!(not(target_arch = "wasm32")) && self.window.is_some() && self.depth == OutputDepth::U8 && self.quality == Quality::Draft
+    }
+
     pub fn fit(max_w: usize, max_h: usize) -> Self {
         Self {
             max_w,
@@ -417,6 +429,8 @@ fn hash_of(parts: impl std::hash::Hash) -> u64 {
 pub struct Plan<'a> {
     pub settings: Cow<'a, DevelopSettings>,
     pub frame: geometry::Frame,
+    /// Full-frame grid for exact windows; local grid for temporary windows.
+    pub guidance_view: Option<geometry::ViewWindow>,
     pub w: usize,
     pub h: usize,
     /// Output pixels per unit of the oriented source's long edge.
@@ -502,7 +516,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
                 // Defringe also surrounds the source patches read by spots.
                 let work = window::expand(work, full_w, full_h, optics::defringe_radius(s, px_per_long / optics::DEFRINGE_REF_LONG));
                 // (drafts follow a drag: main's window is enough for them, and keeps them as fast)
-                if req.bounded_window || req.quality == Quality::Draft || airlight::check_pixels(work.w, work.h).is_err() {
+                if req.is_bounded_window() || req.is_draft_window() || airlight::check_pixels(work.w, work.h).is_err() {
                     // Preserve main's bounded window when complete support cannot
                     // fit. Dehaze's full-frame budget check selects its proxy too.
                     if req.depth == OutputDepth::U8 { spots::window_for_reads(s, &frame, full_w, full_h, px_per_long, win) } else { win }
@@ -532,6 +546,9 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         cache_frame
     };
     let geo = hash_of((format!("{cache_frame:?}"), w, h));
+    let temporary_window = req.is_bounded_window() || req.is_draft_window();
+    let geo = if temporary_window { hash_of((geo, "local window guidance")) } else { geo };
+    let guidance_view = if temporary_window { None } else { frame.view };
     let (wb_t, wb_tint) = local::effective_wb(info, s);
     let eyes = redeye::resolve(src, &s.red_eye, s.orientation, &frame, w, h, px_per_long);
     let d = &s.detail;
@@ -559,6 +576,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     Plan {
         settings,
         frame,
+        guidance_view,
         w,
         h,
         px_per_long,
@@ -694,10 +712,12 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     #[cfg(target_arch = "wasm32")]
     let fixed_air = plan.fixed_air;
     #[cfg(not(target_arch = "wasm32"))]
-    let fixed_air = if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
+    let fixed_air = if let Some(full) = full.as_ref().filter(|full| req.is_bounded_window() || full.lin_key != plan.lin_key) {
         let budget = shared.map_or(airlight::PREPARE_BUDGET, |(_, c)| c.airlight.budget());
-        if req.bounded_window {
+        if req.is_bounded_window() {
             Some(airlight::proxy(src_img, info, full))
+        } else if req.is_draft_window() {
+            Some(shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)).unwrap_or_else(|| airlight::proxy(src_img, info, full)))
         } else if airlight::check_prepare_budget(full, Some(&plan), budget, false).is_err()
             || airlight::check_pixels(src_img.width, src_img.height).is_err()
         {
@@ -713,10 +733,6 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
                 .and_then(|_| shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)));
             if let Some(air) = ready {
                 Some(air)
-            } else if req.quality == Quality::Draft {
-                // A drag doesn't wait for the whole frame's preparation: this image's statistic if
-                // known, else main's proxy (the full-quality render that follows is exact).
-                Some(shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)).unwrap_or_else(|| airlight::proxy(src_img, info, full)))
             } else {
                 let saved = shared.and_then(|(a, c)| c.airlight_frame.get(a));
                 let prepared = match saved {
@@ -809,9 +825,21 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         planes.dark = Some((sigma.to_bits(), work.dark, fixed_air.unwrap_or(1.0)));
     }
     let keys = masks::AlphaKeys { geo, image: lin_key };
-    let mut prep = local::prepare(lin.clone(), s, frame, px_per_long, req.quality, &mut planes, plan.mattes.as_ref(), (&mut alphas, keys));
+    let mut prep = local::prepare_with_guidance(
+        lin.clone(),
+        s,
+        frame,
+        plan.guidance_view,
+        px_per_long,
+        req.quality,
+        &mut planes,
+        plan.mattes.as_ref(),
+        (&mut alphas, keys),
+    );
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((src, cache)) = shared
+        && !req.is_bounded_window()
+        && !req.is_draft_window()
         && (req.window.is_none() || full.as_ref().is_some_and(|p| p.lin_key == lin_key))
         && prep.dark.is_some()
         && planes.key == lin_key
@@ -823,7 +851,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     }
     lap("prepare", &mut t);
     // (a bounded window is a stand-in: its stages would only evict the exact window's)
-    if let Some((a, c)) = shared.filter(|_| !req.bounded_window) {
+    if let Some((a, c)) = shared.filter(|_| !req.is_bounded_window()) {
         c.put(CacheEntry {
             src: a.clone(),
             geo,

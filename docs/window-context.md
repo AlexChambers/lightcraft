@@ -11,6 +11,31 @@ web full renders and exports keep main's buffers and cache retention too.
 Fallible large allocations are a possible follow-up before bringing exact
 windows to web. The design and measurements below describe native rendering.
 
+## Show the bounded window before the exact result
+
+Native Detail, Before/After, Compare and Reference views first request a bounded
+window for a new photo or location. It uses the caller's margin, main's local
+filter grid and main's cached 384 px Dehaze proxy. Once that texture arrives,
+the view requests the exact window. The bounded texture stays visible until
+the exact result replaces it. A settled edit of the same location requests
+exact output directly.
+
+Draft windows during slider drags use the caller's margin and local filter
+grid. They reuse an exact airlight scalar only when its upstream key matches;
+otherwise they use the proxy. The end of the interaction requests full quality
+even when no additional edit follows. Temporary windows have distinct result
+keys and geometry keys. Bounded windows never write stage entries, exact
+preparation or exact airlight scalars. Draft windows retain their own stages
+but leave exact preparation and scalars alone.
+
+Full frames, deep output and exports do not select the bounded path. Web
+keeps its earlier window and cache behavior. The exact accuracy bounds below
+apply after the final replacement. Bounded and draft output can differ more,
+especially near the window's edge or with strong edits.
+
+This sequence was proposed and prototyped by dev-null-undefined in the review
+of [PR #1390](https://github.com/storytold/lightcraft/pull/1390#issuecomment-6169337261).
+
 ## Why the old margin was insufficient
 
 `region::margin_for` requests 4.5% of the output long edge, rounds up to 256 pixels,

@@ -795,9 +795,15 @@ impl RenderJob {
     /// A window job rendered as main did (see [`lightcraft_pipeline::RenderRequest::bounded_window`]):
     /// a quick first look while the exact window follows. Gets its own result key.
     pub fn bounded_window(mut self) -> Self {
-        if self.request.window.is_some() && !self.request.bounded_window {
+        if cfg!(not(target_arch = "wasm32"))
+            && self.request.window.is_some()
+            && self.request.depth == lightcraft_pipeline::OutputDepth::U8
+            && !self.request.bounded_window
+        {
             self.request.bounded_window = true;
             self.key ^= 0x5851_f42d_4c95_7f2d;
+            self.cache = None;
+            self.view_cache = None;
         }
         self
     }
@@ -1844,6 +1850,43 @@ mod tests {
         let unknown = Photo::new(PhotoId(2), Source::File { path: "/photos/b.jpg".into() }, "b.jpg", "JPEG", 0, 0, "");
         assert_eq!(source_info(&unknown).native_long, None);
         assert_eq!(source_info(&Photo::new(PhotoId(3), Source::Demo { scene: 0 }, "d", "ARW", 600, 400, "")).native_long, None);
+    }
+
+    #[test]
+    fn bounded_window_keys_are_distinct_and_order_independent() {
+        use lightcraft_pipeline::{MaskView, OutputDepth, Overlay, PixelWindow};
+        let mut session = crate::Session::with_demo();
+        let id = session.active().unwrap();
+        // Unedited Before and After views may share a key. Use distinct
+        // settings here to exercise both sets of render states.
+        let mut edit = (*session.develop_of(id).unwrap()).clone();
+        edit.light.exposure = 0.5;
+        session.set_develop(id, edit, "Exposure").unwrap();
+        let mut keys = std::collections::HashSet::new();
+        for before in [false, true] {
+            for x in [101, 202] {
+                let job = session.region_job_of(id, 1201, 803, PixelWindow { x, y: 77, w: 121, h: 83 }, true, before).unwrap();
+                for overlay in [
+                    Overlay::None,
+                    Overlay::Mask { id: 1, view: MaskView::Color, color: [255, 0, 0], opacity: 50 },
+                    Overlay::AllMasks { view: MaskView::Color, color: [0, 255, 0], opacity: 70 },
+                ] {
+                    let exact = job.clone().with_overlay(overlay);
+                    let bounded = exact.clone().bounded_window();
+                    assert!(bounded.request.is_bounded_window());
+                    assert_eq!(bounded.key, bounded.clone().bounded_window().key);
+                    assert_eq!(bounded.key, job.clone().bounded_window().with_overlay(overlay).key);
+                    assert_eq!(bounded.clone().draft().key, exact.clone().draft().bounded_window().key);
+                    for key in [exact.key, exact.clone().draft().key, bounded.key, bounded.draft().key] {
+                        assert!(keys.insert(key), "distinct inputs: before={before} x={x} overlay={overlay:?} key={key:016x}");
+                    }
+                    let deep = RenderJob { request: RenderRequest { depth: OutputDepth::U16, ..exact.request }, ..exact.clone() };
+                    assert_eq!(deep.clone().bounded_window().key, deep.key);
+                }
+            }
+        }
+        let full = session.render_job(id, 1201, 803, false, true).unwrap();
+        assert_eq!(full.clone().bounded_window().key, full.key);
     }
 
     #[test]
