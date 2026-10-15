@@ -273,9 +273,9 @@ pub fn guided_fast(p: &Plane, sigma: f32, eps: f32) -> Plane {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, frame: &Frame) -> Plane {
+fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, view: Option<crate::geometry::ViewWindow>) -> Plane {
     let step = guided_fast_step(sigma);
-    let Some(grid) = GuidedGrid::for_window(p.width, p.height, step, frame.view) else {
+    let Some(grid) = GuidedGrid::for_window(p.width, p.height, step, view) else {
         return guided_fast(p, sigma, eps);
     };
     let lo = crate::sampling::resize(p, &grid.down);
@@ -284,17 +284,17 @@ fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, frame: &Frame) -> Plane {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tone_base_window(l: &Plane, sigma: f32, detail: usize, frame: &Frame) -> Plane {
-    if detail == 0 { guided_fast_window(l, sigma, BASE_EPS, frame) } else { guided_fast_window(&median_hv(l, detail), sigma, BASE_EPS, frame) }
+fn tone_base_window(l: &Plane, sigma: f32, detail: usize, view: Option<crate::geometry::ViewWindow>) -> Plane {
+    if detail == 0 { guided_fast_window(l, sigma, BASE_EPS, view) } else { guided_fast_window(&median_hv(l, detail), sigma, BASE_EPS, view) }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, _frame: &Frame) -> Plane {
+fn guided_fast_window(p: &Plane, sigma: f32, eps: f32, _view: Option<crate::geometry::ViewWindow>) -> Plane {
     guided_fast(p, sigma, eps)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn tone_base_window(l: &Plane, sigma: f32, detail: usize, _frame: &Frame) -> Plane {
+fn tone_base_window(l: &Plane, sigma: f32, detail: usize, _view: Option<crate::geometry::ViewWindow>) -> Plane {
     tone_base(l, sigma, detail)
 }
 
@@ -663,10 +663,28 @@ fn select_plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> Pla
 /// exposure), reusing whatever `planes` and `alphas` already hold for it. Missing planes are computed side by side (each
 /// one alone scales poorly: the guided filters work on small subsampled grids).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn prepare(
     img: Arc<Rgb32f>,
     s: &DevelopSettings,
     frame: &Frame,
+    px_per_long: f64,
+    q: Quality,
+    planes: &mut Planes,
+    mattes: Option<&Arc<masks::Mattes>>,
+    alphas: (&mut masks::AlphaCache, masks::AlphaKeys),
+) -> Prepared {
+    prepare_with_guidance(img, s, frame, frame.view, px_per_long, q, planes, mattes, alphas)
+}
+
+/// Bounded windows use main's local filter grid. The geometric frame still
+/// places masks and effects in full-frame coordinates.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_with_guidance(
+    img: Arc<Rgb32f>,
+    s: &DevelopSettings,
+    frame: &Frame,
+    guidance_view: Option<crate::geometry::ViewWindow>,
     px_per_long: f64,
     q: Quality,
     planes: &mut Planes,
@@ -688,10 +706,10 @@ pub(crate) fn prepare(
     });
     let l = &log_l;
     let (base, (clarity_blur, (texture_blur, dark))) = par_join(
-        || base_sigma.map(|sg| plane_at(sb, base_key(s, sg, base_detail), || timed("base", || tone_base_window(l, sg, base_detail, frame)))),
+        || base_sigma.map(|sg| plane_at(sb, base_key(s, sg, base_detail), || timed("base", || tone_base_window(l, sg, base_detail, guidance_view)))),
         || {
             par_join(
-                || clarity_sigma.map(|sg| plane_at(sc, sg.to_bits(), || timed("clarity", || guided_fast_window(l, sg, CLARITY_EPS, frame)))),
+                || clarity_sigma.map(|sg| plane_at(sc, sg.to_bits(), || timed("clarity", || guided_fast_window(l, sg, CLARITY_EPS, guidance_view)))),
                 || {
                     par_join(
                         || texture_sigma.map(|sg| plane_at(st, sg.to_bits(), || timed("texture", || gaussian(l, sg)))),

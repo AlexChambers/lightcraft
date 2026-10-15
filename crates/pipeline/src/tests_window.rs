@@ -841,3 +841,76 @@ fn native_frame_cache_shares_source_and_counts_only_owned_pixels() {
     // The source belongs to the caller. Only the linear RGB and log-luminance plane are new.
     assert_eq!(cache.bytes(), src.data.len() * (12 + 4));
 }
+
+#[test]
+fn temporary_windows_leave_exact_airlight_and_bounded_stages_alone() {
+    use crate::{Quality, StageCache, render_cached};
+    use std::sync::Arc;
+    let src = Arc::new(Rgb32f::from_fn(401, 267, |x, y| {
+        let l = 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0;
+        [l, l * 0.82, l * 1.15]
+    }));
+    let info = SourceInfo::default();
+    let mut s = DevelopSettings::default();
+    s.effects.dehaze = 40.0;
+    s.effects.clarity = 30.0;
+    let req = RenderRequest { window: Some(PixelWindow { x: 101, y: 77, w: 121, h: 83 }), ..RenderRequest::fit(1201, 803) };
+    let mut cache = StageCache::default();
+    let expected = render_cached(&src, &info, &s, &req, &cache).unwrap().image;
+    let prepared = cache.airlight_frame.value().unwrap();
+    let full = crate::plan(&src, &info, &s, &RenderRequest { window: None, ..req });
+    let scalar = cache.airlight.get(&src, full.lin_key);
+    let bytes = cache.bytes();
+    let len = cache.len();
+    for window in [req.window, Some(PixelWindow { x: 0, y: 0, w: 1201, h: 803 })] {
+        let bounded = RenderRequest { bounded_window: true, window, ..req };
+        let warm = render_cached(&src, &info, &s, &bounded, &cache).unwrap().image;
+        assert_eq!(warm, render(&src, &info, &s, &bounded).unwrap().image);
+        assert_eq!((cache.bytes(), cache.len()), (bytes, len));
+        assert!(Arc::ptr_eq(&prepared, &cache.airlight_frame.value().unwrap()));
+        assert_eq!(cache.airlight.get(&src, full.lin_key), scalar);
+        let fresh = StageCache::default();
+        render_cached(&src, &info, &s, &bounded, &fresh).unwrap();
+        assert_eq!(fresh.len(), 0);
+        assert!(fresh.airlight.get(&src, full.lin_key).is_none());
+        assert!(fresh.airlight_frame.value().is_none());
+    }
+    // Even an over-budget draft must retain the exact preparation it will
+    // need after the drag. It must not seed a proxy into the exact scalar cache.
+    cache.airlight = crate::airlight::AirlightCache::with_budget(1);
+    cache.airlight.remember(&src, full.lin_key, 0.25);
+    render_cached(&src, &info, &s, &RenderRequest { quality: Quality::Draft, ..req }, &cache).unwrap();
+    assert!(Arc::ptr_eq(&prepared, &cache.airlight_frame.value().unwrap()));
+    assert_eq!(cache.airlight.get(&src, full.lin_key), Some(0.25));
+    cache.airlight = crate::airlight::AirlightCache::default();
+    assert_eq!(render_cached(&src, &info, &s, &req, &cache).unwrap().image, expected);
+    s.detail.nr_luminance = 50.0;
+    render_cached(&src, &info, &s, &RenderRequest { quality: Quality::Draft, ..req }, &cache).unwrap();
+    assert_eq!(render_cached(&src, &info, &s, &req, &cache).unwrap().image, render(&src, &info, &s, &req).unwrap().image);
+}
+
+#[test]
+fn bounded_flag_is_ignored_for_full_frames_and_deep_output() {
+    use crate::{OutputDepth, StageCache, render_cached};
+    use std::sync::Arc;
+    let src = Arc::new(scene());
+    let info = SourceInfo::default();
+    let mut s = DevelopSettings::default();
+    s.effects.dehaze = 30.0;
+    s.effects.clarity = 20.0;
+    for req in [
+        RenderRequest::fit(480, 320),
+        RenderRequest { depth: OutputDepth::U16, window: Some(PixelWindow { x: 100, y: 80, w: 121, h: 83 }), ..RenderRequest::fit(960, 640) },
+    ] {
+        let flagged = RenderRequest { bounded_window: true, ..req };
+        assert!(!flagged.is_bounded_window());
+        let cache = StageCache::default();
+        let actual = render_cached(&src, &info, &s, &flagged, &cache).unwrap();
+        let expected = render(&src, &info, &s, &req).unwrap();
+        assert_eq!(actual.image, expected.image);
+        if let (Some(a), Some(b)) = (actual.deep, expected.deep) {
+            assert_eq!(a.to_rgba8(), b.to_rgba8());
+        }
+        assert!(!cache.is_empty());
+    }
+}

@@ -431,9 +431,15 @@ fn request_window(app: &mut LightcraftApp, v: &TileView) -> Option<crate::region
     // keyed as the renderer keys the texture (a display profile changes the key)
     let job = app.renderer.job_for(Slot::CompareRegion(v.pane), job);
     let look = job.settings.hash64();
+    let shown = app.renderer.textures.get(&Slot::CompareRegion(v.pane)).filter(|t| t.photo == v.id).map(|t| t.key);
+    let placed = app
+        .compare_tiles
+        .iter()
+        .any(|((pane, key), tile)| *pane == v.pane && Some(*key) == shown && tile.photo == v.id && tile.window == win && tile.full == (fw, fh));
+    let job = crate::region::first_window(job, shown, placed, false);
     let view = crate::region::RegionView { photo: v.id, before: false, key: job.key, full: (fw, fh), window: win, settings: look };
     // windows of other photos, looks and zooms of this pane can't be drawn any more
-    app.compare_tiles.retain(|(p, _), t| *p != v.pane || t.is_current(v.id, (fw, fh), look, false));
+    app.compare_tiles.retain(|(p, key), t| *p != v.pane || (t.is_current(v.id, (fw, fh), look, false) && (Some(*key) == shown || *key == job.key)));
     app.compare_tiles.insert((v.pane, job.key), view);
     // after both panes' whole-frame renders (60): those are what a step to the next photo shows first
     app.renderer.request(Slot::CompareRegion(v.pane), job, 58);

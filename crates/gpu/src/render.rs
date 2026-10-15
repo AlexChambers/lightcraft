@@ -413,7 +413,7 @@ fn guided_fast(cx: &mut Cx<'_>, p: &Buf, plan: &Plan<'_>, sigma: f32, eps: f32) 
     if s <= 1 {
         return guided(cx, p, w, h, sigma, eps);
     }
-    let up = if let Some(grid) = local::GuidedGrid::for_window(w, h, s, plan.frame.view) {
+    let up = if let Some(grid) = local::GuidedGrid::for_window(w, h, s, plan.guidance_view) {
         let (lw, lh) = (grid.down[0].len(), grid.down[1].len());
         let lo = resize_window(cx, p, (w, h), 1, &grid.down);
         let ab = guided_coeffs(cx, &lo, lw, lh, sigma / s as f32, eps);
@@ -694,10 +694,12 @@ pub fn render(
     }
     let cached = stages.and_then(|c| c.get(src, plan.geo)).filter(|e| e.full_airlight.is_some() == plan.needs_airlight);
     let mut prepared_work = None;
-    let fixed_air = if let Some(full) = full.as_ref().filter(|full| full.lin_key != plan.lin_key) {
+    let fixed_air = if let Some(full) = full.as_ref().filter(|full| req.is_bounded_window() || full.lin_key != plan.lin_key) {
         let budget = stages.map_or(lightcraft_pipeline::airlight::PREPARE_BUDGET, |c| c.airlight.budget());
-        if req.bounded_window {
+        if req.is_bounded_window() {
             Some(lightcraft_pipeline::airlight::proxy(src, info, full))
+        } else if req.is_draft_window() {
+            Some(stages.and_then(|c| c.airlight.get(src, full.lin_key)).unwrap_or_else(|| lightcraft_pipeline::airlight::proxy(src, info, full)))
         } else if lightcraft_pipeline::airlight::check_prepare_budget(full, Some(&plan), budget, true).is_err()
             || lightcraft_pipeline::airlight::check_pixels(src.width, src.height).is_err()
         {
@@ -717,10 +719,6 @@ pub fn render(
                 });
             if let Some(air) = ready {
                 Some(air)
-            } else if req.quality == lightcraft_pipeline::Quality::Draft {
-                // A drag doesn't wait for the whole frame's preparation: this image's statistic if
-                // known, else main's proxy (the full-quality render that follows is exact).
-                Some(stages.and_then(|c| c.airlight.get(src, full.lin_key)).unwrap_or_else(|| lightcraft_pipeline::airlight::proxy(src, info, full)))
             } else {
                 let saved = stages.and_then(|c| c.airlight_frame.get(src));
                 let prepared = match saved {
@@ -812,6 +810,8 @@ pub fn render(
     let mut prep = prepare(&mut cx, &lin, &plan, req, &mut planes);
     // a window dehazes with the whole frame's airlight
     if let Some(stages) = stages
+        && !req.is_bounded_window()
+        && !req.is_draft_window()
         && (req.window.is_none() || full.as_ref().is_some_and(|p| p.lin_key == plan.lin_key))
         && prep.dark.is_some()
     {
@@ -826,7 +826,7 @@ pub fn render(
     let (masks, terms) = masks(&mut cx, &lin, &prep, &plan, &mut host, &mut alphas);
     lap("masks", &mut t, &mut cx);
     // (a bounded window is a stand-in: its stages would only evict the exact window's)
-    if let Some(c) = stages.filter(|_| !req.bounded_window) {
+    if let Some(c) = stages.filter(|_| !req.is_bounded_window()) {
         c.put(Entry {
             src: src.clone(),
             geo: plan.geo,
@@ -1378,6 +1378,53 @@ fn masks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_windows_preserve_exact_gpu_preparation() {
+        let Some(gpu) = crate::device() else { return };
+        let _scope = crate::ctx::RenderScope::new(gpu);
+        let src = Arc::new(Rgb32f::from_fn(401, 267, |x, y| {
+            let l = 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0;
+            [l, l * 0.82, l * 1.15]
+        }));
+        let info = SourceInfo::default();
+        let mut s = DevelopSettings::default();
+        s.effects.dehaze = 40.0;
+        s.effects.clarity = 30.0;
+        let req = RenderRequest { window: Some(PixelWindow { x: 101, y: 77, w: 121, h: 83 }), ..RenderRequest::fit(1201, 803) };
+        let mut stages = GpuStages::default();
+        let expected = render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap().image;
+        let prepared = stages.airlight_frame.value().unwrap();
+        let full = lightcraft_pipeline::plan(&src, &info, &s, &RenderRequest { window: None, ..req });
+        let scalar = stages.airlight.get(&src, full.lin_key);
+        let entries = stages.lock().len();
+        for window in [req.window, Some(PixelWindow { x: 0, y: 0, w: 1201, h: 803 })] {
+            let bounded = RenderRequest { bounded_window: true, window, ..req };
+            let warm = render(gpu, &src, &info, &s, &bounded, Some(&stages), None).unwrap().image;
+            assert_eq!(warm, render(gpu, &src, &info, &s, &bounded, None, None).unwrap().image);
+            assert_eq!(stages.lock().len(), entries);
+            assert!(Arc::ptr_eq(&prepared, &stages.airlight_frame.value().unwrap()));
+            assert_eq!(stages.airlight.get(&src, full.lin_key), scalar);
+            let fresh = GpuStages::default();
+            render(gpu, &src, &info, &s, &bounded, Some(&fresh), None).unwrap();
+            assert!(fresh.lock().is_empty());
+            assert!(fresh.airlight.get(&src, full.lin_key).is_none());
+            assert!(fresh.airlight_frame.value().is_none());
+        }
+        stages.airlight = lightcraft_pipeline::airlight::AirlightCache::with_budget(1);
+        stages.airlight.remember(&src, full.lin_key, 0.25);
+        render(gpu, &src, &info, &s, &RenderRequest { quality: lightcraft_pipeline::Quality::Draft, ..req }, Some(&stages), None).unwrap();
+        assert!(Arc::ptr_eq(&prepared, &stages.airlight_frame.value().unwrap()));
+        assert_eq!(stages.airlight.get(&src, full.lin_key), Some(0.25));
+        stages.airlight = lightcraft_pipeline::airlight::AirlightCache::default();
+        assert_eq!(render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap().image, expected);
+        s.detail.nr_luminance = 50.0;
+        render(gpu, &src, &info, &s, &RenderRequest { quality: lightcraft_pipeline::Quality::Draft, ..req }, Some(&stages), None).unwrap();
+        assert_eq!(
+            render(gpu, &src, &info, &s, &req, Some(&stages), None).unwrap().image,
+            render(gpu, &src, &info, &s, &req, None, None).unwrap().image
+        );
+    }
 
     #[test]
     fn device_limited_full_frame_reuses_its_cpu_statistic_on_a_pan() {
