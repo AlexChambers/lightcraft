@@ -117,7 +117,7 @@ pub fn check_pixels(w: usize, h: usize) -> Result<(), String> {
 /// 16-byte preparation. Row scratch is bounded separately.
 pub fn prepare_bytes(full: &Plan<'_>, work: Option<&Plan<'_>>, gpu: bool) -> u64 {
     let n = (full.w as u64).saturating_mul(full.h as u64);
-    let (lum, col) = local::nr_params(&full.settings, full.src_long, full.frame.output_long(full.w, full.h));
+    let (lum, col) = local::nr_params(&full.settings, full.detail_scale);
     // GPU luminance NR peaks while writing RGB output with its input, log
     // luminance, coefficients and filtered luminance still alive (28 bytes).
     let scratch = if gpu && lum.is_some() {
@@ -226,7 +226,7 @@ pub(crate) fn prepare(
     let sampled = sampled.unwrap_or_else(|| Arc::new(full.frame.sample(src, full.w, full.h)));
     let mut img = (*sampled).clone();
     crate::lin_cpu(&mut img, info, full);
-    local::denoise(&mut img, &full.settings, full.src_long, full.frame.output_long(full.w, full.h));
+    local::denoise(&mut img, &full.settings, full.detail_scale);
     let dark = img.map(local::dark_of);
     let sigma = (0.02 * full.px_per_long as f32).max(1.0);
     let dark = lightcraft_raster::blur::gaussian_owned(dark, sigma);
@@ -262,7 +262,7 @@ pub(crate) mod tests {
         let req = RenderRequest::fit(481, 327);
         let cache = AirlightCache::default();
         let mut last_key = None;
-        for step in 0..9 {
+        for step in 0..10 {
             match step {
                 1 => s.light.exposure = 0.5,
                 2 => s.effects.dehaze = 80.0,
@@ -275,13 +275,14 @@ pub(crate) mod tests {
                 6 => s.optics.defringe_purple_amount = 50.0,
                 7 => s.crop.flip_h = true,
                 8 => info.relative_wb = true,
+                9 => info.native_long = Some(2000),
                 _ => {}
             }
             let full = crate::plan(&src, &info, &s, &req);
             let air = compute(&src, &info, &full).unwrap();
             let mut img = full.frame.sample(&src, full.w, full.h);
             crate::lin_cpu(&mut img, &info, &full);
-            local::denoise(&mut img, &s, full.src_long, full.frame.output_long(full.w, full.h));
+            local::denoise(&mut img, &s, full.detail_scale);
             let mut planes = local::Planes::default();
             let prep = local::prepare(
                 Arc::new(img),

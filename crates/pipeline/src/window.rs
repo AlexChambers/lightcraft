@@ -24,7 +24,7 @@ fn guided_radius(sigma: f32) -> usize {
 /// Context for the local planes, including upstream noise reduction. Parallel
 /// planes take the maximum support; sequential filters add their supports.
 /// The planner adds Defringe support after resolving spot source reads.
-pub(crate) fn margin(s: &DevelopSettings, ppl: f64, src_long: usize, out_long: usize, q: Quality, mattes: Option<&Mattes>) -> usize {
+pub(crate) fn margin(s: &DevelopSettings, ppl: f64, detail_scale: f32, out_long: usize, q: Quality, mattes: Option<&Mattes>) -> usize {
     let sig = local::context_plane_sigmas(s, ppl, q);
     let mut radius = sig.base.map_or(0, |sg| guided_radius(sg) + sig.base_detail);
     radius = radius.max(sig.clarity.map_or(0, guided_radius));
@@ -67,7 +67,7 @@ pub(crate) fn margin(s: &DevelopSettings, ppl: f64, src_long: usize, out_long: u
             if mask.refine > 0.0 { 2 * gaussian_radius((0.04 * out_long as f32 * (mask.refine / 100.0).clamp(0.0, 1.0) as f32).max(1.0)) } else { 0 };
         radius = radius.max(shape + refine);
     }
-    let (lum, col) = local::nr_params(s, src_long, out_long);
+    let (lum, col) = local::nr_params(s, detail_scale);
     radius += lum.map_or(0, |n| 2 * gaussian_radius(n.sigma));
     radius += col.map_or(0, |n| gaussian_radius(n.sigma));
     radius
