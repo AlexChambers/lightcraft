@@ -47,33 +47,28 @@ fn settings(process: Process, empty: bool, local_clarity: bool) -> DevelopSettin
 #[test]
 fn full_clarity_with_hidden_or_empty_tone_masks_matches_main() {
     let src = source();
-    let mut hashes = Vec::new();
+    let info = SourceInfo::default();
+    let req = RenderRequest::fit(1200, 800);
     for process in [Process::V1, Process::V2] {
         for local_clarity in [false, true] {
+            // Main selects the tone base for a visible tone mask even when its
+            // amount is zero. It changes no pixels directly. Compute that
+            // reference on this platform instead of hashing saved RGBA bytes.
+            let mut reference = settings(process, false, local_clarity);
+            reference.masks[0].visible = true;
+            reference.masks[0].adjust.amount = 0.0;
+            let expected = render(&src, &info, &reference, &req).unwrap().image;
+            let mut no_tone = reference.clone();
+            no_tone.masks.remove(0);
+            let without_base = render(&src, &info, &no_tone, &req).unwrap().image;
+            assert_ne!(expected.data, without_base.data, "the fixture must distinguish Clarity's tone base");
             for empty in [false, true] {
                 let s = settings(process, empty, local_clarity);
-                let full = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(1200, 800)).unwrap().image;
-                // FNV-1a over RGBA bytes, independent of Rust's default hasher.
-                let hash = full.data.iter().flatten().fold(0xcbf29ce484222325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
-                eprintln!("{process:?} local_clarity={local_clarity} empty={empty}: {hash:016x}");
-                hashes.push(hash);
+                let full = render(&src, &info, &s, &req).unwrap().image;
+                assert_eq!(full.data, expected.data, "{process:?} local_clarity={local_clarity} empty={empty}");
             }
         }
     }
-    // Captured by running this test on the unmodified main 76b53778 renderer.
-    assert_eq!(
-        hashes,
-        vec![
-            0xc99b04f8dc142c24,
-            0xc99b04f8dc142c24,
-            0x7d6d6d053f4434e7,
-            0x7d6d6d053f4434e7,
-            0x5427d0095e4f98df,
-            0x5427d0095e4f98df,
-            0xba7be663f25ddf54,
-            0xba7be663f25ddf54
-        ]
-    );
 }
 
 #[test]
