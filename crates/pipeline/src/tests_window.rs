@@ -346,6 +346,24 @@ fn noise_reduction_does_not_depend_on_the_window() {
     }
 }
 
+#[test]
+fn exact_dehaze_window_uses_the_original_size_for_noise_reduction() {
+    let src = noisy_scene();
+    let info = SourceInfo { native_long: Some(3840), ..Default::default() };
+    let mut s = DevelopSettings::default();
+    s.detail.nr_luminance = 80.0;
+    s.detail.nr_color = 80.0;
+    s.effects.dehaze = 30.0;
+    let req = RenderRequest::fit(W, H);
+    let full = render(&src, &info, &s, &req).unwrap().image;
+    let window_req = RenderRequest { window: Some(MID), ..req };
+    let plan = crate::plan(&src, &info, &s, &window_req);
+    assert_eq!(plan.detail_scale, 0.25);
+    let window = render(&src, &info, &s, &window_req).unwrap().image;
+    let (max, mean) = compare_inset(&full, &window, MID, 0);
+    assert!(max <= 1 && mean <= 0.1, "original-size NR: max {max}, mean {mean}");
+}
+
 // Given a mask with Refine Edges, the refinement width follows the whole frame's size
 #[test]
 fn mask_edge_refinement_does_not_depend_on_the_window() {

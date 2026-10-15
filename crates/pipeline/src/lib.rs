@@ -485,6 +485,10 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let (full_w, full_h) = frame.fit(req.max_w, req.max_h);
     // sizes and scale are those of the whole output; a window only narrows what is drawn
     let px_per_long = frame.px_per_long(full_w);
+    let src_long = src.width.max(src.height);
+    // (an original reported smaller than the source is the source)
+    let native_long = info.native_long.unwrap_or(0).max(src_long).max(1);
+    let detail_scale = local::detail_scale(px_per_long, native_long);
     #[cfg(not(target_arch = "wasm32"))]
     let needs_airlight = req.window.is_some() && local::context_plane_sigmas(s, px_per_long, req.quality).dark.is_some();
     #[cfg(target_arch = "wasm32")]
@@ -506,7 +510,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             };
             #[cfg(not(target_arch = "wasm32"))]
             let work = {
-                let margin = window::margin(s, px_per_long, src.width.max(src.height), full_w.max(full_h), req.quality, info.mattes.as_deref());
+                let margin = window::margin(s, px_per_long, detail_scale, full_w.max(full_h), req.quality, info.mattes.as_deref());
                 let work = window::expand(win, full_w, full_h, margin);
                 // Spots upstream of the filters must supply the expanded context too.
                 let work = spots::window_for_reads_checked(s, &frame, full_w, full_h, px_per_long, work).unwrap_or(PixelWindow {
@@ -533,10 +537,6 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         }
         None => (frame, full_w, full_h),
     };
-    let src_long = src.width.max(src.height);
-    // (an original reported smaller than the source is the source)
-    let native_long = info.native_long.unwrap_or(0).max(src_long).max(1);
-    let detail_scale = local::detail_scale(px_per_long, native_long);
     // A whole-frame work buffer has the same sampling and upstream cache keys as window=None.
     let cache_frame = frame.clone();
     #[cfg(not(target_arch = "wasm32"))]
