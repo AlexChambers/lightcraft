@@ -392,6 +392,7 @@ impl LightcraftApp {
             panels::dialogs::show(self, &ctx, notice_blocks);
             updates_ui::show(self, &ctx);
             panels::library_problem::show(self, &ctx, notice_blocks);
+            pick::poll(self, &ctx);
             panels::toast(self, &ctx);
             drop_overlay::show(self, &ctx);
             if notice_blocks {
