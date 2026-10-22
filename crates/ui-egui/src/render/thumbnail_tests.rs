@@ -1334,3 +1334,100 @@ fn curve_input_native_worker_keeps_request_identity_through_failure_and_recovery
     std::fs::remove_file(replacement).unwrap();
     std::fs::remove_file(later).unwrap();
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn curve_input_relink_retries_current_file_with_retained_content_hash() {
+    use lightcraft_engine::media::SourceRef;
+    use lightcraft_engine::pipeline::curve_input::CurveInput;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join(format!("lc-curve-relink-{}-{}", std::process::id(), lightcraft_preview::next_tick()));
+    std::fs::create_dir(&dir).unwrap();
+    let original = dir.join("original.png");
+    let replacement = dir.join("moved.png");
+    let pixels = lightcraft_raster::Rgba8 { width: 8, height: 4, data: vec![[90, 120, 160, 255]; 32] };
+    let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&pixels), &Default::default()).unwrap();
+    std::fs::write(&original, bytes).unwrap();
+    let mut session = Session::new().with_fs();
+    let imported = session.execute("library.import", &serde_json::json!({"paths": [original]})).unwrap();
+    let id = PhotoId(imported["imported"][0].as_u64().unwrap());
+    let hash = session.catalog.photo(id).unwrap().content_hash.clone();
+    assert!(hash.is_some(), "the real file probe must record content identity");
+    std::fs::rename(&original, &replacement).unwrap();
+
+    // Record the actual filesystem loader path, including failed attempts. Keep the same
+    // loader across relinking so recovery depends on the new job's source.
+    let (loaded, paths) = std::sync::mpsc::channel();
+    let loader = session.media.file_loader.clone().unwrap();
+    session.media.file_loader = Some(Arc::new(move |path, edge| {
+        loaded.send(path.to_owned()).unwrap();
+        loader(path, edge)
+    }));
+    session.media.reduced_loader = None;
+    let mut app = crate::LightcraftApp::new(session, crate::Services::default());
+    app.renderer.pool = JobPool::new(1);
+    let ctx = egui::Context::default();
+    let slot = Slot::CurveHistogram;
+    let timeout = Duration::from_secs(10);
+    app.renderer.poll(&ctx, &mut app.session);
+    let incoming = app.session.thumb_job(id, 256).unwrap();
+    let old = incoming.clone();
+    let job = app.renderer.curve_input_job(incoming, CurveInput::Master);
+    let key = job.key;
+    app.renderer.request(slot, job, 90);
+    assert!(app.renderer.pool.wait(timeout));
+    app.renderer.poll(&ctx, &mut app.session);
+    assert_eq!(paths.recv_timeout(timeout).unwrap(), original.to_str().unwrap());
+    assert!(app.renderer.failure_of(slot, id).is_some());
+    assert!(app.renderer.failure_messages.last().unwrap().contains(original.to_str().unwrap()));
+    assert!(app.renderer.curve_histogram.is_none());
+
+    app.session.execute("photo.relink", &serde_json::json!({"id": id.0, "path": replacement})).unwrap();
+    app.renderer.poll(&ctx, &mut app.session);
+    assert_eq!(app.session.catalog.photo(id).unwrap().content_hash, hash);
+    let incoming = app.session.thumb_job(id, 256).unwrap();
+    assert_eq!(incoming.key, old.key, "same content retains the render key");
+    assert_eq!(incoming.source_key, old.source_key);
+    assert_ne!(incoming.origin, old.origin, "the command changed the source location");
+    let current = incoming.clone();
+    let job = app.renderer.curve_input_job(incoming, CurveInput::Master);
+    let prepared = job.clone();
+    app.renderer.request(slot, job, 90);
+    assert!(app.renderer.pool.wait(timeout));
+    app.renderer.poll(&ctx, &mut app.session);
+    let retried_path = paths.recv_timeout(timeout).unwrap();
+    eprintln!(
+        "relink: incoming keys equal={}, origin changed={}, loader={retried_path:?}, failure={:?}, histogram={}",
+        current.key == old.key,
+        current.origin != old.origin,
+        app.renderer.failure_of(slot, id),
+        app.renderer.curve_histogram.is_some()
+    );
+    assert_eq!(retried_path, replacement.to_str().unwrap(), "the retry must load the relinked file");
+    assert_eq!(prepared.origin, current.origin);
+    assert_eq!(prepared.source_key, current.source_key);
+    assert_eq!(prepared.info, current.info);
+    assert!(matches!(&prepared.source, SourceRef::File { path, .. } if path == replacement.to_str().unwrap()));
+    assert_eq!(app.renderer.curve_histogram.as_ref().map(|h| (h.0, h.1)), Some((id, key)));
+    assert!(app.renderer.failure_of(slot, id).is_none());
+    assert!(app.session.media.has_source(id, current.level), "the current decoded source was accepted");
+    assert!(!app.renderer.textures.contains_key(&slot));
+
+    // Moving identical content again needs a new prepared source, but a completed
+    // histogram remains valid and must not trigger another decode.
+    let completed = app.renderer.completed;
+    let histogram = app.renderer.curve_histogram.clone();
+    std::fs::rename(&replacement, &original).unwrap();
+    app.session.execute("photo.relink", &serde_json::json!({"id": id.0, "path": original})).unwrap();
+    app.renderer.poll(&ctx, &mut app.session);
+    let incoming = app.session.thumb_job(id, 256).unwrap();
+    let job = app.renderer.curve_input_job(incoming, CurveInput::Master);
+    assert_eq!(job.origin, old.origin);
+    app.renderer.request(slot, job, 90);
+    assert!(!app.renderer.is_pending(slot));
+    assert_eq!(app.renderer.completed, completed);
+    assert_eq!(app.renderer.curve_histogram, histogram);
+    assert!(paths.try_recv().is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -515,6 +515,7 @@ impl Renderer {
         if let Some((key, channel, prepared)) = &self.curve_input_request
             && *key == job.key
             && *channel == input
+            && prepared.origin == job.origin
         {
             return prepared.clone();
         }
