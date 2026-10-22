@@ -20,6 +20,7 @@ mod focus_read;
 mod gpx;
 mod heif;
 mod iptc;
+pub mod mrw;
 pub mod tags;
 mod xmp;
 mod xmp_merge;
