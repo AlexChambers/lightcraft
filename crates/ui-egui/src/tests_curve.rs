@@ -221,3 +221,57 @@ fn curve_points_from_an_agent_are_stored_in_order() {
     let c = pts(&develop(&h).curve.green);
     assert!(c[1].0 < c[2].0, "dragged up to its neighbour, not past it: {c:?}");
 }
+
+#[test]
+fn curve_input_backdrop_stays_steady_while_its_output_and_upstream_edits_change() {
+    use crate::render::Slot;
+    let mut h = curve_open("master");
+    assert!(h.settle(T));
+    let before = h.app.renderer.curve_histogram.clone().unwrap();
+    let output = h.app.renderer.textures.get(&Slot::Main).unwrap().histogram.clone();
+    exec(&mut h, "develop.curve", json!({"channel":"master", "points":[[0,0],[0.25,0.7],[1,1]]}));
+    assert!(h.settle(T));
+    assert_eq!(h.app.renderer.curve_histogram.as_ref(), Some(&before));
+    assert_ne!(h.app.renderer.textures.get(&Slot::Main).unwrap().histogram, output);
+    assert!(h.painted_text().iter().any(|s| s == "Sampled input"));
+    click_widget(&mut h, "curveChannel:red", 1);
+    assert!(h.settle(T));
+    let red = h.app.renderer.curve_histogram.clone().unwrap();
+    assert_ne!(red.1, before.1);
+    assert_ne!(red.2, before.2, "red's input includes the changed master curve");
+    exec(&mut h, "develop.set", json!({"control":"light.exposure", "value":1}));
+    assert!(h.settle(T));
+    assert_ne!(h.app.renderer.curve_histogram.as_ref().unwrap().2, red.2);
+    click_widget(&mut h, "curveChannel:parametric", 1);
+    assert!(h.settle(T));
+    let parametric = h.app.renderer.curve_histogram.clone().unwrap();
+    exec(&mut h, "develop.set", json!({"control":"curve.shadows", "value":60}));
+    assert!(h.settle(T));
+    assert_eq!(h.app.renderer.curve_histogram.as_ref(), Some(&parametric));
+}
+
+#[test]
+fn curve_input_shows_loading_failure_and_no_photo_without_reusing_a_backdrop() {
+    use crate::headless::RenderGate;
+    use crate::render::Slot;
+    use std::{cell::Cell, rc::Rc};
+    let mut h = curve_open("master");
+    assert!(h.settle(T));
+    assert!(h.painted_text().iter().any(|t| t == "Sampled input"));
+    let open = Rc::new(Cell::new(false));
+    h.app.renderer.set_offload(Box::new(RenderGate::failing(open.clone(), |s| s == Slot::CurveHistogram)));
+    exec(&mut h, "develop.set", json!({"control":"light.exposure", "value":1}));
+    h.step();
+    assert!(h.painted_text().iter().any(|t| t == "Loading input histogram..."));
+    assert!(!h.painted_text().iter().any(|t| t == "Sampled input"));
+    exec(&mut h, "library.select", json!({"ids":[2], "active":2}));
+    h.step();
+    assert!(h.painted_text().iter().any(|t| t == "Loading input histogram..."));
+    open.set(true);
+    assert!(h.settle(T));
+    assert!(h.painted_text().iter().any(|t| t == "Input histogram unavailable"));
+    assert!(!h.painted_text().iter().any(|t| t == "Sampled input"));
+    exec(&mut h, "library.select", json!({"ids":[]}));
+    assert!(h.settle(T));
+    assert!(!h.painted_text().iter().any(|t| t.contains("input histogram") || t == "Sampled input"));
+}

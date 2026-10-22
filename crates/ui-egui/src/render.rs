@@ -64,6 +64,8 @@ pub enum Slot {
     /// A slider drag's live HDR histogram: a small full-quality render of an HDR edit, beside the
     /// drafts (which have no HDR histogram), with no texture ([`Renderer::live_hdr_histogram`]).
     HdrHistogram,
+    /// Input of the selected Tone Curve. Strict request identity, no displayed texture.
+    CurveHistogram,
 }
 
 pub struct Tex {
@@ -214,6 +216,10 @@ pub struct Renderer {
     pub textures: HashMap<Slot, Tex>,
     /// The last [`Slot::HdrHistogram`] result: (photo, job key, histogram).
     pub live_hdr_histogram: Option<(PhotoId, u64, Histogram)>,
+    /// Current curve diagnostic: photo, request key and unquantized input histogram.
+    pub curve_histogram: Option<(PhotoId, u64, Histogram)>,
+    /// Last diagnostic job, so idle frames do not clone and hash the full edit again.
+    curve_input_request: Option<(u64, lightcraft_engine::pipeline::curve_input::CurveInput, RenderJob)>,
     pub last_main_ms: f64,
     /// Jobs finished since start (for inspect/perf).
     pub completed: u64,
@@ -295,6 +301,8 @@ impl Renderer {
             pending: HashMap::new(),
             textures: HashMap::new(),
             live_hdr_histogram: None,
+            curve_histogram: None,
+            curve_input_request: None,
             last_main_ms: 0.0,
             completed: 0,
             keep_pixels: false,
@@ -404,6 +412,7 @@ impl Renderer {
                 | Slot::CompareRegion(_)
                 | Slot::Second
                 | Slot::Slide(_)
+                | Slot::CurveHistogram
         )
     }
 
@@ -411,6 +420,19 @@ impl Renderer {
     /// the display profile in use.
     pub fn job_for(&self, slot: Slot, job: RenderJob) -> RenderJob {
         if Self::renders_for_display(slot) { job.with_display(self.display.clone()) } else { job }
+    }
+
+    pub fn curve_input_job(&mut self, job: RenderJob, input: lightcraft_engine::pipeline::curve_input::CurveInput) -> RenderJob {
+        if let Some((key, channel, prepared)) = &self.curve_input_request
+            && *key == job.key
+            && *channel == input
+        {
+            return prepared.clone();
+        }
+        let key = job.key;
+        let prepared = job.with_curve_input(input);
+        self.curve_input_request = Some((key, input, prepared.clone()));
+        prepared
     }
 
     /// The display profile in use (id).
@@ -447,7 +469,10 @@ impl Renderer {
         if let Some(&(k, p)) = self.pending.get(&slot) {
             return k != key || (p != priority && self.is_queued(slot));
         }
-        if self.textures.get(&slot).is_some_and(|t| t.key == key) || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev) {
+        if (slot == Slot::CurveHistogram && self.curve_histogram.as_ref().is_some_and(|h| h.1 == key))
+            || self.textures.get(&slot).is_some_and(|t| t.key == key)
+            || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev)
+        {
             return false;
         }
         true
@@ -490,7 +515,7 @@ impl Renderer {
         job.request_id = lightcraft_preview::next_tick();
         self.requests.insert(slot, Requested { id: job.request_id, source: Some(job.origin.clone()) });
         // (an offload keeps its own per-view stage caches; the flag tells it to)
-        let job = if slot.is_view() { job.with_stages(self.stages.entry(slot).or_default().clone()) } else { job };
+        let job = if slot.is_view() || slot == Slot::CurveHistogram { job.with_stages(self.stages.entry(slot).or_default().clone()) } else { job };
         if self.offload.is_some() {
             self.seq += 1;
             self.queue.retain(|q| q.slot != slot);
@@ -611,6 +636,8 @@ impl Renderer {
         self.pool.reprioritize(|_, _| None);
         self.thumb_inputs.clear();
         self.textures.clear();
+        self.curve_histogram = None;
+        self.curve_input_request = None;
         self.stages.clear();
         self.quick_tried.clear();
         self.failed.clear();
@@ -884,6 +911,11 @@ impl Renderer {
                 }
             };
             if matches!(slot, Slot::Prefetch(_)) {
+                continue;
+            }
+            if slot == Slot::CurveHistogram {
+                self.curve_histogram = Some((r.photo, r.key, rendered.histogram));
+                changed = true;
                 continue;
             }
             if slot == Slot::HdrHistogram {
@@ -1612,6 +1644,135 @@ mod thumbnail_tests {
         finish(&mut app, &work, &ctx, Slot::Main, second.run());
         assert_eq!(app.renderer.textures.get(&Slot::Main).map(|t| t.key), Some(keys[2]));
         assert!(!app.renderer.is_pending(Slot::Main));
+    }
+
+    #[test]
+    fn curve_input_rejects_late_edits_photos_channels_and_library_results() {
+        use lightcraft_engine::pipeline::curve_input::CurveInput;
+        let (mut app, work, ctx) = fixture();
+        let mut other = (*photo()).clone();
+        other.id = PhotoId(2);
+        app.session.catalog.apply(Op::AddPhoto { photo: Box::new(other) }).unwrap();
+        let slot = Slot::CurveHistogram;
+        let mut jobs = Vec::new();
+        for (id, exposure, input) in [
+            (PhotoId(1), 0.0, CurveInput::Master),
+            (PhotoId(1), 1.0, CurveInput::Master),
+            (PhotoId(2), 1.0, CurveInput::Master),
+            (PhotoId(2), 1.0, CurveInput::Red),
+        ] {
+            let mut settings = lightcraft_develop::DevelopSettings::default();
+            settings.light.exposure = exposure;
+            app.session.catalog.apply(Op::SetDevelop { id, settings: Arc::new(settings), label: "input".into(), edited: None }).unwrap();
+            let job = app.session.thumb_job(id, 32).unwrap().with_curve_input(input);
+            app.renderer.request(slot, job, 90);
+            jobs.push(take_job(&work).1);
+        }
+        let last = jobs.pop().unwrap();
+        let key = last.key;
+        let oldest = jobs.remove(0);
+        finish(&mut app, &work, &ctx, slot, oldest.run());
+        assert!(app.renderer.curve_histogram.is_none(), "even a newer-than-shown result must match the current request");
+        finish(&mut app, &work, &ctx, slot, last.run());
+        let current = app.renderer.curve_histogram.clone().unwrap();
+        assert_eq!((current.0, current.1), (PhotoId(2), key));
+        for late in jobs {
+            finish(&mut app, &work, &ctx, slot, late.run());
+        }
+        assert_eq!(app.renderer.curve_histogram.as_ref(), Some(&current));
+        assert!(!app.renderer.textures.contains_key(&slot), "diagnostics never replace a photo texture");
+        let job = app.session.thumb_job(PhotoId(1), 32).unwrap().with_curve_input(CurveInput::Blue);
+        app.renderer.request(slot, job, 90);
+        let old_library = take_job(&work).1;
+        app.renderer.forget_all();
+        finish(&mut app, &work, &ctx, slot, old_library.run());
+        assert!(app.renderer.curve_histogram.is_none());
+        assert!(app.renderer.curve_input_request.is_none());
+    }
+
+    #[test]
+    fn curve_input_cache_generation_discards_pending_work_and_recovers() {
+        use lightcraft_engine::pipeline::curve_input::CurveInput;
+        let (mut app, work, ctx) = fixture();
+        let slot = Slot::CurveHistogram;
+        let job = app.session.thumb_job(PhotoId(1), 32).unwrap();
+        let job = app.renderer.curve_input_job(job, CurveInput::Master);
+        app.renderer.request(slot, job, 90);
+        let (_, obsolete) = take_job(&work);
+        app.session.media.rendered.clear();
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(app.renderer.curve_input_request.is_none());
+        assert!(!app.renderer.requests.contains_key(&slot));
+        finish(&mut app, &work, &ctx, slot, obsolete.run());
+        assert!(app.renderer.curve_histogram.is_none());
+        let job = app.session.thumb_job(PhotoId(1), 32).unwrap();
+        let job = app.renderer.curve_input_job(job, CurveInput::Master);
+        let key = job.key;
+        app.renderer.request(slot, job, 90);
+        let (_, current) = take_job(&work);
+        finish(&mut app, &work, &ctx, slot, current.run());
+        assert_eq!(app.renderer.curve_histogram.as_ref().map(|h| (h.0, h.1)), Some((PhotoId(1), key)));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn curve_input_native_worker_keeps_request_identity_through_failure_and_recovery() {
+        use lightcraft_engine::pipeline::curve_input::CurveInput;
+        use std::sync::{Mutex, mpsc};
+        use std::time::Duration;
+        let (mut app, _, ctx) = fixture();
+        app.renderer.offload = None;
+        app.renderer.pool = JobPool::new(1);
+        let slot = Slot::CurveHistogram;
+        let timeout = Duration::from_secs(10);
+        let (entered, started) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        let held = Mutex::new(held);
+        app.session.media.file_loader = Some(Arc::new(move |path, _| {
+            entered.send(path.to_string()).unwrap();
+            held.lock().unwrap().recv_timeout(timeout).unwrap();
+            Err("controlled curve input failure".into())
+        }));
+        let ask = |app: &mut crate::LightcraftApp| {
+            let job = app.session.thumb_job(PhotoId(1), 32).unwrap().with_curve_input(CurveInput::Master);
+            let key = job.key;
+            app.renderer.request(slot, job, 90);
+            key
+        };
+        ask(&mut app);
+        assert_eq!(started.recv_timeout(timeout).unwrap(), "audit.jpg");
+        let replacement = relink_destination();
+        app.session.execute("photo.relink", &serde_json::json!({"id": 1, "path": replacement})).unwrap();
+        ask(&mut app);
+        let current_id = app.renderer.requests[&slot].id;
+        release.send(()).unwrap();
+        assert!(app.renderer.pool.wait(timeout));
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(app.renderer.failure_messages.is_empty(), "obsolete failures cannot take the current request's identity");
+        assert_eq!(app.renderer.requests[&slot].id, current_id);
+        assert!(app.renderer.curve_histogram.is_none());
+        assert_eq!(started.recv_timeout(timeout).unwrap(), replacement.to_str().unwrap());
+        let later = relink_destination();
+        app.session.execute("photo.relink", &serde_json::json!({"id": 1, "path": later})).unwrap();
+        release.send(()).unwrap();
+        assert!(app.renderer.pool.wait(timeout));
+        app.renderer.poll(&ctx, &mut app.session);
+        let message = app.renderer.failure_messages.last().unwrap();
+        assert!(message.contains(replacement.to_str().unwrap()), "{message}");
+        assert!(!message.contains(later.to_str().unwrap()), "the catalog changed after submission: {message}");
+        assert!(!app.renderer.requests.contains_key(&slot));
+        assert!(!app.renderer.is_pending(slot));
+        app.session.media.file_loader =
+            Some(Arc::new(|_, _| Ok((lightcraft_raster::Rgb32f::from_fn(32, 16, |x, _| [0.02 + x as f32 / 100.0; 3]), Default::default()))));
+        let key = ask(&mut app);
+        assert!(app.renderer.pool.wait(timeout));
+        app.renderer.poll(&ctx, &mut app.session);
+        assert_eq!(app.renderer.curve_histogram.as_ref().map(|h| (h.0, h.1)), Some((PhotoId(1), key)));
+        assert!(app.renderer.failure_of(slot, PhotoId(1)).is_none());
+        assert!(app.renderer.live_workers() > 0);
+        assert!(!app.renderer.textures.contains_key(&slot));
+        std::fs::remove_file(replacement).unwrap();
+        std::fs::remove_file(later).unwrap();
     }
 
     #[test]
