@@ -736,6 +736,49 @@ fn remove_location_refuses_a_heic_whose_thumbnail_has_gps() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A listed metadata item with an unreadable placement is not proof that an original has no GPS.
+/// Exercise the real file-copy path; these damaged containers do not need a working decoder.
+#[test]
+fn remove_location_refuses_heic_with_unresolved_iloc() {
+    use lightcraft_catalog::{Op, Photo, Source};
+    let dir = temp_dir("export-noloc-heic-iloc");
+    let path = dir.join("Placement.HEIC");
+    let mut s = Session::new().with_fs();
+    let id = s.catalog.alloc_photo_id();
+    let p = Photo::new(id, Source::File { path: path.to_string_lossy().into() }, "Placement.HEIC", "HEIC", 32, 32, "2026-10-12T00:00:00");
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    let opts = |remove: bool| ExportOptions::from_json(&json!({"format": "original", "removeLocation": remove}));
+
+    let original = heic_with_gps_in_its_thumbnail();
+    assert!(lightcraft_meta::embeds_location(&original), "the intact fixture has GPS");
+    let kind_at = original.windows(4).position(|w| w == b"iloc").unwrap();
+    let body = kind_at + 4;
+    for damage in ["none", "missing", "version", "field size", "truncated entry"] {
+        let mut bytes = original.clone();
+        match damage {
+            "missing" => bytes[kind_at..body].copy_from_slice(b"free"),
+            "version" => bytes[body] = 3,
+            "field size" => bytes[body + 4] = 0x24,
+            "truncated entry" => bytes[body + 15] = 2, // two extents declared, only one present
+            _ => {}
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(export_photo(&mut s, id, &opts(false), 1).unwrap().bytes, bytes, "location may stay: {damage}");
+        let err = export_photo(&mut s, id, &opts(true), 1).err().expect("unresolved GPS must not be copied");
+        assert!(err.contains("can't remove the location") && err.contains("export as JPEG or TIFF"), "{damage}: {err}");
+    }
+
+    // Ordinary files without GPS still export, with and without an EXIF item.
+    for exif in [None, Some(lightcraft_meta::write_exif(&lightcraft_meta::Metadata { model: Some("Synthetic".into()), ..Default::default() }))] {
+        let mut spec = lightcraft_heif::testdata::Spec::new(32, 32, &|_, _| [0, 0, 0]);
+        spec.exif = exif;
+        let bytes = lightcraft_heif::testdata::build(&spec);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(export_photo(&mut s, id, &opts(true), 1).unwrap().bytes, bytes);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn remove_location_refuses_a_psd_that_embeds_gps() {
     let dir = temp_dir("export-noloc-psd");

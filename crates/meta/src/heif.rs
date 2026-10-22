@@ -86,7 +86,8 @@ pub(crate) fn embedded(bytes: &[u8]) -> Option<Embedded> {
 /// Does a HEIF file hold a GPS position in any EXIF or XMP item, whichever image it describes?
 /// `None` when `bytes` is not HEIF. An item that is there but can't be read (compressed XMP, cut
 /// off by the end of the file, too large, built from other items or in another file, not a
-/// TIFF stream or an XMP packet) counts as one, and so do more items than [`MAX_SCANNED`].
+/// TIFF stream or an XMP packet, or without a reliable placement) counts as one, and so do more
+/// items than [`MAX_SCANNED`].
 pub(crate) fn embeds_location(bytes: &[u8]) -> Option<bool> {
     let c = Container::read(bytes, MAX_SCANNED)?;
     if c.more {
@@ -161,6 +162,8 @@ struct Container<'a> {
     more: bool,
     /// Where each of `items` is (from one walk of `iloc`).
     places: Vec<Option<Place>>,
+    /// A complete `iloc` walk established that any unplaced item has no entry.
+    iloc_complete: bool,
 }
 
 impl<'a> Container<'a> {
@@ -169,7 +172,16 @@ impl<'a> Container<'a> {
         if !is_heif(bytes) {
             return None;
         }
-        let mut c = Container { file: bytes, idat: None, iloc: None, primary: None, items: Vec::new(), more: false, places: Vec::new() };
+        let mut c = Container {
+            file: bytes,
+            idat: None,
+            iloc: None,
+            primary: None,
+            items: Vec::new(),
+            more: false,
+            places: Vec::new(),
+            iloc_complete: false,
+        };
         let mut budget = MAX_BOXES;
         let top = boxes(bytes, 0, bytes.len(), &mut budget);
         let Some(meta) = top.iter().find(|b| &b.kind == b"meta") else { return Some(c) };
@@ -187,9 +199,9 @@ impl<'a> Container<'a> {
         }
         c.idat = payload(b"idat");
         c.iloc = payload(b"iloc").and_then(Iloc::parse);
-        c.places = match &c.iloc {
+        (c.places, c.iloc_complete) = match &c.iloc {
             Some(iloc) => iloc.locate(&c.items),
-            None => Vec::new(),
+            None => (Vec::new(), false),
         };
         Some(c)
     }
@@ -198,7 +210,8 @@ impl<'a> Container<'a> {
     fn gather(&self, i: usize, limit: usize) -> Gathered {
         match (&self.iloc, self.places.get(i)) {
             (Some(iloc), Some(Some(place))) => iloc.gather(self.file, self.idat, place, limit),
-            _ => Gathered::NotPlaced,
+            _ if self.iloc_complete => Gathered::NotPlaced,
+            _ => Gathered::Unreadable,
         }
     }
 }
@@ -207,9 +220,9 @@ impl<'a> Container<'a> {
 #[derive(Debug)]
 enum Gathered {
     Bytes(Vec<u8>),
-    /// `iloc` doesn't place the item.
+    /// A complete `iloc` walk found no entry for the item.
     NotPlaced,
-    /// Outside the data, in another file, or built from other items (construction method 2).
+    /// Placement unresolved, outside the data, in another file, or built from other items (method 2).
     Unreadable,
     /// More than the limit.
     TooLarge,
@@ -394,15 +407,16 @@ impl<'a> Iloc<'a> {
     }
 
     /// One walk over the entries: where each of `items` is (the first entry for an id wins). It
-    /// stops once all are placed, or where the entries stop making sense.
-    fn locate(&self, items: &[Candidate]) -> Vec<Option<Place>> {
+    /// stops once all are placed, or where the entries stop making sense. The boolean is true
+    /// only if the walk exhausted the entries, so an absent placement is known to be absent.
+    fn locate(&self, items: &[Candidate]) -> (Vec<Option<Place>>, bool) {
         let mut places = vec![None; items.len()];
         if items.is_empty() {
-            return places;
+            return (places, false);
         }
         let wanted: HashMap<u32, usize> = items.iter().enumerate().rev().map(|(i, c)| (c.id, i)).collect();
         let mut left = wanted.len();
-        let _ = self.walk(|id, place| {
+        let complete = self.walk(|id, place| {
             if let Some(&i) = wanted.get(&id)
                 && let Some(slot @ None) = places.get_mut(i)
             {
@@ -411,12 +425,12 @@ impl<'a> Iloc<'a> {
             }
             left > 0
         });
-        places
+        (places, complete.unwrap_or(false))
     }
 
-    /// Call `f` with each entry's item id and place until it returns `false`; `None` where an
-    /// entry runs past the box.
-    fn walk(&self, mut f: impl FnMut(u32, Place) -> bool) -> Option<()> {
+    /// Call `f` with each entry's item id and place. `Some(true)` means every entry was read,
+    /// `Some(false)` means `f` stopped the walk, and `None` means an entry ran past the box.
+    fn walk(&self, mut f: impl FnMut(u32, Place) -> bool) -> Option<bool> {
         let (version, data) = (self.version, self.data);
         let id_size = if version == 2 { 4 } else { 2 };
         let (count, mut at) = if version == 2 { (be32(data, 6)?, 10usize) } else { (u32::from(be16(data, 6)?), 8usize) };
@@ -446,10 +460,10 @@ impl<'a> Iloc<'a> {
             if let Ok(id) = u32::try_from(id)
                 && !f(id, place)
             {
-                return Some(());
+                return Some(false);
             }
         }
-        Some(())
+        Some(true)
     }
 
     /// An item's bytes, its extents in order from the file (construction method 0) or from the
@@ -1058,6 +1072,133 @@ mod tests {
         // other files: what `extract` reads
         assert!(crate::embeds_location(&tiff_at(1.0)));
         assert!(!crate::embeds_location(&plain));
+    }
+
+    #[test]
+    fn iloc_truncation_after_readable_exif_does_not_hide_xmp_gps() {
+        let h = Heif::new().item(2, b"Exif", exif_item(&[], &tiff_with("First")), Store::Idat, 1);
+        assert!(!crate::embeds_location(&h.build()), "readable EXIF without GPS is safe to copy");
+        let gps = crate::Metadata { gps: Some(crate::Gps { latitude: 1.0, longitude: 2.0, altitude: None }), ..Default::default() };
+        let mut h = h.xmp(3, ("application/rdf+xml", ""), crate::write_xmp(&gps, None).into_bytes());
+        h.items[2].store = Store::Idat;
+        let f = h.build();
+        assert!(crate::embeds_location(&f), "the intact XMP has GPS");
+        let c = Container::read(&f, MAX_SCANNED).unwrap();
+        let iloc = c.iloc.as_ref().unwrap().data;
+        let cut = with_iloc(&h, Some(&iloc[..iloc.len() - 1]));
+        assert_eq!(crate::extract(&cut).model.as_deref(), Some("First"), "the first metadata item still reads");
+        assert!(crate::embeds_location(&cut), "the unresolved XMP must not be skipped");
+    }
+
+    /// Replace `iloc` in a builder fixture. Metadata stays in `idat`, so changing the box sizes
+    /// cannot change its offsets. The coded picture is not used by these metadata tests.
+    fn with_iloc(h: &Heif, iloc: Option<&[u8]>) -> Vec<u8> {
+        assert!(h.items.iter().filter(|it| it.kind == b"Exif" || it.kind == b"mime").all(|it| it.store == Store::Idat));
+        let meta = h.meta(0);
+        let mut budget = MAX_BOXES;
+        let children: Vec<u8> = boxes(&meta, 12, meta.len(), &mut budget)
+            .iter()
+            .flat_map(|b| if &b.kind == b"iloc" { iloc.map(|data| bx(b"iloc", data)).unwrap_or_default() } else { bx(&b.kind, &meta[b.body..b.end]) })
+            .collect();
+        [bx(b"ftyp", &h.ftyp), full(b"meta", 0, &children)].concat()
+    }
+
+    #[test]
+    fn iloc_unresolved_metadata_counts_as_location() {
+        for kind in [b"Exif", b"mime"] {
+            let mut h = Heif::new().item(2, kind, b"unread metadata".to_vec(), Store::Idat, 1);
+            h.items[1].mime = ("application/rdf+xml", "");
+            let f = h.build();
+            let c = Container::read(&f, MAX_SCANNED).unwrap();
+            let iloc = c.iloc.as_ref().unwrap().data;
+            assert_eq!(embeds_location(&with_iloc(&h, None)), Some(true), "missing iloc: {kind:?}");
+            // Every cut leaves the metadata entry unresolved, including cuts in its last extent.
+            for end in 0..iloc.len() {
+                assert_eq!(embeds_location(&with_iloc(&h, Some(&iloc[..end]))), Some(true), "{kind:?}: iloc cut at {end}");
+            }
+            // Unsupported version or any one of the four field sizes.
+            for (at, value) in [(0, 3), (4, 0x24), (4, 0x42), (5, 0x20), (5, 0x02)] {
+                let mut bad = iloc.to_vec();
+                bad[at] = value;
+                assert_eq!(embeds_location(&with_iloc(&h, Some(&bad))), Some(true), "{kind:?}: field {at} = {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn iloc_partial_walk_does_not_clear_unresolved_metadata() {
+        let h = Heif::new().item(2, b"Exif", Vec::new(), Store::Idat, 1).item(3, b"Exif", b"unread metadata".to_vec(), Store::Idat, 1);
+        let f = h.build();
+        let c = Container::read(&f, MAX_SCANNED).unwrap();
+        let iloc = c.iloc.as_ref().unwrap().data;
+        // Picture: 16 bytes; empty EXIF: 8 bytes; final EXIF: 16 bytes. Keep the first EXIF
+        // intact while cutting the second entry at every byte, including its extent fields.
+        for end in 32..iloc.len() {
+            let cut = with_iloc(&h, Some(&iloc[..end]));
+            let partial = Container::read(&cut, MAX_SCANNED).unwrap();
+            assert!(matches!(partial.gather(0, MAX_ITEM), Gathered::Bytes(b) if b.is_empty()));
+            assert_eq!(embeds_location(&cut), Some(true), "iloc cut at {end}");
+        }
+    }
+
+    #[test]
+    fn iloc_complete_walk_allows_unplaced_and_empty_items() {
+        let h = Heif::new().item(2, b"Exif", Vec::new(), Store::Idat, 1);
+        assert_eq!(embeds_location(&h.build()), Some(false), "placed EXIF with no extents");
+        // A well-formed empty table, or a complete table placing only a different item.
+        for version in 0..=2 {
+            let mut iloc = vec![version, 0, 0, 0, 0, 0];
+            put(&mut iloc, 0, if version == 2 { 4 } else { 2 });
+            assert_eq!(embeds_location(&with_iloc(&h, Some(&iloc))), Some(false), "empty iloc v{version}");
+            let count_at = iloc.len() - 1;
+            iloc[count_at] = 1;
+            put(&mut iloc, 9, if version == 2 { 4 } else { 2 });
+            if version > 0 {
+                put(&mut iloc, 0, 2); // construction method
+            }
+            iloc.extend_from_slice(&[0, 0, 0, 0]); // this file, no extents
+            assert_eq!(embeds_location(&with_iloc(&h, Some(&iloc))), Some(false), "absent item in complete iloc v{version}");
+        }
+        // No metadata candidates: there is nothing to resolve, even without a usable iloc.
+        assert_eq!(embeds_location(&Heif::new().build()), Some(false));
+        for iloc in [None, Some([3, 0, 0, 0, 0, 0].as_slice())] {
+            ILOC_ENTRIES.with(|n| n.set(0));
+            assert_eq!(embeds_location(&with_iloc(&Heif::new(), iloc)), Some(false));
+            assert_eq!(ILOC_ENTRIES.with(std::cell::Cell::get), 0);
+        }
+    }
+
+    #[test]
+    fn iloc_stops_after_all_metadata_is_placed() {
+        let h = Heif::new().item(2, b"Exif", Vec::new(), Store::Idat, 1).item(3, b"hvc1", vec![1], Store::File, 1);
+        let f = h.build();
+        let c = Container::read(&f, MAX_SCANNED).unwrap();
+        let iloc = c.iloc.as_ref().unwrap().data;
+        // The last picture entry is truncated. The only metadata entry is already complete.
+        let cut = with_iloc(&h, Some(&iloc[..32]));
+        ILOC_ENTRIES.with(|n| n.set(0));
+        assert_eq!(embeds_location(&cut), Some(false));
+        assert_eq!(ILOC_ENTRIES.with(std::cell::Cell::get), 2, "stop after the picture and the EXIF entry");
+    }
+
+    #[test]
+    fn iloc_resolved_extents_still_obey_bounds_and_budget() {
+        let h = Heif::new().item(2, b"Exif", b"abcd".to_vec(), Store::Idat, 1);
+        let f = h.build();
+        let c = Container::read(&f, MAX_SCANNED).unwrap();
+        assert!(matches!(c.gather(0, 4), Gathered::Bytes(b) if b == b"abcd"));
+        assert!(matches!(c.gather(0, 3), Gathered::TooLarge));
+        let iloc = c.iloc.as_ref().unwrap().data;
+        for (offset, length) in [(0u32, 5u32), (5, 0), (u32::MAX, 1)] {
+            let mut bad = iloc.to_vec();
+            let end = bad.len();
+            bad[end - 8..end - 4].copy_from_slice(&offset.to_be_bytes());
+            bad[end - 4..].copy_from_slice(&length.to_be_bytes());
+            let f = with_iloc(&h, Some(&bad));
+            let c = Container::read(&f, MAX_SCANNED).unwrap();
+            assert!(matches!(c.gather(0, MAX_ITEM), Gathered::Unreadable));
+            assert_eq!(embeds_location(&f), Some(true));
+        }
     }
 
     /// `iloc` is walked once, however many metadata items there are to place (#693 review: one
