@@ -234,6 +234,28 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_picker_exports_release_the_completed_task() {
+        let (mut h, asked) = app_with_picker();
+        h.app.services.write_shared = Some(Arc::new(|_, bytes| {
+            assert!(bytes.starts_with(b"%PDF-"));
+            Ok(())
+        }));
+        h.app.ui.fullscreen = true;
+        h.app.session.execute("print.set", &json!({"job": {"ppi": 72.0}})).unwrap();
+        for command in ["app.contactSheet", "app.print"] {
+            h.app.last_export_result = None;
+            h.app.run(command, json!({})).unwrap();
+            assert_eq!(h.app.pending_picks.len(), 1);
+            let (_, tx) = asked.lock().unwrap().pop().unwrap();
+            tx.send(Ok(vec!["Fullscreen.pdf".into()])).unwrap();
+            assert!(h.step_until(Duration::from_secs(60), |h| h.app.last_export_result.is_some()), "{command}: completion was not polled");
+            assert!(h.app.export.is_none(), "{command}: a completed export must release its task");
+            assert!(h.app.ui.fullscreen);
+            assert_eq!(h.app.last_export_result.as_ref().unwrap()["files"][0]["path"], "Fullscreen.pdf");
+        }
+    }
+
+    #[test]
     fn import_photos_waits_for_its_dialog_and_runs_with_the_answer() {
         let dir = std::env::temp_dir().join(format!("lc-pick-{}", std::process::id()));
         let photo = photo_in(&dir);
