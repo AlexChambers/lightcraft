@@ -726,7 +726,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Build Smart Previews",
             [],
             None,
-            "{ids?, discard?: bool, background?: bool, format?: compact|lossless}. Build or discard smart previews for selected photos, or all in view. Uses the library format unless overridden. Converts existing previews only from available originals. Returns {built, repaired, refreshed, staleKept, removed, failed}. Background builds return progress, including kept previews; use library.previewProgress and library.cancelPreviews.",
+            "{ids?, discard?: bool, background?: bool, format?: compact|lossless}. Build or discard smart previews for selected photos, or all in view. Uses the library format unless overridden. Converts existing previews only from available originals. Returns {built, repaired, refreshed, staleKept, newerKept, removed, failed}. Background builds return progress, including kept previews; use library.previewProgress and library.cancelPreviews.",
             always,
             smart
         ),
