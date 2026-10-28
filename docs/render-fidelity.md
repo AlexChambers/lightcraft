@@ -117,8 +117,8 @@ presets, use the manual route and please tell us in an issue.
 
 ## Running it
 
-numpy and tifffile, nothing else. The pinned versions need Python 3.12 or later; on Python 3.9, 3.10 or 3.11 install
-numpy 2.0 or later and tifffile 2024.8 or later instead:
+numpy and tifffile, nothing else. The requirements file selects tested pins on Python 3.12 or later and compatible
+releases of numpy 2.0 or later and tifffile 2024.8 or later on Python 3.9, 3.10 or 3.11:
 
 ```
 python3 -m venv .venv-fidelity && .venv-fidelity/bin/pip install -r tools/requirements-render-fidelity.txt
