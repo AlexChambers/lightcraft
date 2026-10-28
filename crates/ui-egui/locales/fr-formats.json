@@ -147,7 +147,7 @@
   "the {n} selected photos": "les {n} photos sélectionnées",
   "the {} photos in view": "les {} photos affichées",
   "these {count} photos": "ces {count} photos",
-  "{count} smart preview{} · {:.1} MiB": "{count} aperçu{0} dynamique{0} · {1:.1} Mo",
+  "{count} smart preview{} · {:.1} MiB": "{count} aperçu{0} dynamique{0} · {1:.1} Mio",
   "{f} folders (and their subfolders)": "{f} dossier(s) (et leurs sous-dossiers)",
   "{label} Grading": "Étalonnage de {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} sur chaque photo sélectionnée",

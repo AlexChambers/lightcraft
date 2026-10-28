@@ -147,7 +147,7 @@
   "the {n} selected photos": "вибрані фото: {n}",
   "the {} photos in view": "фото в поданні: {}",
   "these {count} photos": "ці фото ({count})",
-  "{count} smart preview{} · {:.1} MiB": "Смарт-переглядів: {count}{:.0} · {:.1} МБ",
+  "{count} smart preview{} · {:.1} MiB": "Смарт-переглядів: {count}{:.0} · {:.1} МіБ",
   "{f} folders (and their subfolders)": "Тек: {f} (і їхніх вкладених тек)",
   "{label} Grading": "Колірне тонування: {label}",
   "{label} {d:+} on every selected photo": "{label} {d:+} на кожному вибраному фото",
