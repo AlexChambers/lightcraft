@@ -2632,7 +2632,8 @@ def _linear_dng(path, xmp, pixels=None):
 
 def _importer_cross_check(cli, check):
     """The prefilter and the importer check against LightCraft's own XMP reader: every packet the real importer
-    applies must be refused by both; clean files accepted by both."""
+    applies must be refused by both; clean files accepted by both. Foreign namespace bindings are ignored by
+    the importer and still refused by the conservative prefilter."""
     lc_s = b'settings="{&quot;grain&quot;: {&quot;amount&quot;: 40.0}}"'
 
     def packet(body):
@@ -2644,18 +2645,18 @@ def _importer_cross_check(cli, check):
         "4,100 zeros": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#' + b"0" * 4100 + b'46;app/lc/1.0/" q:'
                               + lc_s + b"/>"),
         "undeclared crs": packet(b'<rdf:Description crs:Exposure2012="+1.00"/>'),
-        "rebound crs": packet(b'<rdf:Description xmlns:crs="http://example.org/x/" crs:Exposure2012="+1.00"/>'),
         "escaped default namespace": packet(b'<rdf:Description xmlns="http://ns.lightcraft&#x2E;app/lc/1.0/" ' + lc_s
                                             + b"/>"),
         "unterminated": b"<x:xmpmeta><rdf:RDF><rdf:Description xmlns:lc='http://ns.lightcraft.app/lc/1.0/' lc:"
                         + lc_s + b">",
         "plain lc": packet(b'<rdf:Description xmlns:lc="http://ns.lightcraft.app/lc/1.0/" lc:' + lc_s + b"/>"),
     }
+    foreign = {"rebound crs": packet(b'<rdf:Description xmlns:crs="http://example.org/x/" crs:Exposure2012="+1.00"/>')}
     clean = {"no XMP": None,
              "dc only": packet(b'<rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" dc:format="x"/>')}
     with tempfile.TemporaryDirectory(prefix="render-fidelity-importer-") as tmp:
         renderer = CliRenderer(cli, tmp)
-        for i, (name, x) in enumerate({**applied, **clean}.items()):
+        for i, (name, x) in enumerate({**applied, **foreign, **clean}.items()):
             f = Path(tmp) / f"case{i}.dng"
             _linear_dng(f, x)
             try:
@@ -2666,6 +2667,9 @@ def _importer_cross_check(cli, check):
             if name in applied:
                 check(f"importer check: LightCraft applies {name}, and the importer check refuses it", bool(changed))
                 check(f"prefilter: refuses {name} too", bool(hash_raw(f)[1]), hash_raw(f)[1])
+            elif name in foreign:
+                check(f"importer check: ignores foreign namespace ({name})", changed == [], changed)
+                check(f"prefilter: conservatively refuses {name}", bool(hash_raw(f)[1]), hash_raw(f)[1])
             else:
                 check(f"importer check: accepts a clean raw ({name})", changed == [], changed)
                 check(f"prefilter: accepts a clean raw ({name})", hash_raw(f)[1] == [], hash_raw(f)[1])
