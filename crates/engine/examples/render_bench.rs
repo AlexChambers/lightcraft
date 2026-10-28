@@ -447,10 +447,10 @@ fn main() {
                             } else {
                                 t.light.exposure = 0.3 + k * 0.01;
                             }
-                            drop(develop(&full, &info, &t, &at(w0, Quality::Draft), Some(&wc[g as usize]), g));
+                            drop(develop(&full, &info, &t, &at(w0, Quality::Draft), Some(&wc[g as usize]), g).unwrap());
                         }
                         let (t0, c) = (Instant::now(), cpu_ms());
-                        drop(develop(&full, &info, &t, &at(w0, Quality::Full), Some(&wc[g as usize]), g));
+                        drop(develop(&full, &info, &t, &at(w0, Quality::Full), Some(&wc[g as usize]), g).unwrap());
                         b = T(b.0.min(t0.elapsed().as_secs_f64() * 1e3), b.1.min(cpu_ms() - c));
                     }
                     format!("{b}")
