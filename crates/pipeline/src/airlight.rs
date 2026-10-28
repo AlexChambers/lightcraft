@@ -371,6 +371,41 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod reuse_regression {
     use crate::*;
+
+    #[test]
+    fn trimmed_cpu_windows_reuse_the_full_statistic() {
+        let src = Arc::new(Rgb32f::from_fn(1201, 803, |x, y| {
+            let l = 0.01 + ((x * 17 + y * 23) % 103) as f32 / 103.0;
+            [l, l * 0.82, l * 1.15]
+        }));
+        let info = SourceInfo::default();
+        let mut s = DevelopSettings::default();
+        s.effects.dehaze = 40.0;
+        s.effects.clarity = 30.0;
+        s.detail.nr_luminance = 30.0;
+        s.detail.nr_color = 25.0;
+        let req = RenderRequest { window: Some(PixelWindow { x: 401, y: 277, w: 121, h: 83 }), ..RenderRequest::fit(1201, 803) };
+        let cache = StageCache::default();
+        render_cached(&src, &info, &s, &req, &cache).unwrap();
+        assert!(cache.airlight_frame.value().is_some());
+        for step in 0..3 {
+            cache.trim_images();
+            s.light.exposure = step as f64 * 0.1;
+            let req = RenderRequest { window: Some(PixelWindow { x: 401 + step * 3, y: 277, w: 121, h: 83 }), ..req };
+            airlight::tests::LINEAR_PASSES.with(|n| n.set(0));
+            let reused = render_cached(&src, &info, &s, &req, &cache).unwrap();
+            assert_eq!(airlight::tests::LINEAR_PASSES.with(|n| n.get()), 1, "only the work window needs upstream preparation");
+            assert!(cache.airlight_frame.value().is_none(), "a trim must not refill the full-frame preparation");
+            let fresh = render(&src, &info, &s, &req).unwrap();
+            let max = reused.image.data.iter().flatten().zip(fresh.image.data.iter().flatten()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(max <= 1, "step {step}: scalar reuse changed requested pixels by {max} codes");
+        }
+        s.wb.mode = lightcraft_develop::WbMode::Custom;
+        s.wb.temp = 7800.0;
+        render_cached(&src, &info, &s, &req, &cache).unwrap();
+        assert!(cache.airlight_frame.value().is_some(), "an upstream edit must recompute the full statistic");
+    }
+
     #[test]
     fn dehaze_window_prepares_upstream_once_per_edit() {
         let src = Arc::new(Rgb32f::from_fn(1201, 803, |x, y| {

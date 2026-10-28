@@ -749,15 +749,16 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             }
             Some(airlight::proxy(src_img, info, full))
         } else {
-            // A valid work entry already contains this full statistic and its work pixels.
-            let ready = cached
-                .as_ref()
-                .filter(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key))
-                .and_then(|_| shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)));
+            // Keep cropping a matching full preparation when its work pixels are missing.
+            // After trimming that preparation, the source-keyed scalar still avoids a full pass.
+            let saved = shared.and_then(|(a, c)| c.airlight_frame.get(a));
+            let saved_matches = saved.as_ref().is_some_and(|(key, _)| *key == full.lin_key);
+            let entry_matches =
+                cached.as_ref().is_some_and(|e| e.full_airlight == Some(full.lin_key) && e.lin.as_ref().is_some_and(|(k, _)| *k == plan.lin_key));
+            let ready = shared.and_then(|(src, cache)| cache.airlight.get(src, full.lin_key)).filter(|_| !saved_matches || entry_matches);
             if let Some(air) = ready {
                 Some(air)
             } else {
-                let saved = shared.and_then(|(a, c)| c.airlight_frame.get(a));
                 let prepared = match saved {
                     Some((key, value)) if key == full.lin_key => value,
                     other => {
