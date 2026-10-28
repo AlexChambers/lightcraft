@@ -871,3 +871,20 @@ fn oversized_optional_table_warns_and_is_skipped() {
     assert!(rows.is_empty());
     assert!(warnings.iter().any(|warning| warning.contains("optional_history")));
 }
+
+#[test]
+fn review_catalog_xmp_crop_is_framed_without_a_develop_crop() {
+    for settings in ["", "not valid Lua", "s = { Exposure2012 = 0.5 }"] {
+        let mut data = sample();
+        data.photos.truncate(1);
+        let photo = &mut data.photos[0];
+        photo.image = row(json!({"id_local":2,"fileFormat":"ARW","fileWidth":20,"fileHeight":10,"orientation":"BC"}));
+        photo.settings = settings.into();
+        photo.xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropRight="0.6" crs:CropTop="0.2" crs:CropBottom="0.9"/></rdf:RDF></x:xmpmeta>"#.into();
+        let mut session = crate::Session::new();
+        apply(&mut session, data, false).unwrap();
+        let crop = session.catalog.photos().next().unwrap().develop.crop.geometry;
+        let edges = [crop.rect.x0, crop.rect.y0, crop.rect.x1, crop.rect.y1].map(|v| (v * 1e9).round() / 1e9);
+        assert_eq!(edges, [0.1, 0.1, 0.8, 0.6], "settings: {settings}");
+    }
+}

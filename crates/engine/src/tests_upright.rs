@@ -1399,3 +1399,49 @@ fn preset_previews_match_what_apply_stores() {
     assert!(same(turned.geometry.upright_transform, placed(1, Orientation::Rotate90, 60.0, 40.0)));
     let _ = std::fs::remove_dir_all(&src);
 }
+
+#[test]
+fn review_fresh_import_holds_a_crop_when_the_frame_is_unknown() {
+    let dir = temp_dir("review-unframed-import");
+    let photo = dir.join("unknown.nef");
+    std::fs::write(&photo, b"synthetic input handled by the test probe").unwrap();
+    let xmp = crop_packet(r#"crs:CropLeft="0.1" crs:CropTop="0.2" crs:CropRight="0.6" crs:CropBottom="0.9" crs:Exposure2012="0.3""#);
+    let mut session = Session::new().with_fs();
+    session.media.file_probe = Some(std::sync::Arc::new(move |_| {
+        Ok(crate::media::ProbeInfo {
+            width: 20,
+            height: 10,
+            format: "NEF".into(),
+            kind: lightcraft_catalog::MediaKind::Raw,
+            preview_only: Some("synthetic unsupported coding".into()),
+            xmp: Some(xmp.clone()),
+            ..Default::default()
+        })
+    }));
+    let report = session.execute("library.import", &json!({"paths":[photo.to_string_lossy()]})).unwrap();
+    let imported = session.catalog.photos().next().unwrap();
+    assert_eq!(imported.develop.crop.geometry, lightcraft_geom::CropGeometry::default());
+    assert_eq!(imported.develop.light.exposure, 0.3);
+    assert!(report["warnings"].to_string().contains("orientation couldn't be read"), "{report}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn review_embedded_jpeg_crop_is_converted_on_metadata_reread() {
+    let dir = temp_dir("review-embedded-jpeg-crop");
+    let file = dir.join("portrait.jpg");
+    let image = lightcraft_raster::Rgba8::from_fn(40, 24, |x, y| [(x * 5) as u8, (y * 8) as u8, 80, 255]);
+    let exif = lightcraft_codecs::exif::minimal_exif(6);
+    let xmp = crop_packet(r#"crs:CropLeft="0.1" crs:CropRight="0.6" crs:CropTop="0.2" crs:CropBottom="0.9""#);
+    let metadata = lightcraft_codecs::EncodeMeta { exif: Some(&exif), xmp: Some(&xmp), ..Default::default() };
+    let bytes = lightcraft_codecs::encode_jpeg(&lightcraft_codecs::EncodeImage::rgba8(&image), 90, Default::default(), &metadata).unwrap();
+    std::fs::write(&file, bytes).unwrap();
+    let mut session = Session::new().with_fs();
+    session.execute("library.import", &json!({"paths":[file.to_string_lossy()]})).unwrap();
+    let id = session.catalog.photos().next().unwrap().id;
+    session.execute("photo.readMetadataFromFile", &json!({"ids":[id.0]})).unwrap();
+    let crop = session.catalog.photo(id).unwrap().develop.crop.geometry;
+    let edges = [crop.rect.x0, crop.rect.y0, crop.rect.x1, crop.rect.y1].map(|v| (v * 1e9).round() / 1e9);
+    assert_eq!(edges, [0.1, 0.1, 0.8, 0.6]);
+    std::fs::remove_dir_all(dir).unwrap();
+}

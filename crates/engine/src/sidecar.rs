@@ -391,13 +391,20 @@ impl SidecarData {
         self.placed_upright.is_some()
     }
 
+    /// Prepare geometry for an import or reread. Keep unframed crop coordinates out of the
+    /// develop settings and retain a diagnostic for the import report.
+    pub fn prepare_frame(&mut self, frame: Option<StoredFrame>) -> Option<Value> {
+        self.set_frame(frame);
+        self.hold_unframed_crop()
+    }
+
     /// Whether the packet's crop or saved Upright needs the photo's stored frame. "No crop" (the
     /// whole image, not straightened) is the same in every frame.
     pub fn needs_frame(&self) -> bool {
         self.upright.is_some() || matches!(&self.develop, Some(DevelopPatch::Partial(v)) if crop_needs_frame(v))
     }
 
-    /// For a photo already in the library whose file's orientation can't be learnt: leave its crop
+    /// When the file's orientation cannot be read, leave the photo's crop
     /// as it is rather than take Lightroom's crop edges in an unknown frame, and say so. Returns
     /// the crop held (as the packet wrote it).
     pub fn hold_unframed_crop(&mut self) -> Option<Value> {
@@ -925,8 +932,7 @@ impl Session {
                 .next()
                 .and_then(std::result::Result::ok)
                 .and_then(|i| i.stored_frame());
-            sc.set_frame(frame);
-            sc.hold_unframed_crop();
+            sc.prepare_frame(frame);
         }
         let mut warnings = sc.warnings.clone();
         for warning in &mut warnings {

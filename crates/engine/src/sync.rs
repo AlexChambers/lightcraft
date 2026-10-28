@@ -840,8 +840,7 @@ fn framed(sc: &mut crate::sidecar::SidecarData, path: &str, probe: Option<&crate
     if !sc.needs_frame() {
         return None;
     }
-    sc.set_frame(crate::sidecar::probe_frame(probe, path));
-    sc.hold_unframed_crop()
+    sc.prepare_frame(crate::sidecar::probe_frame(probe, path))
 }
 
 impl SyncCommit {

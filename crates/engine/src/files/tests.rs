@@ -1774,3 +1774,13 @@ fn existing_photo_settings_are_not_rewritten() {
     drop(s);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn review_preview_only_probe_keeps_the_rendered_frame_orientation() {
+    let bytes = cr3_with_preview(48, 32);
+    let probe = probe_bytes("preview.cr3", &bytes).unwrap();
+    assert!(probe.preview_only.is_some());
+    let frame = probe.stored_frame().expect("the preview's decoder has a known frame");
+    assert_eq!(frame.orientation, lightcraft_geom::Orientation::Normal);
+    assert_eq!((frame.width, frame.height), (48.0, 32.0));
+}

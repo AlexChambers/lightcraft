@@ -1028,6 +1028,17 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
                     }
+                    // Catalog XMP crops use the same stored frame as the develop row, even
+                    // when that row is missing, invalid or contains no crop fields.
+                    let frame = lightroom_orientation(text(&src.image, "orientation")).map(|orientation| crate::sidecar::StoredFrame {
+                        orientation,
+                        width: number(&src.image, "fileWidth") as f64,
+                        height: number(&src.image, "fileHeight") as f64,
+                    });
+                    // Catalog Upright encoding remains unverified. Keep its existing warning
+                    // and solve the mode again rather than accepting a sidecar transform.
+                    sc.upright = None;
+                    sc.prepare_frame(frame);
                     if !keep_develop {
                         notes.extend(catalog_notes(&sc.warnings));
                     }
