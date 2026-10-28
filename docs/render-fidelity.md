@@ -117,7 +117,7 @@ presets, use the manual route and please tell us in an issue.
 
 ## Running it
 
-numpy and tifffile, nothing else. The pinned versions need Python 3.11 or later; on Python 3.9 or 3.10 install
+numpy and tifffile, nothing else. The pinned versions need Python 3.12 or later; on Python 3.9, 3.10 or 3.11 install
 numpy 2.0 or later and tifffile 2024.8 or later instead:
 
 ```
