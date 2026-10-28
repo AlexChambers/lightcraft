@@ -173,7 +173,10 @@ impl DiskCache {
                 // Recency for pruning, without a write for every read: it is remembered here for
                 // this session, and only a file that was not used for a long while has its date
                 // brought forward (for the sessions after).
-                self.read.lock().unwrap_or_else(|e| e.into_inner()).insert(key.0);
+                // Prune identifies files by their stored stem, including the namespace.
+                if let Some(key) = key_of(&p) {
+                    self.read.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
+                }
                 let now = std::time::SystemTime::now();
                 let unused = std::fs::metadata(&p).and_then(|m| m.modified()).ok().and_then(|at| now.duration_since(at).ok());
                 if unused.is_some_and(|d| d > STALE)
@@ -470,4 +473,43 @@ pub fn decode_jpeg(bytes: &[u8]) -> Option<Rgba8> {
     }
     let data = px.as_chunks::<3>().0.iter().take(w * h).map(|c| [c[0], c[1], c[2], 255]).collect();
     Some(Rgba8 { width: w, height: h, data })
+}
+
+#[cfg(test)]
+mod namespace_regressions {
+    use super::*;
+
+    #[test]
+    fn namespaced_reads_keep_prune_priority_and_retire_removed_keys() {
+        for namespace in [0, 17] {
+            let dir = std::env::temp_dir().join(format!("lc-prune-namespace-{}-{namespace}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let cache = DiskCache::with_namespace(&dir, u64::MAX, namespace);
+            let (read, unused) = (Hash128(101), Hash128(202));
+            let image = Rgba8::new(32, 24);
+            cache.put(read, &image);
+            cache.put(unused, &image);
+            assert!(cache.get(read).is_some());
+            for (key, secs) in [(read, 100), (unused, 200)] {
+                std::fs::File::options()
+                    .write(true)
+                    .open(cache.path(key))
+                    .unwrap()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+                    .unwrap();
+            }
+            cache.set_budget(cache.size() - 1);
+            cache.prune();
+            let kept_read = cache.path(read).exists();
+            let removed_unused = !cache.path(unused).exists();
+            cache.set_budget(0);
+            cache.prune();
+            let read_keys_empty = cache.read.lock().unwrap().is_empty();
+            assert!(
+                kept_read && removed_unused && read_keys_empty,
+                "namespace {namespace}: kept_read={kept_read}, removed_unused={removed_unused}, read_keys_empty={read_keys_empty}"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }
