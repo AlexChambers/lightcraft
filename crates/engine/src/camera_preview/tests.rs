@@ -1,4 +1,6 @@
+use super::pairs::{EDGE_CONTRAST, MAX_MIDTONE_LOSS, Pair};
 use super::*;
+use lightcraft_color::SRGB;
 
 fn steep_toe_scene() -> (Rgb32f, Rgb32f) {
     let mut sensor = Rgb32f::new(96, 64);

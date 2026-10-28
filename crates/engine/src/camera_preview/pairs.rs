@@ -3,7 +3,8 @@ use super::proxy::DARK_FLOOR;
 #[cfg(test)]
 use super::tone::highlights;
 use super::tone::{HighlightCheck, ToneFit, highlights_hold, keeps, keeps_highlights};
-use super::{ADOBE_RGB, CameraLook, CameraTone, HsvTable, Mat3, REC2020, Rgb32f, SRGB, ToneMap, luminance_2020};
+use super::{CameraLook, CameraTone, HsvTable, Mat3, REC2020, Rgb32f, ToneMap, luminance_2020};
+use lightcraft_color::{ADOBE_RGB, SRGB};
 
 /// A fit must cut the held-out squared error to below this share of the fallback's.
 pub(super) const MIN_IMPROVEMENT: f64 = 0.7;
@@ -572,4 +573,4 @@ pub(super) fn fit_partial_on(
 /// sky alone meet the gates, and the midtones must not pay for it. A small allowance, not none,
 /// because on a frame the fallback already renders right in the midtones a curve through the sky
 /// moves them a little.
-const MAX_MIDTONE_LOSS: f64 = 0.02;
+pub(super) const MAX_MIDTONE_LOSS: f64 = 0.02;
