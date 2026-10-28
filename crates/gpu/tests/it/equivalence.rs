@@ -83,7 +83,7 @@ fn check(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, 
 /// pixel sitting exactly on it may be painted by one renderer and not the other (float rounding).
 /// Such flips are allowed for at most 0.01 % of the pixels; everything else is held to [`check`]'s bounds.
 fn check_warned(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) {
-    let cpu = render(src, info, s, req).image;
+    let cpu = render(src, info, s, req).unwrap().image;
     let gpu = lightcraft_gpu::render(src, info, s, req, None).expect("gpu render");
     let (mean, _, over) = diff(&cpu, &gpu.image);
     let flips = cpu.data.iter().zip(&gpu.image.data).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > MAX_LSB)).count();
@@ -988,7 +988,7 @@ fn soft_proofs_match() {
         ..RenderRequest::fit(640, 640)
     };
     let warned = |i: &Rgba8| i.data.iter().filter(|p| p[1] == 0 && p[2] == 0 && p[0] > 200).count();
-    let (cpu, gpu) = (render(&src, &raw, &s, &req).image, lightcraft_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image);
+    let (cpu, gpu) = (render(&src, &raw, &s, &req).unwrap().image, lightcraft_gpu::render(&src, &raw, &s, &req, None).expect("gpu render").image);
     assert!(warned(&cpu) > 100, "{} warned pixels", warned(&cpu));
     let (a, b) = (warned(&cpu), warned(&gpu));
     assert!(a.abs_diff(b) as f64 <= 1e-4 * cpu.data.len() as f64, "warned pixels: CPU {a}, GPU {b}");

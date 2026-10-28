@@ -1,3 +1,4 @@
+use super::filmstrip::NAV_W;
 use super::geometry::focus_box;
 use super::{Color32, LightcraftApp, PhotoId, Pos2, Rect, Sense, Stroke, Tokens, json, pos2, register, register_geometry, vec2};
 
@@ -559,6 +560,6 @@ pub(super) fn region_failure_notice(ui: &mut egui::Ui, canvas: Rect, error: &str
     let r = Rect::from_min_size(pos2(canvas.left() + 12.0, canvas.bottom() - size.y - 36.0), size);
     p.rect_filled(r, 4.0, Color32::from_black_alpha(225));
     p.galley(r.min + vec2(10.0, 6.0), g, Color32::WHITE);
-    register(ui.ctx(), "notice:regionFailure:loupe", r);
-    ui.interact(r, egui::Id::new("region-failure-notice"), Sense::hover()).on_hover_text(error);
+    register(ui, "notice:regionFailure:loupe", r);
+    ui.interact(r, egui::Id::unique("region-failure-notice"), Sense::hover()).on_hover_text(error);
 }

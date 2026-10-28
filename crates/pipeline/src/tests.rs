@@ -86,7 +86,7 @@ fn dehaze_does_not_crush_dark_regions_next_to_bright_ones() {
     let src = Rgb32f::from_fn(240, 160, |x, _| if x < 120 { [0.02, 0.03, 0.012] } else { [0.45, 0.5, 0.55] });
     let mut s = DevelopSettings::default();
     s.effects.dehaze = 80.0;
-    let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(240, 160)).image;
+    let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(240, 160)).unwrap().image;
     for ch in 0..3 {
         let mut v: Vec<u8> = Vec::with_capacity(160 * 100);
         for y in 0..160 {
@@ -195,7 +195,7 @@ fn unedited_neutral_near_whites_are_passthrough() {
     });
     let m = lightcraft_color::SRGB.to_space(&lightcraft_color::REC2020);
     let src = src8.to_linear().map(|c| m.apply_f32(c));
-    let r = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &RenderRequest::fit(vals.len(), 1)).image;
+    let r = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &RenderRequest::fit(vals.len(), 1)).unwrap().image;
     let got: Vec<[u8; 3]> = r.data.iter().map(|p| [p[0], p[1], p[2]]).collect();
     let want: Vec<[u8; 3]> = vals.iter().map(|&v| [v, v, v]).collect();
     assert_eq!(got, want);

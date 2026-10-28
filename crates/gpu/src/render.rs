@@ -649,6 +649,29 @@ struct Host {
     log_l: Option<Arc<Plane>>,
 }
 
+fn sample_source(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, info: &SourceInfo, plan: &Plan<'_>, stages: Option<&GpuStages>, host: &mut Host) -> Arc<Buf> {
+    let gpu = cx.gpu;
+    let (w, h) = (plan.w, plan.h);
+    // A WarpRectilinear2 chain goes to the CPU: its degree-14 polynomial needs f64.
+    if gpu.fits(src.data.len() * 3) && !plan.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) {
+        let upload = || gpu.upload(rgb_words(src));
+        // A large source uses the shared copy; window stages keep only their sampled pixels.
+        let src_buf = match stages {
+            Some(c) if src.data.len() * 12 <= RETAIN_SOURCE_BYTES => c.source(src, upload),
+            Some(_) => shared_source(src, upload),
+            None => Arc::new(upload()),
+        };
+        sample(cx, src, src_buf, plan)
+    } else {
+        let img = plan.frame.sample(src, w, h);
+        let b = Arc::new(gpu.upload(rgb_words(&img)));
+        if lightcraft_pipeline::lin_needs_cpu(&plan.settings, info) {
+            host.sampled = Some(img);
+        }
+        b
+    }
+}
+
 pub(crate) fn profiling() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("LIGHTCRAFT_PROFILE").is_some())
@@ -768,26 +791,7 @@ pub fn render(
     let sampled = match (prepared_work.as_ref().and_then(|work| work.sampled.clone()), &cached) {
         (Some(sampled), _) => sampled,
         (_, Some(e)) => e.sampled.clone(),
-        // (a WarpRectilinear2 chain also goes to the CPU: its degree-14 polynomial needs f64)
-        _ if gpu.fits(src.data.len() * 3) && !plan.frame.warp.as_ref().is_some_and(|w| w.needs_f64()) => {
-            let upload = || gpu.upload(rgb_words(src));
-            // (a source too big for a view's stages to keep is the one shared copy: a window is
-            // cut from the photo's own pixels, and what its stages keep is its own sampled pixels)
-            let src_buf = match stages {
-                Some(c) if src.data.len() * 12 <= RETAIN_SOURCE_BYTES => c.source(src, upload),
-                Some(_) => shared_source(src, upload),
-                None => Arc::new(upload()),
-            };
-            sample(&mut cx, src, src_buf, &plan)
-        }
-        _ => {
-            let img = plan.frame.sample(src, w, h);
-            let b = Arc::new(gpu.upload(rgb_words(&img)));
-            if lightcraft_pipeline::lin_needs_cpu(&plan.settings, info) {
-                host.sampled = Some(img);
-            }
-            b
-        }
+        _ => sample_source(&mut cx, src, info, &plan, stages, &mut host),
     };
     lap("sample", &mut t, &mut cx);
 

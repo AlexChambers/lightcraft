@@ -146,8 +146,8 @@ fn hidden_masks_do_not_expand_window_context() {
         (&mut crate::masks::AlphaCache::default(), crate::masks::AlphaKeys { geo: 0, image: 0 }),
     );
     assert!(
-        planes.base.is_some() && planes.clarity.is_some() && planes.texture.is_some() && planes.dark.is_some() && planes.chroma.is_some(),
-        "rendering preserves main's plane selection; only the context calculation excludes unused planes"
+        planes.base.is_none() && planes.clarity.is_none() && planes.texture.is_none() && planes.dark.is_none() && planes.chroma.is_none(),
+        "hidden local adjustments must not allocate spatial planes, as on main"
     );
     s.masks[0].visible = true;
     let p = crate::plan(&src, &info, &s, &req);
@@ -597,10 +597,10 @@ const OVERLAY_INSET: usize = W * 45 / 1000;
 fn check_overlay(name: &str, s: &DevelopSettings, overlay: crate::Overlay, win: PixelWindow, max_ok: u8, mean_ok: f64) {
     let info = SourceInfo { raw: true, ..Default::default() };
     let full_req = RenderRequest { overlay, ..RenderRequest::fit(W, H) };
-    let f = render(&scene(), &info, s, &full_req).image;
-    let w = render(&scene(), &info, s, &RenderRequest { window: Some(win), ..full_req }).image;
+    let f = render(&scene(), &info, s, &full_req).unwrap().image;
+    let w = render(&scene(), &info, s, &RenderRequest { window: Some(win), ..full_req }).unwrap().image;
     assert_eq!((w.width, w.height), (win.w, win.h), "{name}: the window's own size");
-    assert_ne!(f.data, render(&scene(), &info, s, &RenderRequest::fit(W, H)).image.data, "{name}: the overlay draws something");
+    assert_ne!(f.data, render(&scene(), &info, s, &RenderRequest::fit(W, H)).unwrap().image.data, "{name}: the overlay draws something");
     let (max, mean) = compare_inset(&f, &w, win, OVERLAY_INSET);
     assert!(max <= max_ok && mean <= mean_ok, "{name}: max {max} (≤ {max_ok}), mean {mean:.3} (≤ {mean_ok})");
 }

@@ -683,6 +683,21 @@ enum Src<'a> {
     Shared(&'a Arc<Rgb32f>),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn sample_frame(src: &Src<'_>, image: &Rgb32f, frame: &geometry::Frame, w: usize, h: usize) -> Arc<Rgb32f> {
+    let sampling = frame.sample_plan(image.width, image.height, w, h);
+    match src {
+        Src::Shared(a)
+            if frame.orient == lightcraft_geom::Orientation::Normal
+                && sampling.prefilter.is_none()
+                && matches!(sampling.mode, geometry::SampleMode::Copy) =>
+        {
+            (*a).clone()
+        }
+        _ => Arc::new(frame.sample(image, w, h)),
+    }
+}
+
 fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest, cache: Option<&StageCache>) -> Result<Rendered, String> {
     // sections switched off with their eye render as if at their defaults (issue #316)
     let effective = s.effective();
@@ -780,19 +795,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let sampled = match (prepared_work.as_ref().and_then(|work| work.sampled.clone()), &cached) {
         (Some(sampled), _) => sampled,
         (_, Some(e)) => e.sampled.clone(),
-        _ => {
-            let sampling = frame.sample_plan(src_img.width, src_img.height, w, h);
-            match &src {
-                Src::Shared(a)
-                    if frame.orient == lightcraft_geom::Orientation::Normal
-                        && sampling.prefilter.is_none()
-                        && matches!(sampling.mode, geometry::SampleMode::Copy) =>
-                {
-                    (*a).clone()
-                }
-                _ => Arc::new(frame.sample(src_img, w, h)),
-            }
-        }
+        _ => sample_frame(&src, src_img, frame, w, h),
     };
     lap("sample", &mut t);
 
@@ -873,7 +876,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         });
     }
     if req.depth != OutputDepth::U8 {
-        let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof, plan.keep);
+        let deep = finish::finish_deep(&prep, s, frame, info, (req.space, req.depth), req.proof, plan.keep);
         let image = deep.to_rgba8();
         let histogram = Histogram::of_srgb8(&image);
         lap("finish (deep)", &mut t);

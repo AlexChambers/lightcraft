@@ -353,9 +353,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     if !fullscreen {
         photo.preview_only.as_deref().inspect(|why| preview_only_pill(ui, canvas, why));
     }
-    if let Some(error) = windows.iter().find_map(|(view, _)| app.renderer.failure(if view.before { Slot::RegionBefore } else { Slot::Region })) {
-        info::region_failure_notice(ui, canvas, error, app.ui.navigator && !fullscreen);
-    }
+    windows
+        .iter()
+        .find_map(|(view, _)| app.renderer.failure(if view.before { Slot::RegionBefore } else { Slot::Region }))
+        .inspect(|error| info::region_failure_notice(ui, canvas, error, app.ui.navigator && !fullscreen));
     loupe_context_menu(app, &resp, id);
 }
 

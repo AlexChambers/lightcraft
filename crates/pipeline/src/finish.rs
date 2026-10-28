@@ -315,12 +315,12 @@ pub(crate) fn finish_deep(
     s: &DevelopSettings,
     frame: &Frame,
     info: &SourceInfo,
-    space: OutputSpace,
-    depth: OutputDepth,
+    output: (OutputSpace, OutputDepth),
     proof: Option<crate::Proof>,
     keep: Option<PixelWindow>,
 ) -> DeepImage {
     use lightcraft_color::transfer::srgb_to_linear;
+    let (space, depth) = output;
     let (w, h) = (p.img.width, p.img.height);
     let at = keep.unwrap_or(PixelWindow { x: 0, y: 0, w, h }).clamped(w, h);
     let mut fp =
@@ -818,8 +818,8 @@ mod tests {
                     deep.hdr.max_ev = 3.0;
                     deep.light.exposure = 3.0;
                 }
-                let f = finish_deep(&prep, &deep, &plan.frame, &info, space, depth, None, None);
-                let w = finish_deep(&prep, &deep, &plan.frame, &info, space, depth, None, Some(k));
+                let f = finish_deep(&prep, &deep, &plan.frame, &info, (space, depth), None, None);
+                let w = finish_deep(&prep, &deep, &plan.frame, &info, (space, depth), None, Some(k));
                 if depth == OutputDepth::F32Hdr {
                     let DeepSamples::F32(samples) = &w.samples else { panic!("HDR must return float samples") };
                     assert!(samples.iter().any(|&v| v > 1.0), "HDR must exercise samples above SDR white");
