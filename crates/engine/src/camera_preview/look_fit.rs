@@ -1,6 +1,6 @@
 use super::colour::{PROXY, file_local_look};
 use super::mono::{fit_tone_only_with, monochrome};
-use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, matrix_spread, search_ordered};
+use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, search_ordered};
 use super::proxy::{CLIP_TOLERANCE, LensGeometry, MIN_PREVIEW_FRACTION, proxies, structure_agrees};
 use super::tone::{HighlightCheck, clipped_highlights, highlights};
 use super::{CameraLook, CameraTone, CameraTransform, HsvTable, Mat3, RawImage, Rgb32f, ToneMap, luminance_2020};
@@ -80,7 +80,7 @@ pub(super) fn fit_look(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool], co
 /// closer to the camera JPEG than the neutral fallback.
 ///
 /// The colour a photo's own matrix needs is asked of darker pixels in proportion to their luminance
-/// ([`matrix_spread`], issue #865) only after the fixed spread finds nothing, and only where the fit
+/// ([`super::pairs::matrix_spread`], issue #865) only after the fixed spread finds nothing, and only where the fit
 /// sees no clipped pixels. Every search with the fixed spread, and the refit, run as before, so a
 /// photo that had a look keeps it. A photo that learns its colour only through the scaled spread
 /// had no such look to keep, and gets one fitted on what the sensor measured: on all pixels when
