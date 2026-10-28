@@ -229,7 +229,9 @@ impl PreparedExport {
                             .map_err(|e| format!("{label}: can't verify location metadata in this original file: {e}"))?;
                         if metadata.gps.is_some() || lightcraft_meta::embeds_location(&bytes) {
                             let instead = if lightcraft_raw::probe(&bytes).is_some() { "JPEG, TIFF or DNG" } else { "JPEG or TIFF" };
-                            return Err(format!("{label}: can't remove the location from an original file that embeds GPS; export as {instead} instead"));
+                            return Err(format!(
+                                "{label}: can't remove the location from an original file that embeds GPS; export as {instead} instead"
+                            ));
                         }
                     }
                     return Ok(Exported {

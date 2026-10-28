@@ -570,6 +570,7 @@ fn exif_tiff(item: &[u8]) -> Option<&[u8]> {
 #[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+    use lightcraft_tiff::{ByteOrder, IfdBuilder, TiffWriter, Value, tags as t};
 
     /// One item's bytes, as `embedded` gathers them: its place from `iloc`, then its extents.
     fn item_bytes(file: &[u8], iloc: &[u8], idat: Option<&[u8]>, id: u32) -> Option<Vec<u8>> {
@@ -779,6 +780,49 @@ mod tests {
         // All Metadata's rows come from the same block
         let rows = crate::file_tag_rows(&f);
         assert!(rows.iter().any(|r| r.name == "Model" && r.value == "Issue sweep camera"), "{rows:?}");
+    }
+
+    /// What an iPhone writes: the civil time it was taken at, plus the UTC offset it was taken in.
+    fn iphone_exif(date: &str, offset: &str) -> Vec<u8> {
+        let mut exif = IfdBuilder::new();
+        exif.set(t::DATE_TIME_ORIGINAL, Value::Ascii(date.into()));
+        exif.set(t::OFFSET_TIME_ORIGINAL, Value::Ascii(offset.into()));
+        exif.set(t::ISO_SPEED, Value::Short(vec![64]));
+        let mut ifd0 = IfdBuilder::new();
+        ifd0.set(t::MAKE, Value::Ascii("Apple".into()));
+        ifd0.set(t::MODEL, Value::Ascii("iPhone 15 Pro".into()));
+        ifd0.set_child(t::EXIF_IFD, exif);
+        TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()
+    }
+
+    /// Issue #2284: keep the camera's civil time and offset, including an evening shot whose
+    /// UTC date falls on the next day. The file contains no decodable picture.
+    #[test]
+    fn an_iphone_heic_keeps_the_time_the_camera_wrote() {
+        for (date, hour, iso) in [("2026:10:18 13:00:00", 13, "2026-10-18T13:00:00-05:00"), ("2026:10:18 20:15:11", 20, "2026-10-18T20:15:11-05:00")]
+        {
+            let tiff = iphone_exif(date, "-05:00");
+            let file = Heif::new().item(2, b"Exif", exif_item(b"Exif\0\0", &tiff), Store::File, 1).cdsc(2, &[1]).build();
+            let m = crate::extract(&file);
+            let captured = m.capture_time.expect("a capture time");
+            assert_eq!(captured.hour, hour);
+            assert_eq!(captured.offset_minutes, Some(-5 * 60));
+            assert_eq!(captured.to_iso(), iso);
+            assert_eq!(m.model.as_deref(), Some("iPhone 15 Pro"));
+            assert_eq!(m.iso, Some(64));
+        }
+    }
+
+    /// The repository's HEIF writer supplies a second container layout for the same EXIF.
+    #[test]
+    fn a_synthetic_heif_file_carries_its_exif() {
+        let tiff = iphone_exif("2026:10:18 13:00:00", "-05:00");
+        let mut spec = lightcraft_heif::testdata::Spec::new(64, 64, &|x, _| [x as u16 * 4, 0, 0]);
+        spec.exif = Some(tiff.clone());
+        let file = lightcraft_heif::testdata::build(&spec);
+        assert!(is_heif(&file));
+        assert_eq!(crate::embedded(&file).exif.as_deref(), Some(tiff.as_slice()));
+        assert_eq!(crate::extract(&file).capture_time.map(|d| d.to_iso()).as_deref(), Some("2026-10-18T13:00:00-05:00"));
     }
 
     /// GPS comes with the EXIF, so a HEIC's location is seen (export's "remove location" refuses to

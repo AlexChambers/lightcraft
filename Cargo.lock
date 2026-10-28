@@ -3844,6 +3844,7 @@ version = "0.15.0"
 dependencies = [
  "chrono",
  "lightcraft-geom",
+ "lightcraft-heif",
  "lightcraft-tiff",
  "proptest",
  "quick-xml 0.41.0",
