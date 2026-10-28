@@ -104,7 +104,7 @@ pub(crate) const ENCODE_VERSION: u64 = 3;
 
 /// The version of how a raw's preview-size source is decoded from its sensor data, apart from the camera-look fit
 /// (`camera_preview::LOOK_VERSION`). A smart preview keeps that source, so a raw's proxy written by an older one is
-/// rebuilt from its original when that is online, like one from an older fit; proxies of other photos never are.
+/// rebuilt from its original when that is online, like one from an older fit. This version does not stale other photos.
 ///
 /// **Bump this whenever a change makes the decode give different pixels at preview size** (the demosaic, highlight
 /// reconstruction, the colour model). `RENDER_CACHE_VERSION` covers renders and in-memory sources; this covers the

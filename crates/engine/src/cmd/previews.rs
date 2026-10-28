@@ -318,10 +318,7 @@ fn build(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(state.json())
 }
 
-/// One photo's smart preview to build or discard: (photo, its file in the smart previews folder,
-/// how to load the original at preview size, whether the photo can take a preview-fitted look:
-/// vendor raws and DNGs (whose tone can come from their preview); only those proxies go stale when
-/// the fit changes; an older encoding makes any proxy stale).
+/// One proxy job: the photo, its path, how to load its original, and the versions that apply.
 #[cfg(not(target_arch = "wasm32"))]
 type SmartJob = (lightcraft_catalog::PhotoId, std::path::PathBuf, Option<crate::media::SourceRef>, Ages);
 
@@ -610,10 +607,8 @@ pub(crate) fn refresh_stale_smart_previews(s: &mut Session) -> Option<std::threa
     }
     let max_edge = crate::media::SourceLevel::Preview.max_edge();
     let photos: Vec<_> = s.catalog.photos().filter(|p| matches!(p.source, lightcraft_catalog::Source::File { .. })).collect();
-    let jobs: Vec<SmartJob> = photos
-        .iter()
-        .map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge)), Ages::of(p)))
-        .collect();
+    let jobs: Vec<SmartJob> =
+        photos.iter().map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge)), Ages::of(p))).collect();
     if jobs.is_empty() {
         return None;
     }

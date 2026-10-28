@@ -2825,7 +2825,7 @@ fn a_source_refresh_cut_short_by_the_process_ending_leaves_no_old_thumbnail() {
     f.s.close_library().unwrap();
     drop(std::mem::take(&mut f.s));
     let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "tests_import::interrupted_source_refresh_child", "--ignored"])
+        .args(["--exact", "tests::import::interrupted_source_refresh_child", "--ignored"])
         .env("LC1328_LIBRARY", &f.lib)
         .status()
         .unwrap();
