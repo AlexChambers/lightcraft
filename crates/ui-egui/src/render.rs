@@ -1414,6 +1414,16 @@ mod region_failure_regression {
     use crate::{LightcraftApp, Services, headless::Headless};
     use std::time::Duration;
 
+    struct Blocked;
+    impl RenderOffload for Blocked {
+        fn try_start(&mut self, _: Slot, job: RenderJob) -> Option<RenderJob> {
+            Some(job)
+        }
+        fn finished(&mut self) -> Vec<(Slot, RenderResult, f64)> {
+            vec![]
+        }
+    }
+
     #[test]
     fn region_failures_show_status_and_keep_the_preview() {
         let app = LightcraftApp::new(Session::with_demo(), Services::default());
@@ -1423,6 +1433,7 @@ mod region_failure_regression {
         h.app.ui.zoom = crate::state::Zoom::Percent(200.0);
         h.app.ui.before_after = crate::state::BeforeAfter::SideBySide;
         h.settle(Duration::from_secs(120));
+        h.app.renderer.set_offload(Box::new(Blocked));
         let photo = h.app.session.active().unwrap();
         let message = "Zoom detail is unavailable. Try a lower zoom.";
         for locale in crate::i18n::Locale::ALL.iter().skip(1) {
@@ -1447,6 +1458,11 @@ mod region_failure_regression {
                 std::fs::write(std::path::Path::new(&dir).join(format!("{slot:?}.png")), png).unwrap();
             }
             assert!(h.app.loupe_shown.is_some_and(|(_, shown)| shown == "render"), "the preview stays visible");
+            let other = h.app.session.visible_cloned().into_iter().find(|id| *id != photo).unwrap();
+            h.app.renderer.failed.insert(slot, (0, "another photo's error".into(), h.app.renderer.catalog_rev, other));
+            h.step();
+            assert!(!h.painted_text().iter().any(|t| t == message), "{slot:?}: another photo's error must stay hidden");
+            h.app.renderer.failed.insert(slot, (0, "exact-render memory budget".into(), h.app.renderer.catalog_rev, photo));
             h.app.ui.zoom = crate::state::Zoom::Fit;
             h.step();
             assert!(!h.painted_text().iter().any(|t| t == message), "Fit hides stale region errors");

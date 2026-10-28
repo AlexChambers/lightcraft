@@ -355,7 +355,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
     windows
         .iter()
-        .find_map(|(view, _)| app.renderer.failure(if view.before { Slot::RegionBefore } else { Slot::Region }))
+        .find_map(|(view, _)| app.renderer.failure_of(if view.before { Slot::RegionBefore } else { Slot::Region }, id))
         .inspect(|error| info::region_failure_notice(ui, canvas, error, app.ui.navigator && !fullscreen));
     loupe_context_menu(app, &resp, id);
 }
