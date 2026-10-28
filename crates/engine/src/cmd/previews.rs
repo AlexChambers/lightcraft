@@ -672,7 +672,7 @@ fn smart_format(s: &mut Session, p: &Value) -> Result<Value> {
 /// Whether photo `id` has a smart preview.
 pub fn has_smart_preview(s: &Session, id: lightcraft_catalog::PhotoId) -> bool {
     match (&s.media.smart_dir, s.catalog.photo(id)) {
-        (Some(dir), Some(p)) => s.media.smart_status.is_usable(&crate::smart::file_path(dir, p)),
+        (Some(dir), Some(p)) => s.media.smart_status.query(&crate::smart::file_path(dir, p), s.media.availability.background_waker()),
         _ => false,
     }
 }
