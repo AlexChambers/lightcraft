@@ -8,7 +8,7 @@ use lightcraft_raster::{Histogram, Rgb32f, Rgba8};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::finish::FinishParams;
+use crate::finish::{FinishParams, FinishParamsInput};
 use crate::{RenderRequest, Rendered, SourceInfo, StageCache};
 
 /// Maximum long edge of the diagnostic render. The UI starts from a thumbnail-level source.
@@ -88,7 +88,15 @@ pub(crate) fn finish(
     input: CurveInput,
 ) -> Rendered {
     let (w, h) = (p.img.width, p.img.height);
-    let mut fp = FinishParams::new(settings, frame, info, w, h, p.px_per_long, p.air, request.space);
+    let mut fp = FinishParams::new(FinishParamsInput {
+        settings,
+        frame,
+        info,
+        image_size: (w, h),
+        px_per_long: p.px_per_long,
+        air_pre: p.air,
+        space: request.space,
+    });
     fp.proof = request.proof.map(|proof| proof.params(request.space));
     if let Some(display) = &request.display {
         fp.for_display(display, request.proof);

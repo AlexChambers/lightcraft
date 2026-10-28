@@ -594,7 +594,6 @@ fn the_four_regions_tile_the_graph() {
     }
 }
 
-
 /// Keep native decode and render jobs, but bound the fixture's work: settling a whole demo library
 /// also waits for unrelated procedural thumbnails and neighbour previews on slow CI machines.
 fn curve_input_open() -> Headless {
