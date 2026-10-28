@@ -345,6 +345,18 @@ impl MediaCache {
         self.source_ref_with(p, level, false)
     }
 
+    /// Pair a source with its cache generation. Source acquisition does no I/O, so retry
+    /// when a worker clears the cache during the lookup rather than losing the photo.
+    pub(super) fn current_source(&mut self, p: &Photo, level: SourceLevel) -> (u64, SourceRef) {
+        loop {
+            let generation = self.rendered.generation();
+            let source = self.source_ref(p, level);
+            if self.rendered.generation() == generation {
+                return (generation, source);
+            }
+        }
+    }
+
     fn source_ref_with(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
         let mut r = self.source_ref_plain(p, level, cached);
         if let (SourceRef::File { denoise, .. }, Some((spec, loader))) = (&mut r, self.denoise.get(p.id)) {

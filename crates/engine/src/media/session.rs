@@ -37,10 +37,7 @@ impl crate::Session {
         } else {
             source_edge_needed(&p, &settings, apply_crop, max_w.max(max_h))
         });
-        // A worker can clear the cache while this job is being constructed. Capture the
-        // generation before taking a source and carry it through the key and result.
-        let cache_generation = self.media.rendered.generation();
-        let source = self.media.source_ref(&p, level);
+        let (cache_generation, source) = self.media.current_source(&p, level);
         let request = RenderRequest { apply_crop, ..RenderRequest::fit(max_w, max_h) };
         // the photo id is part of the key: two photos with the same settings and size must not
         // share a result (a view slot showing photo A would otherwise look current for photo B)
@@ -69,9 +66,6 @@ impl crate::Session {
             }
             (self.media.rendered.clone(), k.finish())
         });
-        if self.media.rendered.generation() != cache_generation {
-            return None;
-        }
         Some(RenderJob {
             request_id: 0,
             cache_generation,
@@ -130,14 +124,8 @@ impl crate::Session {
         let p = self.catalog.photo(id)?.clone();
         let edge = edge.clamp(16, SourceLevel::Thumb.max_edge());
         let level = SourceLevel::Thumb;
-        // A worker can clear the cache while this job is being constructed. Capture the
-        // generation before taking a source and carry it through the key and result.
-        let cache_generation = self.media.rendered.generation();
-        let source = self.media.source_ref(&p, level);
+        let (cache_generation, source) = self.media.current_source(&p, level);
         let ck = Self::variant_key(&p, settings, edge);
-        if self.media.rendered.generation() != cache_generation {
-            return None;
-        }
         Some(RenderJob {
             request_id: 0,
             cache_generation,
@@ -191,14 +179,8 @@ impl crate::Session {
         // pixels along the long edge that leave `edge` across the crop
         let needed = (edge as f64 * w.max(h) / side).ceil().min(SourceLevel::Preview.max_edge() as f64);
         let level = SourceLevel::for_size(needed as usize);
-        // A worker can clear the cache while this job is being constructed. Capture the
-        // generation before taking a source and carry it through the key and result.
-        let cache_generation = self.media.rendered.generation();
-        let source = self.media.source_ref(&p, level);
+        let (cache_generation, source) = self.media.current_source(&p, level);
         let ck = Self::variant_key(&p, &settings, edge);
-        if self.media.rendered.generation() != cache_generation {
-            return None;
-        }
         let preview_cut = self.face_preview_cut(&p, rect, edge, needed as usize);
         Some(RenderJob {
             request_id: 0,

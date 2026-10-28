@@ -1,20 +1,20 @@
 use super::*;
 
 #[test]
-fn regression709_clear_between_source_and_key_rejects_job() {
+fn cache_clear_after_job_preparation_rejects_its_source_and_pixels() {
     for kind in ["thumb", "render", "variant", "face"] {
         let mut s = session();
         let id = PhotoId(1);
         let old = Arc::new(Rgb32f::new(8, 8));
         s.media.insert(id, SourceLevel::Thumb, old.clone());
         let before = s.media.rendered.generation();
-        s.media.clear_after_source = true;
         let job = match kind {
             "thumb" => s.thumb_job(id, 128),
             "render" => s.render_job(id, 128, 128, false, true),
             "variant" => s.variant_job(id, &DevelopSettings::default(), 128),
             _ => s.face_job(id, lightcraft_geom::Rect::new(0.0, 0.0, 1.0, 1.0), 128),
         };
+        s.media.rendered.clear();
         assert_eq!(s.media.rendered.generation(), before + 1);
         if let Some(job) = job {
             assert!(matches!(&job.source, SourceRef::Loaded(d) if Arc::ptr_eq(&d.image, &old)));
@@ -141,4 +141,45 @@ fn a_render_that_panics_fails_instead_of_never_answering() {
     let r = quick.run();
     assert_eq!((r.request_id, r.key), (7, 9));
     assert_eq!(r.rendered.err().as_deref(), Some("the render failed unexpectedly: preview reader bug"));
+}
+
+#[test]
+fn source_clear_during_job_preparation_retries_without_losing_the_photo() {
+    let mut failures = Vec::new();
+    for kind in ["thumb", "render", "variant", "face", "export"] {
+        let mut s = session();
+        let id = PhotoId(1);
+        let old = Arc::new(Rgb32f::new(8, 8));
+        s.media.insert(id, SourceLevel::Thumb, old.clone());
+        s.media.file_loader = Some(Arc::new(|_, _| {
+            let mut image = Rgb32f::new(8, 8);
+            image.data.fill([0.25; 3]);
+            Ok((image, SourceInfo::default()))
+        }));
+        let generation = s.media.rendered.generation();
+        s.media.clear_after_source = true;
+        let job = match kind {
+            "thumb" => s.thumb_job(id, 128),
+            "render" => s.render_job(id, 128, 128, false, true),
+            "variant" => s.variant_job(id, &DevelopSettings::default(), 128),
+            "face" => s.face_job(id, lightcraft_geom::Rect::new(0.0, 0.0, 1.0, 1.0), 128),
+            _ => s
+                .export_job(id, 128, 128, lightcraft_pipeline::OutputSpace::Srgb, lightcraft_pipeline::OutputDepth::U8)
+                .map_err(|error| failures.push(format!("{kind}: {error}")))
+                .ok(),
+        };
+        assert_eq!(s.media.rendered.generation(), generation + 1, "{kind}");
+        let Some(job) = job else {
+            if kind != "export" {
+                failures.push(format!("{kind}: lost an existing photo during a source clear"));
+            }
+            continue;
+        };
+        assert_eq!(job.cache_generation, generation + 1, "{kind}");
+        assert!(!matches!(&job.source, SourceRef::Loaded(d) if Arc::ptr_eq(&d.image, &old)), "{kind} reused the stale source");
+        let result = job.run();
+        assert!(result.rendered.is_ok(), "{kind}");
+        assert!(result.loaded.as_ref().is_some_and(|d| d.image.data[0] == [0.25; 3]), "{kind}");
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
