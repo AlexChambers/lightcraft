@@ -672,7 +672,7 @@ fn smart_format(s: &mut Session, p: &Value) -> Result<Value> {
 /// Whether photo `id` has a smart preview.
 pub fn has_smart_preview(s: &Session, id: lightcraft_catalog::PhotoId) -> bool {
     match (&s.media.smart_dir, s.catalog.photo(id)) {
-        (Some(dir), Some(p)) => crate::smart::is_usable(&crate::smart::file_path(dir, p)),
+        (Some(dir), Some(p)) => s.media.smart_status.is_usable(&crate::smart::file_path(dir, p)),
         _ => false,
     }
 }
@@ -726,7 +726,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             build
         ),
-        cmd!(query "library.previewProgress", "Preview Build Progress", [], None, "{} → {total, done, failed, repaired, running, cancelled, what, error} | null", always, |s, _| {
+        cmd!(query "library.previewProgress", "Preview Build Progress", [], None, "{} → {total, done, failed, repaired, kept, running, cancelled, what, error} | null", always, |s, _| {
             Ok(s.preview_build.as_ref().map_or(Value::Null, |b| b.json()))
         }),
         cmd!("library.cancelPreviews", "Cancel Preview Build", [], None, "{}", always, |s, _| {

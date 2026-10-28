@@ -19,6 +19,8 @@ use lightcraft_pipeline::tone::CameraTone;
 use lightcraft_raster::{Image, Rgb32f, Rgba8};
 
 mod format;
+mod status;
+pub(crate) use status::UsabilityCache;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod migration;
 #[cfg(all(test, not(target_arch = "wasm32")))]

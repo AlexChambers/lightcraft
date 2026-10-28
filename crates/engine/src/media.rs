@@ -78,6 +78,7 @@ pub struct MediaCache {
     pub file_bytes: Option<crate::merge::ByteReader>,
     /// The library's smart previews folder (originals offline: render from the proxy).
     pub smart_dir: Option<std::path::PathBuf>,
+    pub(crate) smart_status: crate::smart::UsabilityCache,
     source_generation: u64,
     #[cfg(test)]
     clear_after_source: bool,

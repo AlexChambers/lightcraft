@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The directory itself, so a catalog added or removed reruns this script.
     println!("cargo:rerun-if-changed=locales");
     let out = PathBuf::from(env::var("OUT_DIR")?);
-    fs::write(out.join("tr-formats.rs"), generate()?)?;
+    fs::write(out.join("tr-formats.rs"), generate(std::path::Path::new("locales"))?)?;
     let (json, people) = credits::load();
     fs::write(out.join("credits.rs"), credits::generate(&json, &people))?;
     Ok(())
@@ -52,9 +52,9 @@ fn capitalize(part: &str) -> String {
     }
 }
 
-fn generate() -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn generate(locales: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
     let mut catalogs: Vec<(String, String, BTreeMap<String, serde_json::Value>)> = Vec::new();
-    for entry in fs::read_dir("locales")? {
+    for entry in fs::read_dir(locales)? {
         let path = entry?.path();
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_string();
         // `en` is the source language: it has no catalog, its formats are the source themselves.
@@ -68,9 +68,9 @@ fn generate() -> Result<String, Box<dyn std::error::Error>> {
     }
     catalogs.sort_by(|a, b| a.0.cmp(&b.0));
     println!("cargo:rerun-if-changed=locales/en-formats.json");
-    let english_plurals: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(&fs::read_to_string("locales/en-formats.json")?)?;
+    let english_plurals: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(&fs::read_to_string(locales.join("en-formats.json"))?)?;
 
-    let all: BTreeSet<&String> = catalogs.iter().flat_map(|(_, _, messages)| messages.keys()).collect();
+    let all: BTreeSet<&String> = catalogs.iter().flat_map(|(_, _, messages)| messages.keys()).chain(english_plurals.keys()).collect();
 
     let mut source = String::from(concat!(
         "/// Translate a format string, checked by `format!` in every language.\n",

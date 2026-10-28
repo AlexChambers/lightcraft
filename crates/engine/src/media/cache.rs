@@ -69,6 +69,7 @@ impl Default for MediaCache {
             preview_loader: None,
             file_bytes: None,
             smart_dir: None,
+            smart_status: Default::default(),
             source_generation: 0,
             #[cfg(test)]
             clear_after_source: false,
