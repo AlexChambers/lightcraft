@@ -474,7 +474,7 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut MergeDialog) 
             }
             // A previous preview may stay visible while the options change. Only describe
             // inclusions once this preview is current and its replacement has finished.
-            let info = app.merge.preview.as_ref().filter(|p| p.2 == *opts && app.merge.preview_task.is_none()).map(|p| p.3.clone());
+            let info = app.merge.preview.as_ref().filter(|p| p.2 == *opts && app.merge.preview_task.is_none()).map(|p| &p.3);
             if let Some(info) = info {
                 let txt = if opts.is_pano() {
                     crate::i18n::tr_format!(
@@ -491,7 +491,7 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut MergeDialog) 
                 };
                 ui.label(egui::RichText::new(txt).color(t.text_dim));
                 if opts.is_pano() {
-                    omitted_photos(ui, &info);
+                    omitted_photos(ui, info);
                 }
             }
         });
