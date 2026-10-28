@@ -243,7 +243,7 @@ pub(super) fn curve_editor(app: &mut LightcraftApp, ui: &mut egui::Ui, id: Photo
             ui.label(RichText::new(crate::i18n::tr(status)).small().color(t.text_label))
         })
         .inner;
-    register(ui.ctx(), "curve:inputHistogram", label.rect);
+    register(ui, "curve:inputHistogram", label.rect);
     label.on_hover_text(crate::i18n::tr("Sampled tones entering the selected curve, across the whole crop. Parametric comes first, then Point, then Red, Green and Blue. Point and Parametric show a luminance summary. HDR edits use the SDR preview rendition."));
     let w = ui.available_width();
     let side = (w - 48.0).max(80.0);
