@@ -316,13 +316,15 @@ mod tests {
     fn screenshot(h: &mut Headless, name: &str) {
         if let Some(dir) = std::env::var_os("LIGHTCRAFT_TEST_SHOTS") {
             h.app.services.write = Some(Box::new(|path, bytes| std::fs::write(path, bytes).map_err(|e| e.to_string())));
+            h.app.services.write_new = Some(Box::new(lightcraft_engine::export::write_file_new));
             h.app.services.png = Some(Box::new(|img| {
                 lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(img), &lightcraft_codecs::EncodeMeta::default()).unwrap()
             }));
             // Capture this frame: waiting for photo renders can outlast a toast in simulated time.
             let image = h.paint();
             let path = std::path::Path::new(&dir).join(name);
-            let response = crate::control::save_screenshot(&mut h.app, &image, Some(&path.to_string_lossy()));
+            let target = h.app.session.pin_write_target(&path.to_string_lossy()).expect("pin screenshot destination");
+            let response = crate::control::save_screenshot(&mut h.app, &image, Some(&target));
             assert_eq!(response["ok"], true, "{response}");
         }
     }
