@@ -128,11 +128,11 @@ fn golden(process: ProcessVersion) -> u64 {
     h
 }
 
-/// V1 and V2 render byte for byte as they did before process V3 existed. The hashes were captured
-/// on main at 76b5377 (before `light_v3`) on macOS aarch64, where they are checked: the renders
+/// V1 and V2 render byte for byte as they do on main before adding process V3. The hashes were captured
+/// on main at e2d18b5fb (before `light_v3`) on macOS aarch64, where they are checked: the renders
 /// call the platform's `powf` / `exp2` / `log2`, whose last bit can differ on other platforms, so
-/// elsewhere the test only prints them. To recapture after a deliberate change of V1 or V2 (which
-/// the process rule forbids), run it with `--nocapture` on a Mac and paste the printed values.
+/// elsewhere the test only prints them. Before updating them during a rebase, run this exact fixture
+/// on main and confirm that both hashes match. This PR must not change V1 or V2 rendering.
 #[test]
 fn v1_and_v2_render_as_before_v3() {
     let got = [golden(ProcessVersion(1)), golden(ProcessVersion(2))];
@@ -142,7 +142,7 @@ fn v1_and_v2_render_as_before_v3() {
     }
 }
 
-const GOLDEN: [u64; 2] = [0xd47a_9647_785e_988b, 0x2742_5ab9_bb30_256e];
+const GOLDEN: [u64; 2] = [0x5bf0_a7c8_579f_3f34, 0x87a3_598c_1597_9e4d];
 
 fn on(process: Process, s: &DevelopSettings) -> DevelopSettings {
     DevelopSettings { process: process.version(), ..s.clone() }

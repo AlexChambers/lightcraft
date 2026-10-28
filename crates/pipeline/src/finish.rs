@@ -421,11 +421,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
             }
 
             // --- process V3: calibrated Contrast, Blacks (ProPhoto with the sRGB transfer)
-            if let Some(lo) = &preview_light {
-                d = lo.apply(d);
-            } else if let Some(lo) = light {
-                d = if exact { lo.apply(d, &linear_to_srgb) } else { lo.apply(d, &|v| encode_srgb(srgb, v)) };
-            }
+            d = apply_light(d, light.as_ref(), preview_light.as_ref(), exact, srgb);
 
             // --- colour
             d = fp.ops.apply(d, l_sat, l_hue);
@@ -550,6 +546,23 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
         }
     });
     out
+}
+
+#[inline]
+fn apply_light(
+    color: [f32; 3],
+    light: Option<&crate::light_v3::LightOps>,
+    preview: Option<&crate::light_v3::PreviewOps>,
+    exact: bool,
+    srgb: &[f32; SRGB_LUT_N + 1],
+) -> [f32; 3] {
+    if let Some(lo) = preview {
+        lo.apply(color)
+    } else if let Some(lo) = light {
+        if exact { lo.apply(color, &linear_to_srgb) } else { lo.apply(color, &|v| encode_srgb(srgb, v)) }
+    } else {
+        color
+    }
 }
 
 struct PixelLocalTerms {
