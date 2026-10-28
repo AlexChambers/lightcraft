@@ -189,14 +189,15 @@ $PY tools/render_fidelity.py selftest
   check of its raw by the run's CLI (by both sha256s); a raw without one is listed as not rendered, and a run made
   before `render` checked raws, or sampled before samples carried provenance, is refused (render into a new `--run`
   folder). A sample or registration whose provenance doesn't match the manifest and the pair (another CLI, recipe,
-  raw, export, cases file or tool, or none at all) is rejected with the reason, never scored; a resumed `render`
+  raw, export, cases file or tool, or none) is rejected with the reason, never scored; a resumed `render`
   makes it again.
 - **`report`** prints a Markdown summary of a scored run: setup, coverage, the Neutral look and one table per slider,
   then, folded away, a CSV of every pair and every populated band (the black band and the whole frame included)
   with all the statistics, the four transitions of each engine with the positions they are a share of, and every
   Neutral look. No file or folder names unless you add `--names`. Photos have per-run pseudonyms: a hash of their
   id and a random salt kept in the run folder (`report-salt.txt`, written atomically and checked to be 32 hex digits
-  before every `score` and `report`, which refuse an invalid one; never in the report), so a label doesn't identify
+  by `score`, which stores it in `scores.json`; `report` validates that stored copy, not the salt file, and never
+  includes it in the report), so a label doesn't identify
   the raw and differs between runs, and the appendix is ordered and its sessions numbered by those labels. A report
   is still not anonymous: the cameras, Lightroom version and the measurements themselves can let someone tell or
   match photos across reports.
