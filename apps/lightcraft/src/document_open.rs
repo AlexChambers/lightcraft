@@ -62,8 +62,7 @@ impl PendingOpens {
             batch.library.get_or_insert(app.session.library_generation());
         }
         app.pending_document_library = self.batches.front().and_then(|b| b.library);
-        if app.import.is_some()
-            || app.scan.is_some()
+        if lightcraft_ui_egui::import::running(app)
             || lightcraft_ui_egui::import::dialog_open(app)
             || app.lightroom.is_some()
             || app.sync_run.is_some()
@@ -225,6 +224,42 @@ mod review_repros {
         assert_eq!(actual, 0, "a request queued for A must not silently import into B");
     }
 
+    #[test]
+    fn a_deferred_manual_review_keeps_the_native_request_queued() {
+        let (dir, paths) = fixture("deferred-review");
+        let mut session = Session::new().with_fs();
+        session.open_library(dir.join("A"), false).unwrap();
+        let mut app = LightcraftApp::new(session, Services::default());
+        import::open(&mut app, vec![paths[1].clone()]).unwrap();
+        app.ui.dialog = Some(Dialog::Settings { tab: "general".into() });
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while app.scan.is_some() && std::time::Instant::now() < deadline {
+            import::poll_scan(&mut app, &ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.scan.is_none(), "the manual scan finishes behind Settings");
+        assert!(import::running(&app), "the finished scan still has a deferred review");
+        let mut pending = PendingOpens::default();
+        pending.enqueue(vec![Ok(paths[0].clone().into())], &mut app);
+        pending.tick(&mut app);
+        assert_eq!(pending.batches.len(), 1, "the deferred review must not discard the native request");
+        assert!(app.import.is_none());
+        assert!(app.run("app.openLibrary", json!({"path": dir.join("B")})).is_err(), "the queued native request stays bound to A");
+        app.ui.dialog = None;
+        import::poll_scan(&mut app, &ctx);
+        assert!(matches!(app.ui.dialog, Some(Dialog::Import { .. })));
+        pending.tick(&mut app);
+        assert_eq!(pending.batches.len(), 1, "the visible review also keeps the request queued");
+        app.ui.dialog = None;
+        pending.tick(&mut app);
+        finish(&mut app);
+        assert!(pending.batches.is_empty());
+        assert_eq!(app.session.catalog.len(), 1, "the native photo imports after the manual review closes");
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn block_probe(app: &mut LightcraftApp, path: String) -> (std::sync::mpsc::Receiver<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
         use std::sync::{
             Arc,
@@ -379,7 +414,7 @@ mod review_repros {
                     app.run("app.openLibrary", json!({"path": dir.join(library).to_str().unwrap()})).unwrap();
                     // The first recovery choice also protects requests before the next tick.
                     assert!(app.run("app.newLibrary", json!({"path": dir.join("C").to_str().unwrap()})).is_err());
-                    library_problem::logic(&mut app);
+                    library_problem::logic(&mut app, &egui::Context::default());
                 }
             }
             pending.tick(&mut app);

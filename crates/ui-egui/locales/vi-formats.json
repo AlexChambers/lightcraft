@@ -1,4 +1,5 @@
 {
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "{n} tệp bạn đã mở chưa được nhập. Thoát sẽ hủy các yêu cầu này.",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} có nhiều tệp trông giống nhau: dùng Định vị)",
   " ({} in Recently Deleted)": " ({} trong Đã xóa gần đây)",
   " in {g} group{}": " in {g} group{}",

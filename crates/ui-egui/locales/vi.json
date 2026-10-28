@@ -1,4 +1,9 @@
 {
+  "Quit LightCraft?": "Thoát LightCraft?",
+  "Waiting to import opened files": "Đang chờ nhập các tệp đã mở",
+  "1 file you opened hasn't been imported yet. Quitting discards this request.": "1 tệp bạn đã mở chưa được nhập. Thoát sẽ hủy yêu cầu này.",
+  "An import is already running. Wait for it to finish, then click Import again.": "Một quá trình nhập đang chạy. Hãy đợi đến khi hoàn tất, rồi nhấp Nhập lần nữa.",
+  "Finish or cancel the import and close Import Photos before switching libraries. Queued photos will open in this library.": "Hoàn tất hoặc hủy quá trình nhập và đóng Nhập ảnh trước khi chuyển thư viện. Các ảnh trong hàng đợi sẽ được mở trong thư viện này.",
   "  (library default)": "  (mặc định thư viện)",
   " (inverted)": " (đã đảo)",
   " · best of its burst": " · đẹp nhất trong cụm",

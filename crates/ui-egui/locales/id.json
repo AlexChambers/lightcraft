@@ -1,4 +1,9 @@
 {
+  "Quit LightCraft?": "Keluar dari LightCraft?",
+  "Waiting to import opened files": "Menunggu untuk mengimpor file yang dibuka",
+  "1 file you opened hasn't been imported yet. Quitting discards this request.": "1 file yang Anda buka belum diimpor. Keluar akan membuang permintaan ini.",
+  "An import is already running. Wait for it to finish, then click Import again.": "Impor sedang berjalan. Tunggu hingga selesai, lalu klik Impor lagi.",
+  "Finish or cancel the import and close Import Photos before switching libraries. Queued photos will open in this library.": "Selesaikan atau batalkan impor dan tutup Impor Foto sebelum beralih pustaka. Foto dalam antrean akan dibuka di pustaka ini.",
   "  (library default)": "  (bawaan pustaka)",
   " (inverted)": " (dibalik)",
   " · best of its burst": " · terbaik dari bidikan beruntunnya",

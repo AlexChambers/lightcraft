@@ -1,4 +1,5 @@
 {
+  "{n} files you opened haven't been imported yet. Quitting discards these requests.": "Avaamiasi tiedostoja on vielä tuomatta: {n}. Lopettaminen hylkää nämä pyynnöt.",
   " ({unsure} with several look-alike files: use Locate)": " ({unsure} usealla samannäköisellä tiedostolla: käytä Paikanna)",
   " ({} in Recently Deleted)": " ({} Äskettäin poistetuissa)",
   " in {g} group{}": " · ryhmiä: {g}{:.0}",

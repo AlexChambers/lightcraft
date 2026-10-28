@@ -38,8 +38,8 @@ then click Import again. A second confirmation never replaces or cancels the act
 app. It substitutes version fields in `Info.plist.in`, then runs `document_types.py` before signing.
 The generator reads `lightcraft_engine::import::EXTENSIONS`, registers each supported extension
 and references macOS's existing Uniform Type Identifiers (UTIs). The declaration policy targets the
-supported macOS releases, 14, 15 and 26. CoreTypes and RawCameraTypes supply 31 of the 34 referenced
-identifiers, including AVIF and JPEG XL. LightCraft does not redeclare these system types. The
+supported macOS releases, 14, 15 and 26. CoreTypes and RawCameraTypes supply 34 of the 37 referenced
+identifiers, including AVIF, JPEG XL, Sony SR2/SRF and Photoshop PSB. LightCraft does not redeclare these system types. The
 bundle's older binary deployment target does not expand this declaration compatibility policy.
 Every document type has role Editor and rank Alternate.
 
@@ -85,7 +85,7 @@ decoder; builds without it report the normal import error. AVIF likewise retains
 
 ## Event handling
 
-The pinned eframe 0.36 / winit 0.30 stack does not forward document opens. `lightcraft-macos-open`
+The pinned eframe 0.37 / winit 0.30 stack does not forward document opens. `lightcraft-macos-open`
 registers the Open Documents (`aevt/odoc`) Apple event after creating NSApplication and before
 starting eframe. A notification observer registers it again at `NSApplicationWillFinishLaunching`,
 after AppKit installs its handlers and before cold-start documents arrive. This is the event AppKit

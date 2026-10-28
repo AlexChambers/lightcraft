@@ -17,10 +17,12 @@ TYPES = {
     "dng": "com.adobe.raw-image", "cr2": "com.canon.cr2-raw-image",
     "cr3": "com.canon.cr3-raw-image", "nef": "com.nikon.raw-image",
     "nrw": "com.nikon.nrw-raw-image", "arw": "com.sony.arw-raw-image",
+    "sr2": "com.sony.sr2-raw-image", "srf": "com.sony.raw-image",
     "raf": "com.fuji.raw-image", "orf": "com.olympus.raw-image",
     "rw2": "com.panasonic.rw2-raw-image", "rwl": "com.leica.rwl-raw-image",
     "raw": "com.panasonic.raw-image", "pef": "com.pentax.raw-image",
     "srw": "com.samsung.raw-image", "psd": "com.adobe.photoshop-image",
+    "psb": "com.adobe.photoshop-large-image",
     "jxl": "public.jpeg-xl", "gif": "com.compuserve.gif", "bmp": "com.microsoft.bmp",
     "heic": "public.heic", "heif": "public.heif", "avif": "public.avif",
     "iiq": "com.phaseone.raw-image", "crw": "com.canon.crw-raw-image",
@@ -28,7 +30,7 @@ TYPES = {
     "erf": "com.epson.raw-image", "3fr": "com.hasselblad.3fr-raw-image",
     "fff": "com.hasselblad.fff-raw-image",
 }
-RASTER = {"jpg", "jpeg", "png", "tif", "tiff", "webp", "psd", "jxl", "gif", "bmp", "heic", "heif", "avif"}
+RASTER = {"jpg", "jpeg", "png", "tif", "tiff", "webp", "psd", "psb", "jxl", "gif", "bmp", "heic", "heif", "avif"}
 # CoreTypes and its RawCameraTypes bundle supply these on the supported macOS
 # releases (14, 15, 26). Reference their identifiers without redeclaring their tags.
 # The SDK's UTTypeJPEGXL constant arrived later than the public.jpeg-xl declaration.
@@ -38,6 +40,7 @@ SYSTEM_TYPES = {
     "public.jpeg-xl", "public.avif",
     "com.adobe.raw-image", "com.canon.cr2-raw-image", "com.canon.cr3-raw-image",
     "com.nikon.raw-image", "com.nikon.nrw-raw-image", "com.sony.arw-raw-image",
+    "com.sony.sr2-raw-image", "com.sony.raw-image", "com.adobe.photoshop-large-image",
     "com.fuji.raw-image", "com.olympus.raw-image", "com.panasonic.rw2-raw-image",
     "com.leica.rwl-raw-image", "com.panasonic.raw-image", "com.pentax.raw-image",
     "com.samsung.raw-image", "com.adobe.photoshop-image", "com.compuserve.gif",
@@ -48,7 +51,7 @@ SYSTEM_TYPES = {
 
 
 def declarations():
-    source = (ROOT / "crates/engine/src/import.rs").read_text()
+    source = (ROOT / "crates/engine/src/import/files.rs").read_text()
     source = re.sub(r"//[^\n]*", "", source)
     match = re.search(r"pub const EXTENSIONS:.*?=\s*&\[(.*?)\];", source, re.S)
     if match is None:
