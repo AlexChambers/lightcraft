@@ -170,7 +170,8 @@ fn curve_input_histogram(app: &mut LightcraftApp, id: PhotoId, channel: &str) ->
         "red" => CurveInput::Red,
         "green" => CurveInput::Green,
         "blue" => CurveInput::Blue,
-        _ => CurveInput::Parametric,
+        "parametric" => CurveInput::Parametric,
+        _ => CurveInput::Master,
     };
     let job =
         app.session.thumb_job(id, EDGE)?.with_hidden_grading(app.ui.grading_hidden_for(id)).with_proof(app.ui.soft_proof.then_some(app.ui.proof));

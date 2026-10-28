@@ -682,3 +682,23 @@ fn curve_input_shows_loading_failure_and_no_photo_without_reusing_a_backdrop() {
     assert!(h.app.session.active().is_none());
     assert!(!h.painted_text().iter().any(|t| t.contains("input histogram") || t == "Sampled input"));
 }
+
+#[test]
+fn review_unknown_curve_channel_uses_point_input_and_default_stays_parametric() {
+    let mut h = curve_input_open();
+    exec(&mut h, "develop.set", json!({"control":"curve.shadows", "value":60}));
+    assert!(h.settle(T));
+    let point = h.app.renderer.curve_histogram.clone().unwrap();
+    h.app.ui.curve_channel = "unknown-saved-channel".into();
+    h.step();
+    assert!(h.settle(T));
+    assert_eq!(h.app.renderer.curve_histogram.as_ref(), Some(&point), "unknown channels draw the Point curve and must sample its input");
+    h.app.ui.curve_channel = crate::state::UiState::default().curve_channel;
+    assert_eq!(h.app.ui.curve_channel, "parametric");
+    h.step();
+    assert!(h.settle(T));
+    let parametric = h.app.renderer.curve_histogram.clone().unwrap();
+    assert_ne!(parametric.1, point.1);
+    assert_ne!(parametric.2, point.2);
+    assert!(h.painted_text().iter().any(|s| s == "Sampled input"));
+}
