@@ -47,8 +47,17 @@ pub(crate) fn intercept(app: &mut LightcraftApp, command: &str, params: &Value) 
     let custom = app.session.smart_previews_dir.is_some();
     let (tx, rx) = std::sync::mpsc::channel();
     let folder = path.clone();
+    #[cfg(test)]
+    let hook = tests::PROBE_HOOK.with(|hook| hook.borrow_mut().take());
+    let task = app.session.activity.start("smartSpace", "Checking free space…", lightcraft_engine::activity::Cancel::No);
     let probe = move || {
-        let _ = tx.send(available_space(&folder, custom));
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook();
+        }
+        let result = available_space(&folder, custom);
+        drop(task);
+        let _ = tx.send(result);
     };
     #[cfg(not(target_arch = "wasm32"))]
     if let Err(e) = std::thread::Builder::new().name("lc-smart-space".into()).spawn(probe) {
@@ -171,6 +180,31 @@ mod tests {
     use super::*;
     use lightcraft_catalog::{Op, Photo, PhotoId, Source};
     use lightcraft_engine::smart::Format;
+
+    thread_local! {
+        pub(super) static PROBE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce() + Send>>> = Default::default();
+    }
+
+    #[test]
+    fn storage_probe_stays_in_activity_until_its_worker_finishes() {
+        let (mut app, dir) = app("probe-activity");
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        PROBE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                entered.send(()).unwrap();
+                blocked.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            }))
+        });
+        intercept(&mut app, "library.smartPreviews", &json!({})).unwrap().unwrap();
+        waiting.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let active = app.session.activity.list();
+        release.send(()).unwrap();
+        finish_check(&mut app);
+        assert!(active.iter().any(|task| task.kind == "smartSpace"), "the blocked storage worker was invisible to activity");
+        assert!(!app.session.activity.list().iter().any(|task| task.kind == "smartSpace"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn app(tag: &str) -> (LightcraftApp, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("lc-smart-cost-{tag}-{}", std::process::id()));
