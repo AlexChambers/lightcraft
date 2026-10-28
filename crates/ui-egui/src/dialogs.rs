@@ -390,7 +390,10 @@ fn can_confirm(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> bool {
     };
     let waiting = matches!(
         dlg,
-        Dialog::DenoiseModel { accepted: false, .. } | Dialog::FaceModel { accepted: false, .. } | Dialog::SynchronizeFolder { counts: None, .. } | Dialog::BuildSmartPreviews { checking: true, .. }
+        Dialog::DenoiseModel { accepted: false, .. }
+            | Dialog::FaceModel { accepted: false, .. }
+            | Dialog::SynchronizeFolder { counts: None, .. }
+            | Dialog::BuildSmartPreviews { checking: true, .. }
     );
     let bad_rules =
         matches!(dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lightcraft_catalog::AlbumId)).is_empty());

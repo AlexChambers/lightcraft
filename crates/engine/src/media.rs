@@ -39,6 +39,8 @@ mod settings_hash;
 mod source;
 
 pub use cache::DenoiseIndex;
+#[cfg(test)]
+pub(crate) use cache::thumbnail_folder;
 pub use quick::{QuickJob, QuickSource, content_key, source_info};
 pub use render::{RenderJob, RenderResult, develop, develop_reporting, fit_for_display};
 #[cfg(test)]

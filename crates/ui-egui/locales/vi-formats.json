@@ -305,5 +305,37 @@
   "Drop to import {n} preset{}": "Thả để nhập {n} thiết lập sẵn{:.0}",
   "Drop to review {n} item{} for import": "Thả để xem lại {n} mục trước khi nhập{:.0}",
   "Where should the Lightroom catalog “{catalog}” go?": "Nhập danh mục Lightroom «{catalog}» vào đâu?",
-  "Merge into the open library “{library}” ({count} photo{})": "Gộp vào thư viện đang mở «{library}» ({count} ảnh{:.0})"
+  "Merge into the open library “{library}” ({count} photo{})": "Gộp vào thư viện đang mở «{library}» ({count} ảnh{:.0})",
+  "Photos: {count}": {
+    "one": "Ảnh: {count}",
+    "few": "Ảnh: {count}",
+    "many": "Ảnh: {count}",
+    "other": "Ảnh: {count}"
+  },
+  "Estimated total size: {size}": "Tổng kích thước ước tính: {size}",
+  "Destination: {path}": "Đích: {path}",
+  "Free space: {size}": "Dung lượng trống: {size}",
+  ". {kept} existing previews kept unchanged": ". Giữ nguyên {kept} bản xem trước hiện có",
+  "{count} smart preview{} · {:.1} MiB": "Bản xem trước thông minh: {count} · {1:.1} MiB{0:.0}",
+  "Smart preview folder changed. {count} source files could not be removed.": {
+    "one": "Đã đổi thư mục xem trước thông minh. Không thể xóa {count} tệp nguồn.",
+    "few": "Đã đổi thư mục xem trước thông minh. Không thể xóa {count} tệp nguồn.",
+    "many": "Đã đổi thư mục xem trước thông minh. Không thể xóa {count} tệp nguồn.",
+    "other": "Đã đổi thư mục xem trước thông minh. Không thể xóa {count} tệp nguồn."
+  },
+  "Smart preview folder change failed: {error}": "Không thể đổi thư mục xem trước thông minh: {error}",
+  ". {count} existing previews kept unchanged": {
+    "one": ". Giữ nguyên {count} bản xem trước hiện có",
+    "few": ". Giữ nguyên {count} bản xem trước hiện có",
+    "many": ". Giữ nguyên {count} bản xem trước hiện có",
+    "other": ". Giữ nguyên {count} bản xem trước hiện có"
+  },
+  "{count} smart previews · {size:.1} MiB": {
+    "one": "{count} bản xem trước thông minh · {size:.1} MiB",
+    "few": "{count} bản xem trước thông minh · {size:.1} MiB",
+    "many": "{count} bản xem trước thông minh · {size:.1} MiB",
+    "other": "{count} bản xem trước thông minh · {size:.1} MiB"
+  },
+  "could not check smart preview storage: {e}": "Không thể kiểm tra nơi lưu xem trước thông minh: {e}",
+  "free space is unavailable for {path} on this platform": "Không thể kiểm tra dung lượng trống của {path} trên nền tảng này"
 }

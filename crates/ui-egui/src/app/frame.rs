@@ -2,6 +2,7 @@ use super::{
     LightcraftApp, docking, drop_overlay, export_task, focus_scan, import, lightroom_import, merge, model_setup, monotonic_ms, panels, pick, recheck,
     shortcuts, slideshow_export, state, sync, tasks, theme, updates_ui, widgets,
 };
+use crate::smart_previews;
 
 impl LightcraftApp {
     /// Install/refresh fonts once and watch the device and availability caches. Setup, not input.

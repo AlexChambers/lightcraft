@@ -59,6 +59,7 @@ fn fixture(tag: &str) -> (PathBuf, Session) {
         .unwrap();
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     s.execute("library.import", &json!({"paths": [path]})).unwrap();
     s.execute("library.smartPreviews", &json!({"format": "compact"})).unwrap();
     let photo = s.catalog.photos().next().unwrap();
@@ -66,7 +67,7 @@ fn fixture(tag: &str) -> (PathBuf, Session) {
     let dest = sharded_file_path(&root.join("destination"), photo);
     std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
     let (decoded, info) = s.media.file_loader.as_ref().unwrap()(path.to_str().unwrap(), 2560).unwrap();
-    std::fs::write(dest, encode_format(&decoded, info.camera_tone.as_ref(), Format::Lossless).unwrap()).unwrap();
+    std::fs::write(dest, encode_format(&decoded, Some(&info), Format::Lossless).unwrap()).unwrap();
     std::fs::rename(&path, path.with_extension("offline")).unwrap();
     let job = s.thumb_job(id, 128).unwrap();
     let key = job.cache.as_ref().unwrap().1;
@@ -123,6 +124,7 @@ fn durable_preferences_crash_child() {
         false,
     )
     .unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     s.execute("library.smartPreviewsLocation", &json!({"path": root.join("destination"), "existing": "move", "background": true})).unwrap();
     let until = Instant::now() + Duration::from_secs(30);
     loop {
@@ -146,6 +148,7 @@ fn regression709_round4_exit_after_durable_preferences_reopens_lossless_thumbnai
     for _ in 0..2 {
         let mut s = Session::new().with_fs();
         s.open_library(root.join("library"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&s);
         assert_current_thumbnail(&mut s, &root);
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -169,6 +172,7 @@ fn regression709_round4_cleanup_spawn_failure_still_invalidates() {
     assert!(s.activity.list().is_empty());
     assert_current_thumbnail(&mut s, &root);
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     assert_current_thumbnail(&mut s, &root);
     drop(s);
     std::fs::remove_dir_all(root).unwrap();
@@ -200,6 +204,7 @@ fn namespace_switch_does_not_wait_for_an_old_thumbnail_read() {
     use std::{io::Write, sync::mpsc};
     let (root, mut s) = fixture("round4-blocked-thumbnail");
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let id = s.catalog.photos().next().unwrap().id;
     let job = s.thumb_job(id, 128).unwrap();
     let (old_cache, key) = job.cache.clone().unwrap();
@@ -236,6 +241,7 @@ fn namespace_switch_does_not_wait_for_an_old_thumbnail_read() {
     assert_current_thumbnail(&mut s, &root);
     s.set_cache_mb(20).unwrap();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     assert_current_thumbnail(&mut s, &root);
     drop(s);
     std::fs::remove_dir_all(root).unwrap();

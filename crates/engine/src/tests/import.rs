@@ -1285,6 +1285,7 @@ fn smart_previews_folder_is_chosen_per_library() {
     drop(s); // one session per library (issue #99)
     let mut again = Session::new().with_fs();
     again.open_library(&lib, false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&again);
     assert_eq!(again.execute("library.smartPreviewsLocation", &json!({})).unwrap()["path"], to.to_string_lossy().as_ref());
 
     // offline original: the render comes from the proxy in the chosen folder

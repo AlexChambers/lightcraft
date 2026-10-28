@@ -14,9 +14,9 @@ The displayed count and total size use the actual files in both the old flat lay
 
 ## Stored pixels and metadata
 
-Both formats store the decoded, oriented, reduced scene-linear working RGB source (Rec.2020), before develop controls and the camera tone curve. The camera colour fit is already in these pixels. Tone and chroma curves remain in the JSON header and apply at render time.
+Both formats store the decoded, oriented, reduced scene-linear working RGB source (Rec.2020), before develop controls and the camera tone curve. The camera colour fit is already in these pixels. Tone and chroma curves remain in the JSON header and apply at render time. Both formats also retain main's decoder facts and semantic mattes in a length-prefixed tail, so offline edits keep their source metadata. The Lossless checksum covers this tail along with the TIFF pixels.
 
-Compact keeps the existing `LCSP1` container at JPEG quality 97, and its header records the encode version (`enc: 2`; PR #850). A Compact proxy from an older encoding, at quality 92, is rebuilt like one from an older camera look. Its stored scale covers the brightest 99.95% of samples, so extreme highlights and negative values can be lost, and the higher quality retains the 8-bit limit.
+Compact keeps the existing `LCSP1` container at JPEG quality 97, and its header records the encode version (`enc: 3`, including decoder facts). A Compact proxy from an older encoding, at quality 92, is rebuilt like one from an older camera look. Its stored scale covers the brightest 99.95% of samples, so extreme highlights and negative values can be lost, and the higher quality retains the 8-bit limit.
 
 Lossless uses `LCSP2`, a JSON header, a Deflate-compressed RGB float TIFF from the existing pure-Rust codec, and a completeness marker. It stores the source values directly, including negative values and values above 1.0. No scaling, transfer curve, integer quantization, or render process version is added.
 

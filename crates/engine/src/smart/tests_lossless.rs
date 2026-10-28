@@ -100,7 +100,7 @@ fn future_header_fields_and_tone_survive_conversion() {
     .unwrap();
     let src = scene();
     for storage in [Format::Compact, Format::Lossless] {
-        let bytes = encode_format(&src, Some(&tone), storage).unwrap();
+        let bytes = encode_format(&src, Some(&SourceInfo { camera_tone: Some(tone), ..Default::default() }), storage).unwrap();
         let (_, mut previous, _) = format::split(&bytes).unwrap();
         previous["future"] = serde_json::json!({"some": "metadata"});
         previous["tone"]["white_stat"] = serde_json::json!(1.2345);
@@ -256,4 +256,26 @@ fn failed_verified_migration_retains_the_source() {
     assert_eq!(errors.len(), 1);
     assert_eq!(std::fs::read(from.join("one.lcsp")).unwrap(), b"damaged source");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn lossless_keeps_main_decoder_facts_and_mattes_through_header_rewrites() {
+    let mut mattes = lightcraft_pipeline::masks::Mattes::default();
+    mattes.push(lightcraft_pipeline::masks::MatteKind::Sky, lightcraft_raster::Image { width: 4, height: 3, data: vec![127; 12] });
+    let info = SourceInfo {
+        raw: true,
+        as_shot_temp: 4200.0,
+        as_shot_tint: -5.0,
+        legacy_relative_wb: true,
+        mattes: Some(Arc::new(mattes)),
+        ..Default::default()
+    };
+    let pixels = Rgb32f::new(8, 6);
+    let bytes = encode_format(&pixels, Some(&info), Format::Lossless).unwrap();
+    let bytes = preserve_header(&bytes, &serde_json::json!({"future": true, "tail": 99999})).unwrap();
+    let (back, _, facts) = decode(&bytes).unwrap();
+    assert_eq!(back.data, pixels.data);
+    let facts = facts.unwrap();
+    assert_eq!((facts.raw, facts.as_shot_temp, facts.as_shot_tint, facts.legacy_relative_wb), (true, 4200.0, -5.0, true));
+    assert_eq!(facts.mattes.unwrap().bytes(), 12);
 }

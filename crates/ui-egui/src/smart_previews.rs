@@ -76,7 +76,7 @@ fn available_space(path: &std::path::Path, custom: bool) -> Result<u64, String> 
 pub(crate) fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(result) = app.session.smart_migration_result.take() {
-        ctx.data_mut(|d| d.remove::<(f64, Value)>(egui::Id::new("smart-location")));
+        ctx.data_mut(|d| d.remove::<(f64, Value)>(egui::Id::unique("smart-location")));
         let message = match result {
             Err(error) => crate::i18n::tr_format!("Smart preview folder change failed: {error}", error = error),
             Ok(result) if result["cancelled"] == true => {

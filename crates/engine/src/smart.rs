@@ -252,15 +252,15 @@ pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>, Option<Source
     let (storage, head, body) = format::split(bytes)?;
     let (w, h) = format::dimensions(&head)?;
     let tone = head.get("tone").and_then(|t| serde_json::from_value::<CameraTone>(t.clone()).ok());
-    // A JPEG cut short still decodes, with the rest of the picture made up: a Compact payload
-    // must end where JPEG ends (the Lossless payload has its length and checksum).
-    if storage == Format::Compact && !body.ends_with(&[0xFF, 0xD9]) {
-        return Err("smart preview is cut short".into());
-    }
     let payload = if storage == Format::Lossless { format::payload(&head, body)? } else { body };
     let full_payload = payload;
     let tail = head.get("tail").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
     let payload = payload.get(..payload.len().checked_sub(tail).ok_or("bad smart preview tail")?).ok_or("bad smart preview tail")?;
+    // A JPEG cut short still decodes, with the rest of the picture made up: a Compact payload
+    // must end where JPEG ends (the Lossless payload has its length and checksum).
+    if storage == Format::Compact && !payload.ends_with(&[0xFF, 0xD9]) {
+        return Err("smart preview is cut short".into());
+    }
     let d = lightcraft_codecs::decode(payload, lightcraft_codecs::DecodeOptions { max_pixels: (w as u64) * (h as u64), ..Default::default() })
         .map_err(|e| e.to_string())?;
     if (d.image.width, d.image.height) != (w, h) {
@@ -463,9 +463,15 @@ pub fn is_complete(path: &Path) -> bool {
     let Ok((storage, parsed, body)) = format::split(&head) else { return false };
     let offset = (head.len() - body.len()) as u64;
     let mut start = [0u8; 4];
-    if f.seek(SeekFrom::Start(offset)).is_err() || f.read_exact(&mut start).is_err() { return false; }
-    if storage == Format::Lossless { return start == *b"II\x2a\x00" && format::complete(&parsed, offset, &mut f); }
-    if !start.starts_with(&[0xFF, 0xD8]) || f.metadata().map_or(true, |m| m.len() > format::MAX_BYTES) { return false; }
+    if f.seek(SeekFrom::Start(offset)).is_err() || f.read_exact(&mut start).is_err() {
+        return false;
+    }
+    if storage == Format::Lossless {
+        return start == *b"II\x2a\x00" && format::complete(&parsed, offset, &mut f);
+    }
+    if !start.starts_with(&[0xFF, 0xD8]) || f.metadata().map_or(true, |m| m.len() > format::MAX_BYTES) {
+        return false;
+    }
     let nl = offset as usize - MAGIC.len() - 1;
     let json = Some(parsed);
     let tail = json.and_then(|h| h.get("tail").and_then(serde_json::Value::as_u64)).and_then(|t| usize::try_from(t).ok()).unwrap_or(0);
@@ -513,10 +519,11 @@ fn header_encode_version(head: &serde_json::Value) -> u64 {
 /// left alone (rebuilding it here would only undo that build's work), as is one that can't be
 /// read: those are [`is_usable`]'s business.
 pub fn is_stale_for(path: &Path, look: bool) -> bool {
-    is_complete(path) && header(path).is_some_and(|(storage, h)| {
-        (storage == Format::Compact && header_encode_version(&h) < ENCODE_VERSION)
-        || (look && header_look_version(&h) < u64::from(crate::camera_preview::LOOK_VERSION))
-    })
+    is_complete(path)
+        && header(path).is_some_and(|(storage, h)| {
+            (storage == Format::Compact && header_encode_version(&h) < ENCODE_VERSION)
+                || (look && header_look_version(&h) < u64::from(crate::camera_preview::LOOK_VERSION))
+        })
 }
 
 /// [`is_stale_for`] for a photo that takes the per-file camera look: both conditions apply.
@@ -558,11 +565,7 @@ pub fn mark_look_checked(dir: &Path) -> Result<(), String> {
 
 /// Load the proxy at `path`.
 pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
-    use std::io::Read;
-    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut b = Vec::new();
-    f.take(format::MAX_BYTES + 1).read_to_end(&mut b).map_err(|e| e.to_string())?;
-    decode(&b).map(|(image, camera_tone, info)| crate::media::DecodedSource {
+    decode(&read(path)?).map(|(image, camera_tone, info)| crate::media::DecodedSource {
         image: Arc::new(image),
         info,
         camera_tone,
@@ -570,6 +573,14 @@ pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
         from_proxy: true,
         reduced: false,
     })
+}
+
+fn read(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut b = Vec::new();
+    f.take(format::MAX_BYTES + 1).read_to_end(&mut b).map_err(|e| e.to_string())?;
+    Ok(b)
 }
 
 #[cfg(test)]

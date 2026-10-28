@@ -123,7 +123,7 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         ui.add_space(LABEL_W);
         let running = app.session.preview_build.as_ref().is_some_and(|b| !b.finished.load(std::sync::atomic::Ordering::Relaxed));
         let r = ui.add_enabled(!running && !migrating, egui::Button::new(crate::i18n::tr("Build for All Photos")));
-        register(ui.ctx(), "button:settingsSmartBuild", r.rect);
+        register(ui, "button:settingsSmartBuild", r.rect);
         if r.clicked() {
             let ids: Vec<_> = app.session.catalog.photos().map(|p| p.id.0).collect();
             if let Err(e) = app.run("library.smartPreviews", json!({"ids": ids, "background": true})) {
@@ -191,8 +191,16 @@ fn smart_previews(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     if let Some(r) = result {
         ui.data_mut(|d| d.remove::<(f64, Value)>(cache));
-        if let Err(e) = r { app.toast(ui.ctx(), e); }
+        if let Err(e) = r {
+            app.toast(ui.ctx(), e);
+        }
     }
-    hint(ui, t, crate::i18n::tr("The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes."));
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "The old folder stays in use until copying finishes. Cancel keeps the old folder. Source cleanup cannot be cancelled after the folder changes.",
+        ),
+    );
     hint(ui, t, crate::i18n::tr("Keep smart previews on a drive with enough free space. The thumbnail cache stays in the library."));
 }

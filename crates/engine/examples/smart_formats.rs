@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
             let encoded = EncodeImage::new(img.width as u32, img.height as u32, 3, Samples::U16(&integer));
             let bytes = match format {
-                "jpeg92" => smart::encode(&img, info.camera_tone.as_ref())?,
+                "jpeg92" => smart::encode(&img, Some(&info))?,
                 "png16" => lightcraft_codecs::encode_png(&encoded, &Default::default())?,
                 "tiff16" => lightcraft_codecs::encode_tiff(&encoded, TiffCompression::Deflate, &Default::default())?,
                 "jxl16" => lightcraft_codecs::encode_jxl(
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &lightcraft_codecs::JxlOptions { lossless: true, ..Default::default() },
                     &Default::default(),
                 )?,
-                _ => smart::encode_format(&img, info.camera_tone.as_ref(), smart::Format::Lossless)?,
+                _ => smart::encode_format(&img, Some(&info), smart::Format::Lossless)?,
             };
             let encode_ms = start.elapsed().as_secs_f64() * 1000.0;
             let start = Instant::now();

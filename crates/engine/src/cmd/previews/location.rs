@@ -1,6 +1,6 @@
 //! The background folder change keeps the old location until all copies verify.
 
-use super::*;
+use super::{Arc, Cancel, Ordering, Result, Session, TaskGuard, Value, bad, json, str_param};
 use crate::smart::{Existing, migration::Prepared};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};

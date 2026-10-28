@@ -1,36 +1,36 @@
-    use super::*;
+use super::*;
 
-    #[test]
-    fn regression709_clear_between_source_and_key_rejects_job() {
-        for kind in ["thumb", "render", "variant", "face"] {
-            let mut s = session();
-            let id = PhotoId(1);
-            let old = Arc::new(Rgb32f::new(8, 8));
-            s.media.insert(id, SourceLevel::Thumb, old.clone());
-            let before = s.media.rendered.generation();
-            s.media.clear_after_source = true;
-            let job = match kind {
-                "thumb" => s.thumb_job(id, 128),
-                "render" => s.render_job(id, 128, 128, false, true),
-                "variant" => s.variant_job(id, &DevelopSettings::default(), 128),
-                _ => s.face_job(id, lightcraft_geom::Rect::new(0.0, 0.0, 1.0, 1.0), 128),
-            };
-            assert_eq!(s.media.rendered.generation(), before + 1);
-            if let Some(job) = job {
-                assert!(matches!(&job.source, SourceRef::Loaded(d) if Arc::ptr_eq(&d.image, &old)));
-                let key = job.cache.as_ref().map(|(_, key)| *key);
-                let result = job.run();
-                s.media.clear_sources();
-                s.accept(&result);
-                assert!(key.is_none_or(|key| s.media.rendered.get(key).is_none()), "{kind} cached stale pixels");
-                assert!(!s.media.has_source(id, SourceLevel::Thumb), "{kind} accepted a stale source");
-                assert_eq!(result.cache_generation, before, "{kind} changed generation after acquiring its source");
-            }
+#[test]
+fn regression709_clear_between_source_and_key_rejects_job() {
+    for kind in ["thumb", "render", "variant", "face"] {
+        let mut s = session();
+        let id = PhotoId(1);
+        let old = Arc::new(Rgb32f::new(8, 8));
+        s.media.insert(id, SourceLevel::Thumb, old.clone());
+        let before = s.media.rendered.generation();
+        s.media.clear_after_source = true;
+        let job = match kind {
+            "thumb" => s.thumb_job(id, 128),
+            "render" => s.render_job(id, 128, 128, false, true),
+            "variant" => s.variant_job(id, &DevelopSettings::default(), 128),
+            _ => s.face_job(id, lightcraft_geom::Rect::new(0.0, 0.0, 1.0, 1.0), 128),
+        };
+        assert_eq!(s.media.rendered.generation(), before + 1);
+        if let Some(job) = job {
+            assert!(matches!(&job.source, SourceRef::Loaded(d) if Arc::ptr_eq(&d.image, &old)));
+            let key = job.cache.as_ref().map(|(_, key)| *key);
+            let result = job.run();
+            s.media.clear_sources();
+            s.accept(&result);
+            assert!(key.is_none_or(|key| s.media.rendered.get(key).is_none()), "{kind} cached stale pixels");
+            assert!(!s.media.has_source(id, SourceLevel::Thumb), "{kind} accepted a stale source");
+            assert_eq!(result.cache_generation, before, "{kind} changed generation after acquiring its source");
         }
     }
+}
 
-    fn session() -> crate::Session {
-        let mut s = crate::Session::new();
+fn session() -> crate::Session {
+    let mut s = crate::Session::new();
     let p = Photo::new(PhotoId(1), Source::File { path: "hash-fixture.jpg".into() }, "fixture.jpg", "JPEG", 6000, 4000, "2026-01-01");
     s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
     s

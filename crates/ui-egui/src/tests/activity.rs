@@ -561,6 +561,13 @@ fn smart_migration_settings_stays_responsive_and_cancel_keeps_old_folder() {
     h.app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "performance".into() });
     h.step();
     h.step();
+    let room = rect(&h, "settings:pageRoom");
+    h.request("ui.move", json!({"x": room.center().x, "y": room.center().y}), T);
+    for _ in 0..6 {
+        h.request("ui.scroll", json!({"dy": -400.0}), T);
+        h.step();
+    }
+    h.settle(T);
     let (release, wait) = mpsc::channel();
     let writer = std::thread::spawn(move || {
         // Bounded even if Settings regresses to synchronous migration.

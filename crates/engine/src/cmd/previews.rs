@@ -434,24 +434,29 @@ fn smart_run(
                 // is offline, when it is the only copy — the sync is small next to the decode
                 let loaded = source.ok_or_else(|| "nothing to build from".to_string()).and_then(|s| s.load_source());
                 let unavailable = loaded.is_err();
-                let r = loaded.and_then(|src| {
-                    let info = src.info_or(Default::default());
-                    crate::smart::encode_format(&src.image, Some(&info), storage)
-                }).and_then(|bytes| match &previous {
-                    Some((_, head)) => crate::smart::preserve_header(&bytes, head),
-                    None => Ok(bytes),
-                })
-                    .and_then(|b| {
-                        let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
-                        // Only create the leaf shard: do not recreate a missing external drive.
-                        if !parent.is_dir() {
-                            std::fs::create_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-                        }
-                        lightcraft_catalog::safe_file::write_atomic(&path, &b).map_err(|e| format!("{}: {e}", path.display()))
+                let encoded = loaded
+                    .and_then(|src| {
+                        let info = src.info_or(Default::default());
+                        crate::smart::encode_format(&src.image, Some(&info), storage)
+                    })
+                    .and_then(|bytes| match &previous {
+                        Some((_, head)) => crate::smart::preserve_header(&bytes, head),
+                        None => Ok(bytes),
                     });
+                if encoded.is_ok() {
+                    pending.before_change(change)?;
+                }
+                let r = encoded.and_then(|b| {
+                    let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
+                    // Only create the leaf shard: do not recreate a missing external drive.
+                    if !parent.is_dir() {
+                        std::fs::create_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+                    }
+                    lightcraft_catalog::safe_file::write_atomic(&path, &b).map_err(|e| format!("{}: {e}", path.display()))
+                });
                 match r {
                     Ok(()) => {
-                        pending.changed();
+                        pending.changed(change);
                         n.built += 1;
                         if stale {
                             n.refreshed += 1;
@@ -577,7 +582,9 @@ pub(crate) fn refresh_stale_smart_previews(s: &mut Session) -> Option<std::threa
         .iter()
         .map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge)), preview_fitted_look(p)))
         .collect();
-    if jobs.is_empty() { return None; }
+    if jobs.is_empty() {
+        return None;
+    }
     let cache = s.media.invalidation();
     let mut state = PreviewBuild { total: jobs.len(), what: "smart previews", ..Default::default() };
     let task = s.activity.start("smartRefresh", "Refreshing smart previews", Cancel::Flag(state.cancel.clone()));
@@ -596,7 +603,9 @@ fn refresh_stale(dir: &std::path::Path, jobs: Vec<SmartJob>, cache: &crate::medi
         .map(|(id, path, source, look)| (id, crate::smart::existing_file_path(dir, path), source, look))
         .filter(|(_, path, _, look)| crate::smart::is_stale_for(path, *look))
         .collect();
-    if state.cancel.load(Ordering::Relaxed) { return; }
+    if state.cancel.load(Ordering::Relaxed) {
+        return;
+    }
     state.total = stale.len();
     task.progress(0, stale.len() as u64);
     if !stale.is_empty() {
@@ -761,5 +770,14 @@ mod tests {
         assert_eq!(r["done"], json!(ids.len()), "{r}");
         assert_eq!(r["total"], json!(ids.len()));
         assert_eq!(r["failed"], json!(0));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn wait_for_smart_refresh(s: &Session) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while s.activity.list().iter().any(|task| task.kind == "smartRefresh") {
+        assert!(std::time::Instant::now() < until, "opening smart preview scan did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }

@@ -57,6 +57,7 @@ fn fixture(tag: &str) -> PathBuf {
     write_originals(&root);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     s.execute("library.import", &json!({"paths": originals(&root)})).unwrap();
     assert_eq!(s.catalog.photos().count(), 2);
     s.execute("library.smartPreviews", &json!({"format": "compact", "ids": ids(&s)})).unwrap();
@@ -136,6 +137,7 @@ fn interrupted_conversion_child() {
     let root = PathBuf::from(std::env::var_os("LC_SMART_CONVERSION_ROOT").unwrap());
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let loader = s.media.file_loader.clone().unwrap();
     let first_read = AtomicBool::new(false);
     s.media.file_loader = Some(Arc::new(move |path, edge| {
@@ -165,6 +167,7 @@ fn regression709_interrupted_conversion_reopens_without_stale_thumbnails() {
     for _ in 0..2 {
         let mut s = Session::new().with_fs();
         s.open_library(root.join("library"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&s);
         assert_fresh_thumbnail(&mut s, &root);
         assert!(loose_files(&root).is_empty(), "{:?}", loose_files(&root));
     }
@@ -172,6 +175,7 @@ fn regression709_interrupted_conversion_reopens_without_stale_thumbnails() {
     // thumbnail back, and a completed build leaves nothing behind in the thumbnail folder.
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let ids = ids(&s);
     let r = s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids})).unwrap();
     assert_eq!((r["built"].as_u64(), r["staleKept"].as_u64()), (Some(2), Some(1)), "{r}");
@@ -180,6 +184,7 @@ fn regression709_interrupted_conversion_reopens_without_stale_thumbnails() {
     drop(s);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     assert_fresh_thumbnail(&mut s, &root);
     assert!(loose_files(&root).is_empty(), "{:?}", loose_files(&root));
     drop(s);
@@ -194,6 +199,7 @@ fn conversion_is_refused_when_the_thumbnail_folder_cannot_record_it() {
     std::fs::write(&thumbs, b"not a folder").unwrap();
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let ids = ids(&s);
     let error = s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids})).unwrap_err().to_string();
     assert!(error.contains("thumbnail"), "{error}");
@@ -213,6 +219,7 @@ fn reopening_during_a_running_build_keeps_its_marker() {
     let library = root.join("library");
     let mut s = Session::new().with_fs();
     s.open_library(&library, false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let generation = s.smart_previews_cache_generation;
     let (entered, waiting) = mpsc::channel();
     let (release, blocked) = mpsc::channel::<()>();
@@ -230,6 +237,7 @@ fn reopening_during_a_running_build_keeps_its_marker() {
     waiting.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(loose_files(&root).len(), 1, "the build records its change before the first proxy");
     s.open_library(&library, false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     s.media.file_loader = Session::new().with_fs().media.file_loader;
     assert_eq!(s.smart_previews_cache_generation, generation, "a running build is not an interrupted one");
     assert_eq!(loose_files(&root).len(), 1, "opening keeps the running build's marker");
@@ -242,6 +250,7 @@ fn reopening_during_a_running_build_keeps_its_marker() {
     assert!(loose_files(&root).is_empty(), "the finished build cleared the cache, then removed its marker");
     set_online(&root, false);
     s.open_library(&library, false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     assert_eq!(s.smart_previews_cache_generation, generation);
     assert_fresh_thumbnail(&mut s, &root);
     drop(s);
@@ -280,6 +289,7 @@ fn reopening_through_another_path_spelling_keeps_the_running_build() {
     std::fs::create_dir(root.join("aside")).unwrap();
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let generation = s.smart_previews_cache_generation;
     let (waiting, release) = block_second(&mut s);
     let ids = ids(&s);
@@ -288,6 +298,7 @@ fn reopening_through_another_path_spelling_keeps_the_running_build() {
     assert_eq!(loose_files(&root).len(), 1, "the build records its change before the first proxy");
     // The same library, reached through another spelling of its path.
     s.open_library(root.join("aside/../library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     s.media.file_loader = Session::new().with_fs().media.file_loader;
     assert_eq!(loose_files(&root).len(), 1, "opening keeps the running build's marker");
     assert_eq!(s.smart_previews_cache_generation, generation, "a running build is not an interrupted one");
@@ -386,6 +397,7 @@ fn regression709_failed_preferences_save_at_opening_still_isolates_the_next_inte
     for _ in 0..2 {
         let mut s = Session::new().with_fs();
         s.open_library(root.join("library"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&s);
         assert_fresh_thumbnail(&mut s, &root);
         assert!(loose_files(&root).is_empty(), "{:?}", loose_files(&root));
     }
@@ -465,6 +477,7 @@ fn regression709_full_library_drive_still_discards_and_converts_elsewhere() {
         // Library A keeps its Lossless proxies in the library, on the drive that fills up.
         let mut a = Session::new().with_fs();
         a.open_library(volume.mount.join("a"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&a);
         a.execute("library.import", &json!({"paths": originals(&elsewhere)})).unwrap();
         let a_ids = ids(&a);
         a.execute("library.smartPreviews", &json!({"format": "lossless", "ids": a_ids})).unwrap();
@@ -472,6 +485,7 @@ fn regression709_full_library_drive_still_discards_and_converts_elsewhere() {
         // while the originals were offline, are in its thumbnail cache on the full drive.
         let mut b = Session::new().with_fs();
         b.open_library(volume.mount.join("b"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&b);
         b.execute("library.import", &json!({"paths": originals(&elsewhere)})).unwrap();
         std::fs::create_dir(elsewhere.join("proxies")).unwrap();
         b.execute("library.smartPreviewsLocation", &json!({"path": elsewhere.join("proxies"), "existing": "move"})).unwrap();
@@ -537,6 +551,7 @@ fn a_full_thumbnail_drive_is_cleared_before_the_first_replacement_then_recorded(
     let root = fixture("conversion-full-once");
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     assert!(cached_thumbnails(&root) > 0);
     fail_markers(&root, std::io::ErrorKind::StorageFull, 1);
     let (waiting, release) = block_second(&mut s);
@@ -552,6 +567,7 @@ fn a_full_thumbnail_drive_is_cleared_before_the_first_replacement_then_recorded(
     set_online(&root, false);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     assert_fresh_thumbnail(&mut s, &root);
     drop(s);
     std::fs::remove_dir_all(root).unwrap();
@@ -563,6 +579,7 @@ fn a_thumbnail_drive_that_stays_full_still_converts() {
     fail_markers(&root, std::io::ErrorKind::StorageFull, 2);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let ids = ids(&s);
     let r = s.execute("library.smartPreviews", &json!({"format": "lossless", "ids": ids})).unwrap();
     assert_eq!((r["built"].as_u64(), r["refreshed"].as_u64()), (Some(2), Some(2)), "{r}");
@@ -574,6 +591,7 @@ fn a_thumbnail_drive_that_stays_full_still_converts() {
     for _ in 0..2 {
         let mut s = Session::new().with_fs();
         s.open_library(root.join("library"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&s);
         assert_fresh_thumbnail(&mut s, &root);
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -588,6 +606,7 @@ fn a_discard_goes_ahead_without_a_marker_but_a_first_build_does_not() {
     std::fs::write(&thumbs, b"not a folder").unwrap();
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let ids = ids(&s);
     let r = s.execute("library.smartPreviews", &json!({"discard": true, "ids": ids})).unwrap();
     assert_eq!(r["removed"], json!(2), "{r}");
@@ -606,6 +625,7 @@ fn a_conversion_refused_for_a_permission_error_keeps_the_thumbnail_cache() {
     fail_markers(&root, std::io::ErrorKind::PermissionDenied, 2);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let cached = cached_thumbnails(&root);
     assert!(cached > 0);
     let ids = ids(&s);
@@ -626,6 +646,7 @@ fn interrupted_discard_then_build_child() {
     let root = PathBuf::from(std::env::var_os("LC_SMART_CHAIN_ROOT").unwrap());
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let ids = ids(&s);
     if std::env::var("LC_SMART_CHAIN_MODE").unwrap() == "build" {
         // A first build writes the first proxy, then the process ends while reading the second original.
@@ -656,6 +677,7 @@ fn interrupted_discard_then_build_child() {
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
     // a new cache object has an empty memory cache, so the read goes to the FIFO
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let reader = s.thumb_job(photo_id(&s, "second.tif"), 128).unwrap();
     std::thread::spawn(move || reader.run());
     // opening the writer waits for the reader, which then holds the cache's generation lock
@@ -693,6 +715,7 @@ fn regression709_an_interrupted_discard_then_an_interrupted_first_build() {
     for _ in 0..2 {
         let mut s = Session::new().with_fs();
         s.open_library(root.join("library"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&s);
         assert_fresh_thumbnail(&mut s, &root);
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -705,6 +728,7 @@ fn full_drive_fallback_child() {
     let root = PathBuf::from(std::env::var_os("LC_SMART_FALLBACK_ROOT").unwrap());
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     // The thumbnail folder's drive is full: no marker can be created, then space comes back.
     fail_markers(&root, std::io::ErrorKind::StorageFull, 2);
     let (entered, waiting) = mpsc::channel();
@@ -747,6 +771,7 @@ fn regression709_a_run_without_a_marker_keeps_no_thumbnail_of_a_proxy_it_replace
     write_original(&third, 0.8);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     s.execute("library.import", &json!({"paths": [third]})).unwrap();
     let id = photo_id(&s, "third.tif").0;
     s.execute("library.smartPreviews", &json!({"format": "compact", "ids": [id]})).unwrap();
@@ -763,6 +788,7 @@ fn regression709_a_run_without_a_marker_keeps_no_thumbnail_of_a_proxy_it_replace
     for _ in 0..2 {
         let mut s = Session::new().with_fs();
         s.open_library(root.join("library"), false).unwrap();
+        crate::cmd::previews::wait_for_smart_refresh(&s);
         let photo = s.catalog.photo(photo_id(&s, "second.tif")).unwrap().clone();
         assert_eq!(header(&file_path(s.media.smart_dir.as_ref().unwrap(), &photo)).unwrap().0, Format::Lossless);
         assert_thumbnail_matches_proxy(&mut s, "second.tif");
@@ -778,11 +804,13 @@ fn a_first_build_without_a_marker_does_not_reset_the_cache_per_proxy() {
     let root = fixture("first-build-full");
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let dir = s.media.smart_dir.clone().unwrap();
     drop(s);
     std::fs::remove_dir_all(&dir).unwrap();
     let mut s = Session::new().with_fs();
     s.open_library(root.join("library"), false).unwrap();
+    crate::cmd::previews::wait_for_smart_refresh(&s);
     let ids = ids(&s);
     fail_markers(&root, std::io::ErrorKind::StorageFull, 2);
     let before = s.media.rendered.generation();
