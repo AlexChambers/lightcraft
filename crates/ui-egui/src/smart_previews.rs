@@ -66,7 +66,16 @@ pub(crate) fn intercept(app: &mut LightcraftApp, command: &str, params: &Value) 
     #[cfg(target_arch = "wasm32")]
     probe();
     app.smart_preview_space = Some(rx);
-    app.ui.dialog = Some(Dialog::BuildSmartPreviews { params, path, count, estimated_bytes, checking: true, free_bytes: None, space_error: None });
+    app.ui.dialog = Some(Dialog::BuildSmartPreviews {
+        library: app.session.library_generation(),
+        params,
+        path,
+        count,
+        estimated_bytes,
+        checking: true,
+        free_bytes: None,
+        space_error: None,
+    });
     Some(Ok(json!({"confirmationRequired": true, "count": count, "estimatedBytes": estimated_bytes})))
 }
 
@@ -162,11 +171,14 @@ pub(crate) fn body(ui: &mut egui::Ui, dialog: &Dialog) {
 }
 
 pub(crate) fn confirm(app: &mut LightcraftApp, dialog: &Dialog) -> Result<Value, String> {
-    let Dialog::BuildSmartPreviews { params, path, checking, .. } = dialog else {
+    let Dialog::BuildSmartPreviews { library, params, path, checking, .. } = dialog else {
         return Err(crate::i18n::tr("no smart preview build to confirm").to_string());
     };
     if *checking {
         return Err(crate::i18n::tr("wait for the free-space check to finish").to_string());
+    }
+    if *library != app.session.library_generation() {
+        return Err(crate::i18n::tr("Pending photo action cancelled because its library or photo changed").to_string());
     }
     if app.session.media.smart_dir.as_ref() != Some(path) {
         return Err(crate::i18n::tr("the smart preview folder changed; start the build again to check its free space").to_string());
@@ -203,6 +215,31 @@ mod tests {
         finish_check(&mut app);
         assert!(active.iter().any(|task| task.kind == "smartSpace"), "the blocked storage worker was invisible to activity");
         assert!(!app.session.activity.list().iter().any(|task| task.kind == "smartSpace"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn confirmation_rejects_another_library_using_the_same_proxy_folder() {
+        let (mut app, dir) = app("library-generation");
+        let folder = app.session.media.smart_dir.clone().unwrap();
+        app.session = lightcraft_engine::Session::new().with_fs();
+        app.session.open_library(dir.join("a"), false).unwrap();
+        let photo = Photo::new(PhotoId(1), Source::File { path: "first.tif".into() }, "first.tif", "TIFF", 8, 8, "");
+        app.session.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+        app.session.media.smart_dir = Some(folder.clone());
+        app.session.smart_previews_format = Format::Lossless;
+        intercept(&mut app, "library.smartPreviews", &json!({"ids": [1]})).unwrap().unwrap();
+        finish_check(&mut app);
+        let dialog = app.ui.dialog.clone().unwrap();
+        app.run("app.openLibrary", json!({"path": dir.join("b")})).unwrap();
+        assert!(matches!(app.ui.dialog, Some(Dialog::BuildSmartPreviews { .. })));
+        let photo = Photo::new(PhotoId(1), Source::File { path: "second.tif".into() }, "second.tif", "TIFF", 8, 8, "");
+        app.session.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+        app.session.media.smart_dir = Some(folder.clone());
+        app.session.media.file_loader = Some(std::sync::Arc::new(|_, _| Ok((lightcraft_raster::Rgb32f::new(8, 8), Default::default()))));
+        let result = confirm(&mut app, &dialog);
+        assert!(result.is_err(), "confirmation accepted photo 1 from another library: {result:?}");
+        assert_eq!(lightcraft_engine::smart::stats(&folder).0, 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

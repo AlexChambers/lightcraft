@@ -314,6 +314,7 @@ pub enum Dialog {
         library: u64,
     },
     BuildSmartPreviews {
+        library: u64,
         params: serde_json::Value,
         path: std::path::PathBuf,
         count: usize,
