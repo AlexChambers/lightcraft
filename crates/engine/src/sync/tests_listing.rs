@@ -198,3 +198,25 @@ fn a_check_from_the_listing_is_the_check_from_the_disk() {
     assert_eq!(only_plain.asked.load(std::sync::atomic::Ordering::Relaxed), 0, "every answer came from the listing");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn review_unverified_crop_is_news_even_when_its_numbers_match() {
+    let dir = std::env::temp_dir().join(format!("lc-unverified-crop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.jpg");
+    std::fs::write(&path, b"synthetic photo").unwrap();
+    let text = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropRight="0.6" crs:CropTop="0.2" crs:CropBottom="0.9"/></rdf:RDF></x:xmpmeta>"#;
+    std::fs::write(path.with_extension("xmp"), text).unwrap();
+    let mut catalog = Catalog::new();
+    let mut p = (*photo(&mut catalog, &path)).clone();
+    let sc = crate::sidecar::parse_sidecar(text, crate::crs::Target::for_photo(&p)).unwrap();
+    crate::sidecar::merge_into(&mut p, &sc, "2020-01-01T00:00:00");
+    let before = p.develop.clone();
+    let failed: crate::media::FileProbe = Arc::new(|_| Err("file probe failed".into()));
+    assert!(sidecar_has_news(&catalog, &p, SidecarNaming::Stem, &Listing::default(), Some(&failed)));
+    let sc = read_sidecar(path.to_str().unwrap(), SidecarNaming::Stem, crate::crs::Target::for_photo(&p), Some(&failed)).unwrap();
+    assert!(sc.warnings.iter().any(|w| w.fields.iter().any(|f| f.starts_with("Crop ("))));
+    crate::sidecar::merge_into(&mut p, &sc, "");
+    assert_eq!(p.develop, before);
+    std::fs::remove_dir_all(dir).unwrap();
+}

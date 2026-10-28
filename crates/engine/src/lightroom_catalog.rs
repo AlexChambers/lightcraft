@@ -691,8 +691,7 @@ fn mapped_settings(
     text: &str,
     target: crate::crs::Target,
     aspect: f64,
-    orientation: Orientation,
-    stored_aspect: f64,
+    frame: Option<crate::sidecar::StoredFrame>,
 ) -> Result<(Value, Vec<String>), String> {
     let mut root = crate::preset_import::parse_lua(text)?;
     let deferred = strip_lua_sentinels(&mut root);
@@ -703,8 +702,16 @@ fn mapped_settings(
     if !props.contains_key("crs:HasCrop") && CROP.iter().any(|k| props.contains_key(*k)) {
         props.insert("crs:HasCrop".into(), vec!["True".into()]);
     }
-    let (mut partial, mut unknown) = crate::crs::to_partial_report(&props, Some(&values), target, aspect);
-    crate::crs::crop_in_frame(&mut partial, orientation, stored_aspect);
+    let (partial, mut unknown) = crate::crs::to_partial_report(&props, Some(&values), target, aspect);
+    let mut sc = crate::sidecar::SidecarData { develop: Some(crate::sidecar::DevelopPatch::Partial(partial)), ..Default::default() };
+    sc.prepare_frame(frame);
+    unknown.extend(catalog_notes(&sc.warnings));
+    let Some(crate::sidecar::DevelopPatch::Partial(mut partial)) = sc.develop else {
+        return Err("catalog develop settings unavailable".into());
+    };
+    if let Some(frame) = sc.frame {
+        crate::crs::crop_in_frame(&mut partial, frame.orientation, frame.width / frame.height);
+    }
     // Lightroom's saved Upright isn't kept from catalogs yet: how a catalog encodes it, and whether
     // its orientation agrees with the decoded file, haven't been checked on a real catalog (issue
     // #205). The mode is solved again, and the report says what was lost.
@@ -1022,6 +1029,11 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
         // what the XMP and the develop settings couldn't carry over, each named once
         let mut notes: Vec<String> = Vec::new();
+        let frame = lightroom_orientation(text(&src.image, "orientation")).map(|orientation| crate::sidecar::StoredFrame {
+            orientation,
+            width: number(&src.image, "fileWidth") as f64,
+            height: number(&src.image, "fileHeight") as f64,
+        });
         if !src.xmp.is_empty() {
             match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
                 Ok(mut sc) => {
@@ -1030,11 +1042,6 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                     }
                     // Catalog XMP crops use the same stored frame as the develop row, even
                     // when that row is missing, invalid or contains no crop fields.
-                    let frame = lightroom_orientation(text(&src.image, "orientation")).map(|orientation| crate::sidecar::StoredFrame {
-                        orientation,
-                        width: number(&src.image, "fileWidth") as f64,
-                        height: number(&src.image, "fileHeight") as f64,
-                    });
                     // Catalog Upright encoding remains unverified. Keep its existing warning
                     // and solve the mode again rather than accepting a sidecar transform.
                     sc.upright = None;
@@ -1061,15 +1068,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             p.meta.keywords = src.keywords.clone();
         }
         if !src.settings.is_empty() && !keep_develop {
-            let orientation = lightroom_orientation(text(&src.image, "orientation")).unwrap_or_default();
-            let stored_aspect = number(&src.image, "fileWidth") as f64 / number(&src.image, "fileHeight") as f64;
-            match mapped_settings(
-                &src.settings,
-                crate::crs::Target::for_photo(&p),
-                p.width.max(1) as f64 / p.height.max(1) as f64,
-                orientation,
-                stored_aspect,
-            ) {
+            match mapped_settings(&src.settings, crate::crs::Target::for_photo(&p), p.width.max(1) as f64 / p.height.max(1) as f64, frame) {
                 Ok((partial, unknown)) => {
                     p.develop = Arc::new(lightcraft_develop::apply_partial(&p.develop, &partial, 1.0));
                     p.edited = Some(now.clone());

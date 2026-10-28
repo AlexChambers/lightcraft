@@ -39,7 +39,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lightcraft_catalog::{Catalog, Filter, Op, Photo, PhotoId, Sort, Source};
 use serde::Serialize;
@@ -51,6 +51,47 @@ use crate::{EngineError, Result, Session};
 
 /// The largest XMP sidecar read when looking for metadata updates; a bigger one is skipped.
 const MAX_SIDECAR_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Reuse a scan's frame probe only while the file's size and modification time still match.
+#[derive(Clone, Debug, Default)]
+struct FrameProbes(Arc<Mutex<HashMap<String, (FileStamp, ProbeInfo)>>>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: std::time::SystemTime,
+}
+
+impl FileStamp {
+    fn read(path: &str) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self { len: meta.len(), modified: meta.modified().ok()? })
+    }
+}
+
+impl FrameProbes {
+    fn probe(&self, probe: Option<crate::media::FileProbe>) -> Option<crate::media::FileProbe> {
+        let probe = probe?;
+        let cache = self.clone();
+        Some(Arc::new(move |path| {
+            let stamp = FileStamp::read(path);
+            if let Some(stamp) = &stamp
+                && let Some((saved, info)) = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(path)
+                && saved == stamp
+            {
+                return Ok(info.clone());
+            }
+            let info = probe(path)?;
+            if let Some(stamp) = stamp
+                && FileStamp::read(path).as_ref() == Some(&stamp)
+                && info.stored_frame().is_some()
+            {
+                cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(path.to_string(), (stamp, info.clone()));
+            }
+            Ok(info)
+        }))
+    }
+}
 
 /// How far a scan is: the folders and files listed so far (the walk, which comes first and on a
 /// network share can take minutes), the folder's files probed ([`ScanProgress`], whose `cancel`
@@ -99,6 +140,7 @@ pub struct SyncInput {
     labels: Arc<Catalog>,
     /// The session's file probe lets sidecars use the file's orientation for crops and saved Upright.
     probe: Option<crate::media::FileProbe>,
+    frames: FrameProbes,
 }
 
 /// What changed in a folder since it came into the library.
@@ -124,6 +166,8 @@ pub struct FolderChanges {
     /// The probes of the new files, kept for the import that follows.
     #[serde(skip)]
     probes: HashMap<String, ProbeInfo>,
+    #[serde(skip)]
+    frames: FrameProbes,
     /// The folder's photos as the scan saw them: the scan is current while they are the same
     /// records (any change to one replaces it in the catalog).
     #[serde(skip)]
@@ -201,7 +245,9 @@ impl SyncInput {
         }
         let (scan, _) = ScanInput::new(s, &[path.to_string()]);
         let labels = scan.library();
-        Ok(SyncInput { folder: path.to_string(), scan, ids, naming: s.xmp.naming, labels, probe: s.media.file_probe.clone() })
+        let frames = FrameProbes::default();
+        let probe = frames.probe(s.media.file_probe.clone());
+        Ok(SyncInput { folder: path.to_string(), scan, ids, naming: s.xmp.naming, labels, probe, frames })
     }
 }
 
@@ -212,7 +258,7 @@ impl SyncInput {
 /// library's photos, which run on several threads too. Stops early when `progress.files.cancel`
 /// is set.
 pub fn scan_with(input: SyncInput, progress: &SyncProgress) -> FolderChanges {
-    let SyncInput { folder, scan, ids, naming, labels, probe } = input;
+    let SyncInput { folder, scan, ids, naming, labels, probe, frames } = input;
     let seen: Vec<Arc<Photo>> = ids.iter().filter_map(|id| labels.photo(*id)).map(Arc::clone).collect();
     if !cfg!(target_arch = "wasm32") && !Path::new(&folder).is_dir() {
         progress.listed.store(true, std::sync::atomic::Ordering::Release);
@@ -270,7 +316,7 @@ pub fn scan_with(input: SyncInput, progress: &SyncProgress) -> FolderChanges {
         listing.folders.len(),
         listing.asked.load(std::sync::atomic::Ordering::Relaxed)
     );
-    let mut changes = FolderChanges { path: folder, seen, ..Default::default() };
+    let mut changes = FolderChanges { path: folder, seen, frames, ..Default::default() };
     for ((p, _), check) in photos.iter().zip(checks) {
         let Some(file) = crate::cmd::missing::checked_path(p) else { continue };
         let found = FolderPhoto { id: p.id.0, path: file.to_string() };
@@ -629,11 +675,9 @@ fn sidecar_has_news(labels: &Catalog, p: &Photo, naming: SidecarNaming, listing:
     }
     let Ok(text) = std::fs::read_to_string(&file) else { return false };
     let Ok(mut sc) = crate::sidecar::parse_sidecar(&text, crate::crs::Target::for_photo(p)) else { return false };
-    // compared in the photo's frame, as it would be read; a crop that can't be placed (no frame) and
-    // differs from the photo's is still news, so the synchronize that reads it says why it was left
-    if let Some(held) = framed(&mut sc, path, probe)
-        && lightcraft_develop::apply_partial(&p.develop, &serde_json::json!({"crop": held}), 1.0).crop != p.develop.crop
-    {
+    // A held crop cannot be compared with the catalog's oriented crop. Report it as news so
+    // synchronizing can say why the crop was left unverified.
+    if framed(&mut sc, path, probe).is_some() {
         return true;
     }
     let sc = sc.resolve_label(labels);
@@ -711,7 +755,7 @@ impl SyncJob {
         if changes.offline {
             return Err(not_there(&changes.path));
         }
-        let FolderChanges { new, missing, metadata, moved, probes, .. } = changes;
+        let FolderChanges { new, missing, metadata, moved, probes, frames, .. } = changes;
         let opts = ImportOptions { mode: ImportMode::Add, ..Default::default() };
         let import = if choice.import_new && !new.is_empty() {
             s.import_probes = probes;
@@ -739,7 +783,7 @@ impl SyncJob {
             moved: if choice.relink_moved { moved } else { Vec::new() },
             missing: if choice.remove_missing { missing } else { Vec::new() },
             sidecars,
-            probe: s.media.file_probe.clone(),
+            probe: frames.probe(s.media.file_probe.clone()),
         };
         let commit = SyncCommit {
             opts,
@@ -869,6 +913,7 @@ impl SyncCommit {
                 Ok(r) => {
                     report.imported += r.imported.len();
                     report.failed.extend(r.failed);
+                    report.warnings.extend(r.warnings);
                 }
                 Err(e) => report.failed.push((String::new(), e.to_string())),
             },
