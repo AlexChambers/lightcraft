@@ -787,8 +787,8 @@ fn review_synchronize_reuses_only_unchanged_photo_frame_probes() {
         std::fs::write(Path::new(&path).with_extension("xmp"), xmp).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let calls = count.clone();
-        let probe = s.media.file_probe.take().unwrap();
-        s.media.file_probe = Some(Arc::new(move |p| {
+        let probe = s.media.frame_probe.take().unwrap();
+        s.media.frame_probe = Some(Arc::new(move |p| {
             calls.fetch_add(1, Ordering::Relaxed);
             probe(p)
         }));
@@ -805,4 +805,34 @@ fn review_synchronize_reuses_only_unchanged_photo_frame_probes() {
         assert!(report.failed.is_empty(), "{report:?}");
         assert_eq!(count.load(Ordering::Relaxed), if changed { 2 } else { 1 });
     }
+}
+
+#[test]
+fn review_pending_crop_scans_reuse_the_unchanged_file_frame() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let dir = Scratch::new("review-pending-crop");
+    let mut s = library(&dir);
+    let path = dir.path("trip/a.png");
+    let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropRight="0.6" crs:CropTop="0.2" crs:CropBottom="0.9"/></rdf:RDF></x:xmpmeta>"#;
+    std::fs::write(Path::new(&path).with_extension("xmp"), xmp).unwrap();
+    let count = Arc::new(AtomicUsize::new(0));
+    let calls = count.clone();
+    let probe = s.media.frame_probe.take().unwrap();
+    s.media.frame_probe = Some(Arc::new(move |p| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        probe(p)
+    }));
+    for _ in 0..3 {
+        let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+        assert_eq!(changes.metadata.len(), 1);
+    }
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.set_modified(modified + Duration::from_secs(1)).unwrap();
+    crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    assert_eq!(count.load(Ordering::Relaxed), 2);
 }

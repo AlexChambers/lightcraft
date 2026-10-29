@@ -944,7 +944,7 @@ fn merging_settings_json_keeps_upright_in_the_photo_frame() {
 /// A sidecar whose only change is a crop the photo's file can't be read to place is still reported
 /// by Synchronize Folder (holding the crop used to hide the change, and with it the warning).
 #[test]
-fn a_crop_only_change_that_cant_be_placed_is_reported() {
+fn review_a_crop_only_change_that_cant_be_placed_is_reported() {
     let src = temp_dir("upright-held-crop");
     let mut s = Session::new().with_fs();
     let crop = |left: &str| crop_packet(&format!(r#"crs:CropLeft="{left}" crs:CropTop="0" crs:CropRight="1" crs:CropBottom="1" crs:CropAngle="0""#));
@@ -958,6 +958,12 @@ fn a_crop_only_change_that_cant_be_placed_is_reported() {
     assert_eq!(dev(&s, id).crop, before.crop, "{r}");
     let held = r["warnings"].as_array().into_iter().flatten().any(|w| w["code"] == "unmappedXmp" && w["fields"].to_string().contains("Crop"));
     assert!(held, "{r}");
+    let again = s.execute("folder.scanChanges", &json!({"path": src.to_string_lossy()})).unwrap();
+    assert!(again["metadata"].as_array().unwrap().is_empty(), "{again}");
+    std::fs::write(&sidecar, crop("0.4")).unwrap();
+    bump(&sidecar, 6);
+    let changed = s.execute("folder.scanChanges", &json!({"path": src.to_string_lossy()})).unwrap();
+    assert_eq!(changed["metadata"].as_array().unwrap().len(), 1, "{changed}");
     let _ = std::fs::remove_dir_all(&src);
 }
 
@@ -1318,7 +1324,7 @@ fn synchronize_folder_probes_files_through_the_session() {
     let (_, fs_probe) = crate::files::fs_hooks();
     let probes = std::sync::Arc::new(AtomicUsize::new(0));
     let counted = probes.clone();
-    s.media.file_probe = Some(std::sync::Arc::new(move |p: &str| {
+    s.media.frame_probe = Some(std::sync::Arc::new(move |p: &str| {
         counted.fetch_add(1, Ordering::Relaxed);
         fs_probe(p)
     }));
@@ -1444,4 +1450,54 @@ fn review_embedded_jpeg_crop_is_converted_on_metadata_reread() {
     let edges = [crop.rect.x0, crop.rect.y0, crop.rect.x1, crop.rect.y1].map(|v| (v * 1e9).round() / 1e9);
     assert_eq!(edges, [0.1, 0.1, 0.8, 0.6]);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn review_metadata_reread_refreshes_pixels_after_exif_changes() {
+    use crate::media::SourceLevel;
+    let dir = temp_dir("review-reread-pixels");
+    let mut s = Session::new().with_fs();
+    let xmp = crop_packet(r#"crs:CropLeft="0.1" crs:CropTop="0.2" crs:CropRight="0.6" crs:CropBottom="0.9""#);
+    let id = import_jpeg(&mut s, &dir, "rotated", 1, Some(&xmp));
+    let path = dir.join("rotated.jpg");
+    let load = s.media.file_loader.clone().unwrap();
+    for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+        let (image, _) = load(path.to_str().unwrap(), level.max_edge()).unwrap();
+        s.media.insert(id, level, std::sync::Arc::new(image));
+        assert!(s.media.has_source(id, level));
+    }
+    let old_hash = s.catalog.photo(id).unwrap().content_hash.clone();
+    write_jpeg(&path, 60, 40, 6);
+    let r = s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+    assert!(r["failed"].as_array().unwrap().is_empty(), "{r}");
+    for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+        assert!(!s.media.has_source(id, level), "{level:?} still holds the old orientation");
+    }
+    let p = s.catalog.photo(id).unwrap();
+    assert_eq!((p.width, p.height), (40, 60));
+    assert_ne!(p.content_hash, old_hash);
+    let (image, _) = load(path.to_str().unwrap(), usize::MAX).unwrap();
+    assert_eq!((image.width, image.height), (40, 60));
+    s.undo_step().unwrap();
+    assert_eq!((s.catalog.photo(id).unwrap().width, s.catalog.photo(id).unwrap().height), (60, 40));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn review_mirrored_sidecar_crops_use_exif_4_5_and_7() {
+    for (exif, expected) in [(4, [0.1, 0.1, 0.6, 0.8]), (5, [0.2, 0.1, 0.9, 0.6]), (7, [0.1, 0.4, 0.8, 0.9])] {
+        let dir = temp_dir(&format!("review-mirrored-crop-{exif}"));
+        let mut s = Session::new().with_fs();
+        let xmp = crop_packet(r#"crs:CropLeft="0.1" crs:CropTop="0.2" crs:CropRight="0.6" crs:CropBottom="0.9""#);
+        let id = import_jpeg(&mut s, &dir, "mirror", exif, Some(&xmp));
+        for reread in [false, true] {
+            if reread {
+                s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+            }
+            let r = dev(&s, id).crop.geometry.rect;
+            let edges = [r.x0, r.y0, r.x1, r.y1].map(|v| (v * 1e9).round() / 1e9);
+            assert_eq!(edges, expected, "EXIF {exif}, reread {reread}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

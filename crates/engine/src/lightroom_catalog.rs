@@ -692,6 +692,7 @@ fn mapped_settings(
     target: crate::crs::Target,
     aspect: f64,
     frame: Option<crate::sidecar::StoredFrame>,
+    user: Orientation,
 ) -> Result<(Value, Vec<String>), String> {
     let mut root = crate::preset_import::parse_lua(text)?;
     let deferred = strip_lua_sentinels(&mut root);
@@ -710,7 +711,7 @@ fn mapped_settings(
         return Err("catalog develop settings unavailable".into());
     };
     if let Some(frame) = sc.frame {
-        crate::crs::crop_in_frame(&mut partial, frame.orientation, frame.width / frame.height);
+        crate::crs::crop_in_frame(&mut partial, frame.orientation.then(user), frame.width / frame.height);
     }
     // Lightroom's saved Upright isn't kept from catalogs yet: how a catalog encodes it, and whether
     // its orientation agrees with the decoded file, haven't been checked on a real catalog (issue
@@ -1068,7 +1069,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             p.meta.keywords = src.keywords.clone();
         }
         if !src.settings.is_empty() && !keep_develop {
-            match mapped_settings(&src.settings, crate::crs::Target::for_photo(&p), p.width.max(1) as f64 / p.height.max(1) as f64, frame) {
+            match mapped_settings(
+                &src.settings,
+                crate::crs::Target::for_photo(&p),
+                p.width.max(1) as f64 / p.height.max(1) as f64,
+                frame,
+                p.develop.orientation,
+            ) {
                 Ok((partial, unknown)) => {
                     p.develop = Arc::new(lightcraft_develop::apply_partial(&p.develop, &partial, 1.0));
                     p.edited = Some(now.clone());

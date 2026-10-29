@@ -177,8 +177,14 @@ fn preserves_existing_edits_and_rejects_invalid_structure_before_mutation() {
     assert!(apply(&mut s, cyclic, false).is_err());
     assert_eq!(s.catalog.to_snapshot(), before);
     assert!(
-        mapped_settings(&format!("{}0{}", "{".repeat(1000), "}".repeat(1000)), crate::crs::Target::RawAbsolute, 1.0, frame(Orientation::Normal, 1.5))
-            .is_err()
+        mapped_settings(
+            &format!("{}0{}", "{".repeat(1000), "}".repeat(1000)),
+            crate::crs::Target::RawAbsolute,
+            1.0,
+            frame(Orientation::Normal, 1.5),
+            Orientation::Normal
+        )
+        .is_err()
     );
 }
 #[test]
@@ -194,6 +200,7 @@ fn compressed_xmp_is_bounded_and_settings_are_data_only() {
         crate::crs::Target::RawAbsolute,
         1.5,
         frame(Orientation::Normal, 1.5),
+        Orientation::Normal,
     )
     .unwrap();
     assert_eq!(partial["light"]["exposure"], 0.75);
@@ -205,11 +212,13 @@ fn custom_white_balance_on_relative_wb_raws_is_not_read_as_kelvin() {
     // relative to its as-shot look the edit stays As Shot and is reported; a DNG keeps the Kelvin
     let settings =
         "s = { WhiteBalance = \"Custom\", Temperature = 3578, Tint = -5, CustomTemperature = 3578.95, CustomTint = -5, Exposure2012 = 0.5 }";
-    let (partial, unknown) = mapped_settings(settings, crate::crs::Target::RawRelative, 1.5, frame(Orientation::Normal, 1.5)).unwrap();
+    let (partial, unknown) =
+        mapped_settings(settings, crate::crs::Target::RawRelative, 1.5, frame(Orientation::Normal, 1.5), Orientation::Normal).unwrap();
     assert_eq!(partial["wb"], json!({"mode": "asShot"}), "{partial}");
     assert_eq!(partial["light"]["exposure"], 0.5);
     assert!(unknown.iter().any(|k| k.starts_with("Temperature, Tint")), "{unknown:?}");
-    let (partial, unknown) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5)).unwrap();
+    let (partial, unknown) =
+        mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5), Orientation::Normal).unwrap();
     assert_eq!(
         (partial["wb"]["mode"].as_str(), partial["wb"]["temp"].as_f64(), partial["wb"]["tint"].as_f64()),
         (Some("custom"), Some(3578.0), Some(-5.0))
@@ -225,6 +234,7 @@ fn catalog_crops_without_has_crop_are_imported() {
         crate::crs::Target::RawAbsolute,
         1.5,
         frame(Orientation::Normal, 1.5),
+        Orientation::Normal,
     )
     .unwrap();
     let crop = &partial["crop"]["geometry"];
@@ -236,11 +246,14 @@ fn catalog_crops_without_has_crop_are_imported() {
     assert!(!unknown.iter().any(|k| k.starts_with("CropLeft")), "{unknown:?}");
     // an angle alone still means a crop (Lightroom's angle turns the other way to LightCraft's)
     let (partial, unknown) =
-        mapped_settings("s = { CropAngle = -1.5 }", crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5)).unwrap();
+        mapped_settings("s = { CropAngle = -1.5 }", crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5), Orientation::Normal)
+            .unwrap();
     assert_eq!(partial["crop"]["geometry"]["angle"], 1.5);
     assert!(!unknown.iter().any(|k| k.starts_with("CropAngle")), "{unknown:?}");
     // no crop fields: the crop stays untouched
-    let (partial, _) = mapped_settings("s = { Exposure2012 = 0.5 }", crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5)).unwrap();
+    let (partial, _) =
+        mapped_settings("s = { Exposure2012 = 0.5 }", crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5), Orientation::Normal)
+            .unwrap();
     assert!(partial.get("crop").is_none());
 }
 
@@ -264,7 +277,7 @@ fn lightroom_orientation_codes() {
 fn catalog_crops_follow_the_photo_orientation() {
     let crop = |o: Orientation| {
         let settings = "s = { CropLeft = 0.1, CropRight = 0.6, CropTop = 0.2, CropBottom = 0.9 }";
-        let (partial, _) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5)).unwrap();
+        let (partial, _) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5), Orientation::Normal).unwrap();
         let g = &partial["crop"]["geometry"];
         let r = &g["rect"];
         [r["x0"].as_f64(), r["y0"].as_f64(), r["x1"].as_f64(), r["y1"].as_f64(), g["angle"].as_f64()].map(|v| (v.unwrap() * 1e9).round() / 1e9)
@@ -275,16 +288,21 @@ fn catalog_crops_follow_the_photo_orientation() {
     assert_eq!(crop(Orientation::Rotate270), [0.2, 0.4, 0.9, 0.9, 0.0]);
     assert_eq!(crop(Orientation::Rotate180), [0.4, 0.1, 0.9, 0.8, 0.0]);
     assert_eq!(crop(Orientation::FlipH), [0.4, 0.2, 0.9, 0.9, 0.0]);
+    assert_eq!(crop(Orientation::FlipV), [0.1, 0.1, 0.6, 0.8, 0.0]);
+    assert_eq!(crop(Orientation::Transpose), [0.2, 0.1, 0.9, 0.6, 0.0]);
+    assert_eq!(crop(Orientation::Transverse), [0.1, 0.4, 0.8, 0.9, 0.0]);
     // a mirror turns the straighten the other way
     let angle = |o: Orientation| {
-        let (partial, _) = mapped_settings("s = { CropAngle = 2 }", crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5)).unwrap();
+        let (partial, _) =
+            mapped_settings("s = { CropAngle = 2 }", crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5), Orientation::Normal).unwrap();
         partial["crop"]["geometry"]["angle"].as_f64().unwrap()
     };
     assert_eq!(angle(Orientation::Rotate90), -2.0);
     assert_eq!(angle(Orientation::FlipH), 2.0);
     // no crop: nothing to orient
     let (partial, _) =
-        mapped_settings("s = { Exposure2012 = 0.5 }", crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Rotate90, 1.5)).unwrap();
+        mapped_settings("s = { Exposure2012 = 0.5 }", crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Rotate90, 1.5), Orientation::Normal)
+            .unwrap();
     assert!(partial.get("crop").is_none());
 }
 
@@ -307,10 +325,20 @@ fn lightroom_crop(g: CropGeometry, o: Orientation, w: f64) -> String {
 #[test]
 fn straightened_catalog_crops_round_trip() {
     let g = CropGeometry { rect: Rect::new(0.2, 0.15, 0.7, 0.8), angle: 6.5 };
-    for o in [Orientation::Normal, Orientation::Rotate90, Orientation::Rotate270, Orientation::Rotate180, Orientation::FlipH] {
+    for o in [
+        Orientation::Normal,
+        Orientation::Rotate90,
+        Orientation::Rotate270,
+        Orientation::Rotate180,
+        Orientation::FlipH,
+        Orientation::FlipV,
+        Orientation::Transpose,
+        Orientation::Transverse,
+    ] {
         for angle in [6.5, -6.5] {
             let g = CropGeometry { angle, ..g };
-            let (partial, _) = mapped_settings(&lightroom_crop(g, o, 1.5), crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5)).unwrap();
+            let (partial, _) =
+                mapped_settings(&lightroom_crop(g, o, 1.5), crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5), Orientation::Normal).unwrap();
             let got: CropGeometry = serde_json::from_value(partial["crop"]["geometry"].clone()).unwrap();
             let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
             assert!(
@@ -340,7 +368,7 @@ fn straightened_catalog_crops_match_lightroom_exports() {
             (6100.0, 9150.0),
         ),
     ] {
-        let (partial, _) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, frame(o, 9504.0 / 6336.0)).unwrap();
+        let (partial, _) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, frame(o, 9504.0 / 6336.0), Orientation::Normal).unwrap();
         let r: Rect = serde_json::from_value(partial["crop"]["geometry"]["rect"].clone()).unwrap();
         let (ow, oh) = if o.swaps_axes() { (6336.0, 9504.0) } else { (9504.0, 6336.0) };
         let (w, h) = (r.width() * ow, r.height() * oh);
@@ -374,13 +402,13 @@ fn catalog_upright_falls_back_to_solving_and_is_reported() {
         r#"s = { PerspectiveUpright = 5, UprightFourSegmentsCount = 2, UprightFourSegments_0 = "0.2, 0.1, 0.25, 0.9" }"#.to_string(),
     ] {
         for o in [Orientation::Normal, Orientation::Rotate90] {
-            let (partial, unknown) = mapped_settings(&settings, crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5)).unwrap();
+            let (partial, unknown) = mapped_settings(&settings, crate::crs::Target::RawAbsolute, 1.5, frame(o, 1.5), Orientation::Normal).unwrap();
             assert!(partial["geometry"]["upright_transform"].is_null(), "{settings}: {partial}");
             assert_eq!(unknown.iter().filter(|u| u.starts_with("Upright")).count(), 1, "{settings}: {unknown:?}");
         }
     }
     let off = format!(r#"s = {{ PerspectiveUpright = 0, UprightVersion = 151388160, UprightTransform_1 = "{auto}" }}"#);
-    let (_, unknown) = mapped_settings(&off, crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5)).unwrap();
+    let (_, unknown) = mapped_settings(&off, crate::crs::Target::RawAbsolute, 1.5, frame(Orientation::Normal, 1.5), Orientation::Normal).unwrap();
     assert!(unknown.iter().all(|u| !u.starts_with("Upright")), "{unknown:?}");
 }
 
@@ -440,9 +468,14 @@ fn deferred_auto_tone_sentinels_never_become_real_slider_values() {
     assert_eq!(p.develop.light.shadows, 65.0);
     assert_eq!(p.develop.light.blacks, -22.0);
     assert!(report["unmapped"]["2"].as_array().unwrap().iter().any(|v| v.as_str().is_some_and(|v| v.contains("Deferred"))));
-    let (partial, _) =
-        mapped_settings("s = { Exposure2012 = -5, Contrast2012 = -100 }", crate::crs::Target::RawAbsolute, 1.0, frame(Orientation::Normal, 1.5))
-            .unwrap();
+    let (partial, _) = mapped_settings(
+        "s = { Exposure2012 = -5, Contrast2012 = -100 }",
+        crate::crs::Target::RawAbsolute,
+        1.0,
+        frame(Orientation::Normal, 1.5),
+        Orientation::Normal,
+    )
+    .unwrap();
     assert_eq!(partial["light"]["exposure"], -5.0);
     assert_eq!(partial["light"]["contrast"], -100.0);
 }
@@ -909,4 +942,20 @@ fn review_catalog_develop_crop_without_a_valid_frame_is_held() {
         let notes = report["unmapped"]["1"].as_array().unwrap();
         assert!(notes.iter().any(|n| n == "Crop (the file's orientation couldn't be read)"), "{report}");
     }
+}
+
+#[test]
+fn review_catalog_update_keeps_the_users_crop_rotation() {
+    let mut data = sample();
+    data.photos.retain(|p| p.source_id == 1);
+    data.photos[0].image.insert("orientation".into(), json!("AB"));
+    data.photos[0].settings = "s = { CropLeft = 0.1, CropRight = 0.6, CropTop = 0.2, CropBottom = 0.9 }".into();
+    let mut s = crate::Session::new();
+    apply(&mut s, data.clone(), false).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("photo.rotateRight", &json!({})).unwrap();
+    let before = s.catalog.photo(id).unwrap().develop.crop;
+    apply(&mut s, data, true).unwrap();
+    assert_eq!(s.catalog.photo(id).unwrap().develop.crop, before);
 }

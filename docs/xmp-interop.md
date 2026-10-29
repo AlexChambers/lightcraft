@@ -171,9 +171,20 @@ application's renderer and is ignored: the photo keeps LightCraft's own process,
 | `ShadowTint`, `RedHue/Saturation`, `GreenHue/Saturation`, `BlueHue/Saturation` | `calibration.shadows_tint`, `calibration.red_hue/red_sat`, … | Calibration panel, 1:1 |
 | `PerspectiveVertical/Horizontal/Rotate/Scale/Aspect/X/Y` | `geometry.vertical/horizontal/rotate/scale/aspect/offset_x/offset_y` | |
 | `PerspectiveUpright` | `geometry.upright`, `geometry.upright_transform` | 0 off, 1 auto, 2 full, 3 level, 4 vertical, 5 guided; Lightroom's saved correction for the selected mode is kept as it is when it can be (see *Saved Upright geometry*), otherwise LightCraft works the mode out itself (Guided needs guides drawn in LightCraft: Lightroom's aren't read) and photo import says so |
-| `HasCrop`, `CropLeft/Top/Right/Bottom`, `CropAngle` | `crop.geometry` | Lightroom's edges are on the stored image (before its orientation) and its straighten angle turns the other way: both go into the frame the photo is shown in (through the file's orientation and the photo's Rotate Left / Right), as the Lightroom catalog import does; the file's orientation is read from the file each time (on import, Read Metadata from File and Synchronize Folder), so a file that changed is read as it is now; preview-only raws use the embedded preview decoder's orientation; when the frame cannot be known, fresh imports and existing photos keep their current crop and the report names the skipped crop; catalog XMP uses the catalog's orientation and stored dimensions even without a usable develop row; `HasCrop="False"` → no crop |
+| `HasCrop`, `CropLeft/Top/Right/Bottom`, `CropAngle` | `crop.geometry` | Lightroom's edges are on the stored image (before its orientation) and its straighten angle turns the other way: both go into the frame the photo is shown in (through the file's orientation and the photo's Rotate Left / Right), as the Lightroom catalog import does; the current file supplies the frame on import and Read Metadata from File, and Synchronize Folder reuses a probe only while the source size and modification time match; preview-only raws use the embedded preview decoder's orientation; when the frame cannot be known, fresh imports and existing photos keep their current crop and the report names the skipped crop; catalog XMP and develop rows use the catalog's orientation and stored dimensions followed by the photo's Rotate Left / Right, even without a usable develop row for XMP; `HasCrop="False"` → no crop |
 
 Values pass through our control specs, so anything outside our slider ranges gets clamped.
+
+Synchronize Folder probes sidecar geometry without hashing the source. Supported raw layouts read only
+header ranges; layouts whose dimensions depend on samples and other image formats retain a whole-file
+fallback. The session reuses a frame while the source size and modification time match.
+
+After an explicit synchronize reports a held crop, the same crop is not reported again in that session
+unless its coordinates or source change. Other metadata in the packet is still compared. Reopening the
+library reports a held crop again.
+
+Read Metadata from File refreshes changed source content and its cached pixels through the normal
+reload operations, including virtual copies, as part of the same undo step.
 
 `crs:CameraProfile` is kept as the selected name in the photo's import warning and the active profile is left as it is: the name carries no rendering data and never selects an Adobe profile. Import reports such a profile as not applied (colours may differ from Lightroom), except Lightroom's default profiles (`Adobe Standard`, `Adobe Color`), which every sidecar names and which LightCraft's own starting look stands in for.
 

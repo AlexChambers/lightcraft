@@ -386,6 +386,7 @@ pub struct Session {
     /// The last Synchronize Folder scan, which `folder.synchronize` acts on while it is current
     /// (see [`Session::take_folder_changes`]).
     pub folder_changes: Option<sync::FolderChanges>,
+    pub(crate) sync_frames: sync::FrameProbes,
     /// Background tasks in flight (imports, exports, preview builds…), for the activity stack and
     /// `activity.list` / `activity.cancel`.
     pub activity: activity::Activity,
@@ -528,6 +529,7 @@ impl Session {
             before: Default::default(),
             import_probes: Default::default(),
             folder_changes: None,
+            sync_frames: Default::default(),
             activity: Default::default(),
             preview_build: None,
             slideshow_export: None,

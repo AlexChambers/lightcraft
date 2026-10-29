@@ -54,7 +54,17 @@ const MAX_SIDECAR_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Reuse a scan's frame probe only while the file's size and modification time still match.
 #[derive(Clone, Debug, Default)]
-struct FrameProbes(Arc<Mutex<HashMap<String, (FileStamp, ProbeInfo)>>>);
+pub(crate) struct FrameProbes {
+    frames: Arc<Mutex<HashMap<String, (FileStamp, ProbeInfo)>>>,
+    held: Arc<Mutex<HashMap<PhotoId, HeldCrop>>>,
+}
+
+#[derive(Clone, Debug)]
+struct HeldCrop {
+    path: String,
+    source: Option<FileStamp>,
+    crop: serde_json::Value,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileStamp {
@@ -70,13 +80,28 @@ impl FileStamp {
 }
 
 impl FrameProbes {
+    fn acknowledged(&self, id: PhotoId, path: &str, crop: &serde_json::Value) -> bool {
+        let source = FileStamp::read(path);
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .is_some_and(|held| held.path == path && held.source == source && &held.crop == crop)
+    }
+
+    fn acknowledge(&self, id: PhotoId, path: String, crop: serde_json::Value) {
+        let source = FileStamp::read(&path);
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.insert(id, HeldCrop { path, source, crop });
+    }
+
     fn probe(&self, probe: Option<crate::media::FileProbe>) -> Option<crate::media::FileProbe> {
         let probe = probe?;
         let cache = self.clone();
         Some(Arc::new(move |path| {
             let stamp = FileStamp::read(path);
             if let Some(stamp) = &stamp
-                && let Some((saved, info)) = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(path)
+                && let Some((saved, info)) = cache.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(path)
                 && saved == stamp
             {
                 return Ok(info.clone());
@@ -86,7 +111,11 @@ impl FrameProbes {
                 && FileStamp::read(path).as_ref() == Some(&stamp)
                 && info.stored_frame().is_some()
             {
-                cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(path.to_string(), (stamp, info.clone()));
+                let mut frames = cache.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Keep geometry only, even when a custom host supplied its full import probe.
+                // Entries belong to catalogued sources and are dropped on a library switch.
+                let geometry = ProbeInfo { width: info.width, height: info.height, orientation: info.orientation, ..Default::default() };
+                frames.insert(path.to_string(), (stamp, geometry));
             }
             Ok(info)
         }))
@@ -245,8 +274,8 @@ impl SyncInput {
         }
         let (scan, _) = ScanInput::new(s, &[path.to_string()]);
         let labels = scan.library();
-        let frames = FrameProbes::default();
-        let probe = frames.probe(s.media.file_probe.clone());
+        let frames = s.sync_frames.clone();
+        let probe = frames.probe(s.media.frame_probe.clone().or_else(|| s.media.file_probe.clone()));
         Ok(SyncInput { folder: path.to_string(), scan, ids, naming: s.xmp.naming, labels, probe, frames })
     }
 }
@@ -300,13 +329,15 @@ pub fn scan_with(input: SyncInput, progress: &SyncProgress) -> FolderChanges {
     let listing = &listing;
     // (no threads on the web: one after the other there)
     #[cfg(target_arch = "wasm32")]
-    let (out, checks) = (crate::import::scan_files(scan, files, &progress.files), check_photos(&photos, &labels, listing, probe.as_ref(), progress));
+    let (out, checks) =
+        (crate::import::scan_files(scan, files, &progress.files), check_photos(&photos, &labels, listing, probe.as_ref(), &frames, progress));
     #[cfg(not(target_arch = "wasm32"))]
     let (out, checks) = std::thread::scope(|sc| {
         let photos = &photos;
         let labels = &labels;
         let probe = probe.as_ref();
-        let checks = sc.spawn(move || check_photos(photos, labels, listing, probe, progress));
+        let frames = &frames;
+        let checks = sc.spawn(move || check_photos(photos, labels, listing, probe, frames, progress));
         let out = crate::import::scan_files(scan, files, &progress.files);
         // (a check that panicked counts as nothing found; the scan still reports the rest)
         (out, checks.join().unwrap_or_default())
@@ -560,12 +591,19 @@ impl Listing {
     }
 }
 
-fn check_photo(p: &Photo, naming: SidecarNaming, labels: &Catalog, listing: &Listing, probe: Option<&crate::media::FileProbe>) -> Check {
+fn check_photo(
+    p: &Photo,
+    naming: SidecarNaming,
+    labels: &Catalog,
+    listing: &Listing,
+    probe: Option<&crate::media::FileProbe>,
+    frames: &FrameProbes,
+) -> Check {
     let Some(file) = crate::cmd::missing::checked_path(p) else { return Check::Nothing };
     let file = Path::new(file);
     if !listing.or_ask(listing.exists(file), || file.exists()) {
         Check::Missing
-    } else if p.copy_of.is_none() && sidecar_has_news(labels, p, naming, listing, probe) {
+    } else if p.copy_of.is_none() && sidecar_has_news(labels, p, naming, listing, probe, frames) {
         Check::News
     } else {
         Check::Nothing
@@ -579,13 +617,14 @@ fn check_photos(
     labels: &Catalog,
     listing: &Listing,
     probe: Option<&crate::media::FileProbe>,
+    frames: &FrameProbes,
     progress: &SyncProgress,
 ) -> Vec<Check> {
     use std::sync::atomic::Ordering::Relaxed;
     progress.to_check.store(photos.len(), Relaxed);
     let cancel = &progress.files.cancel;
     let check = |p: &Photo, naming: SidecarNaming| {
-        let c = check_photo(p, naming, labels, listing, probe);
+        let c = check_photo(p, naming, labels, listing, probe, frames);
         progress.checked.fetch_add(1, Relaxed);
         c
     };
@@ -653,7 +692,14 @@ impl Session {
 
 /// Whether `p`'s XMP sidecar file was saved after the library last had its say about the photo
 /// (imported, or edited here) and says something the library doesn't.
-fn sidecar_has_news(labels: &Catalog, p: &Photo, naming: SidecarNaming, listing: &Listing, probe: Option<&crate::media::FileProbe>) -> bool {
+fn sidecar_has_news(
+    labels: &Catalog,
+    p: &Photo,
+    naming: SidecarNaming,
+    listing: &Listing,
+    probe: Option<&crate::media::FileProbe>,
+    frames: &FrameProbes,
+) -> bool {
     let Source::File { path } = &p.source else { return false };
     // ([`crate::sidecar::find_sidecar`], each name looked up in the listing before the disk)
     // (a name the listing holds is read for its date next, and one that can't be read is passed
@@ -677,7 +723,9 @@ fn sidecar_has_news(labels: &Catalog, p: &Photo, naming: SidecarNaming, listing:
     let Ok(mut sc) = crate::sidecar::parse_sidecar(&text, crate::crs::Target::for_photo(p)) else { return false };
     // A held crop cannot be compared with the catalog's oriented crop. Report it as news so
     // synchronizing can say why the crop was left unverified.
-    if framed(&mut sc, path, probe).is_some() {
+    if let Some(held) = framed(&mut sc, path, probe)
+        && !frames.acknowledged(p.id, path, &held)
+    {
         return true;
     }
     let sc = sc.resolve_label(labels);
@@ -783,7 +831,7 @@ impl SyncJob {
             moved: if choice.relink_moved { moved } else { Vec::new() },
             missing: if choice.remove_missing { missing } else { Vec::new() },
             sidecars,
-            probe: frames.probe(s.media.file_probe.clone()),
+            probe: frames.probe(s.media.frame_probe.clone().or_else(|| s.media.file_probe.clone())),
         };
         let commit = SyncCommit {
             opts,
@@ -943,8 +991,12 @@ impl SyncCommit {
             }
             SyncStep::Sidecars(read) => {
                 let mut ops = Vec::new();
+                let mut held = Vec::new();
                 for (id, path, sc) in read {
                     if let Ok(sc) = &sc {
+                        if let Some(crop) = &sc.unframed_crop {
+                            held.push((id, path.clone(), crop.clone()));
+                        }
                         report.warnings.extend(sc.warnings.iter().cloned().map(|mut w| {
                             w.path = path.clone();
                             w
@@ -958,7 +1010,12 @@ impl SyncCommit {
                 let n = ops.len();
                 if n > 0 {
                     match s.commit("Read Metadata from File", Op::Batch { ops }) {
-                        Ok(()) => report.read += n,
+                        Ok(()) => {
+                            report.read += n;
+                            for (id, path, crop) in held {
+                                s.sync_frames.acknowledge(id, path, crop);
+                            }
+                        }
                         Err(e) => report.failed.push((String::new(), e.to_string())),
                     }
                 }
