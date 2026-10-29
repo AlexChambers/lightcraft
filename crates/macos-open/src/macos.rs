@@ -76,6 +76,13 @@ fn document_paths(event: &NSAppleEventDescriptor) -> Vec<Result<PathBuf, String>
     // spelling the ABI here avoids adding that otherwise unused framework dependency.
     let list: Option<Retained<NSAppleEventDescriptor>> = unsafe { msg_send![event, paramDescriptorForKeyword: DIRECT] };
     let Some(list) = list else { return vec![Err("The open request contains no files.".into())] };
+    // SAFETY: Foundation's descriptorType selector returns DescType (UInt32). The generated
+    // binding gates this selector on Carbon types, as it does paramDescriptorForKeyword above.
+    let descriptor_type: u32 = unsafe { msg_send![&*list, descriptorType] };
+    if descriptor_type != u32::from_be_bytes(*b"list") {
+        // A direct file descriptor is one document; only lists have an item count.
+        return vec![file_path(&list, 1)];
+    }
     let count = list.numberOfItems();
     // Bound input-derived work and allocation. Report an oversized request instead of silently
     // opening only part of it. Photo probing and decoding are left to the import worker.
@@ -83,15 +90,17 @@ fn document_paths(event: &NSAppleEventDescriptor) -> Vec<Result<PathBuf, String>
         return vec![Err("The open request contains an invalid number of files.".into())];
     }
     (1..=count)
-        .map(|i| {
-            list.descriptorAtIndex(i)
-                // Foundation coerces file URLs, aliases and legacy file descriptors to a URL.
-                .and_then(|d| d.fileURLValue())
-                .filter(|url| url.isFileURL())
-                .and_then(|url| url.to_file_path())
-                .ok_or_else(|| format!("File {i} in the open request is not a file URL."))
-        })
+        .map(|i| list.descriptorAtIndex(i).ok_or_else(|| format!("File {i} in the open request is not a file URL.")).and_then(|d| file_path(&d, i)))
         .collect()
+}
+
+fn file_path(descriptor: &NSAppleEventDescriptor, index: isize) -> Result<PathBuf, String> {
+    // Foundation coerces file URLs, aliases and legacy file descriptors to a URL.
+    descriptor
+        .fileURLValue()
+        .filter(|url| url.isFileURL())
+        .and_then(|url| url.to_file_path())
+        .ok_or_else(|| format!("File {index} in the open request is not a file URL."))
 }
 
 /// Main-thread-only registration. Keep it alive until the application closes.
@@ -190,6 +199,25 @@ mod tests {
             let _: () = msg_send![&*event, setParamDescriptor: &*list, forKeyword: DIRECT];
         }
         assert_eq!(document_paths(&event), paths.map(|p| Ok(PathBuf::from(p))));
+    }
+
+    #[test]
+    fn direct_file_descriptor_is_one_document_and_empty_lists_stay_invalid() {
+        let path = "/Volumes/Offline/撮影 cafe\u{301} #1.ARW";
+        let descriptor = NSAppleEventDescriptor::descriptorWithFileURL(&NSURL::from_file_path(path).unwrap());
+        assert_eq!(descriptor.numberOfItems(), 0);
+        for (direct, expected) in [
+            (descriptor, vec![Ok(PathBuf::from(path))]),
+            (NSAppleEventDescriptor::listDescriptor(), vec![Err("The open request contains an invalid number of files.".to_string())]),
+            (NSAppleEventDescriptor::new(), vec![Err("File 1 in the open request is not a file URL.".to_string())]),
+        ] {
+            let event = event();
+            // SAFETY: Foundation's setParamDescriptor:forKeyword: takes a descriptor and UInt32.
+            unsafe {
+                let _: () = msg_send![&*event, setParamDescriptor: &*direct, forKeyword: DIRECT];
+            }
+            assert_eq!(document_paths(&event), expected);
+        }
     }
 
     #[test]
