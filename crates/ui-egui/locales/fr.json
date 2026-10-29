@@ -2395,5 +2395,10 @@
   "Checking recent libraries": "Vérification des bibliothèques récentes",
   "The photos are imported once a library is open": "Les photos seront importées dès qu'une bibliothèque sera ouverte",
   "Open a library first, then drop the presets again": "Ouvrez d'abord une bibliothèque, puis déposez à nouveau les préréglages",
-  "This library couldn't be checked:": "Impossible de vérifier cette bibliothèque :"
+  "This library couldn't be checked:": "Impossible de vérifier cette bibliothèque :",
+  "The open request contains a path that is not absolute.": "La demande d'ouverture contient un chemin qui n'est pas absolu.",
+  "This file's name cannot be represented as UTF-8.": "Le nom de ce fichier ne peut pas être représenté en UTF-8.",
+  "The open request contains no files.": "La demande d'ouverture ne contient aucun fichier.",
+  "The open request contains an invalid number of files.": "La demande d'ouverture contient un nombre de fichiers non valide.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "La bibliothèque a changé avant l'importation de ces photos. Ouvrez à nouveau les photos dans la bibliothèque souhaitée."
 }

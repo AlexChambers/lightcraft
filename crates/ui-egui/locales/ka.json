@@ -2739,5 +2739,10 @@
   "Import dropped files without review": "ჩაგდებული ფაილების იმპორტი გადახედვის გარეშე",
   "An import is running": "იმპორტი მიმდინარეობს",
   "An import is running. Drop photos when it has finished": "იმპორტი მიმდინარეობს. ფოტოები ჩააგდეთ, როცა დასრულდება",
-  "Finish Lightroom catalog import before adding photos": "ფოტოების დამატებამდე დაასრულეთ Lightroom-ის კატალოგის იმპორტი"
+  "Finish Lightroom catalog import before adding photos": "ფოტოების დამატებამდე დაასრულეთ Lightroom-ის კატალოგის იმპორტი",
+  "The open request contains a path that is not absolute.": "გახსნის მოთხოვნა შეიცავს გზას, რომელიც აბსოლუტური არ არის.",
+  "This file's name cannot be represented as UTF-8.": "ამ ფაილის სახელის UTF-8 ფორმატში წარმოდგენა შეუძლებელია.",
+  "The open request contains no files.": "გახსნის მოთხოვნა ფაილებს არ შეიცავს.",
+  "The open request contains an invalid number of files.": "გახსნის მოთხოვნაში ფაილების რაოდენობა არასწორია.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "ამ ფოტოების იმპორტამდე ბიბლიოთეკა შეიცვალა. ფოტოები ხელახლა გახსენით სასურველ ბიბლიოთეკაში."
 }

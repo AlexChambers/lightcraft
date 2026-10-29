@@ -2413,5 +2413,10 @@
   "Import dropped files without review": "Importovat přetažené soubory bez kontroly",
   "An import is running": "Import už běží",
   "An import is running. Drop photos when it has finished": "Import už běží. Fotky přetáhněte, až skončí",
-  "Finish Lightroom catalog import before adding photos": "Dokončete import katalogu Lightroom, než přidáte fotky"
+  "Finish Lightroom catalog import before adding photos": "Dokončete import katalogu Lightroom, než přidáte fotky",
+  "The open request contains a path that is not absolute.": "Požadavek na otevření obsahuje cestu, která není absolutní.",
+  "This file's name cannot be represented as UTF-8.": "Název tohoto souboru nelze vyjádřit v UTF-8.",
+  "The open request contains no files.": "Požadavek na otevření neobsahuje žádné soubory.",
+  "The open request contains an invalid number of files.": "Požadavek na otevření obsahuje neplatný počet souborů.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "Knihovna se změnila před importem těchto fotografií. Otevřete fotografie znovu v požadované knihovně."
 }

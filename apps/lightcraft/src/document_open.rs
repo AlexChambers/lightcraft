@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use lightcraft_ui_egui::LightcraftApp;
+use lightcraft_ui_egui::i18n;
 
 #[derive(Default)]
 pub struct PendingOpens {
@@ -31,7 +32,7 @@ impl PendingOpens {
                 p.into_os_string().into_string().map_err(|_| "This file's name cannot be represented as UTF-8.".into())
             }) {
                 Ok(path) => batch.push(path),
-                Err(error) => app.notices.push(error),
+                Err(error) => app.notices.push(i18n::document_open_error(&error)),
             }
         }
         if !batch.is_empty() {
@@ -74,14 +75,16 @@ impl PendingOpens {
             app.pending_document_opens = self.batches.len();
             app.pending_document_library = self.batches.front().and_then(|b| b.library);
             if batch.library != Some(app.session.library_generation()) {
-                app.notices.push("The library changed before these photos could be imported. Open the photos again in the intended library.".into());
+                app.notices.push(
+                    i18n::tr("The library changed before these photos could be imported. Open the photos again in the intended library.").to_string(),
+                );
                 return;
             }
             // start_documents uses the same worker, import params and library.import commits as
             // a window drop. The checks above keep requests queued while an importer is busy;
             // report any unexpected start error instead of silently discarding the request.
             if let Err(error) = lightcraft_ui_egui::import::start_documents(app, batch.paths) {
-                app.notices.push(error);
+                app.notices.push(i18n::document_open_error(&error));
             }
         }
     }
@@ -142,6 +145,74 @@ mod tests {
         pending.tick(&mut app);
         assert_eq!(app.import.as_ref().unwrap().total, 1);
         assert!(pending.batches.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_queue_translates_validation_and_library_notices() {
+        use std::os::unix::ffi::OsStringExt;
+        let previous = i18n::language();
+        for locale in i18n::Locale::ALL.iter().copied().skip(1) {
+            i18n::set_language(locale);
+            let mut app = app();
+            let mut pending = PendingOpens::default();
+            let errors = [
+                "The open request contains no files.",
+                "The open request contains an invalid number of files.",
+                "File 7 in the open request is not a file URL.",
+            ];
+            pending.enqueue(
+                vec![
+                    Ok("relative.jpg".into()),
+                    Ok(std::ffi::OsString::from_vec(b"/tmp/\xff.jpg".to_vec()).into()),
+                    Err(errors[0].into()),
+                    Err(errors[1].into()),
+                    Err(errors[2].into()),
+                    Ok("/tmp/good.jpg".into()),
+                ],
+                &mut app,
+            );
+            pending.batches.front_mut().unwrap().library = Some(app.session.library_generation().wrapping_add(1));
+            pending.tick(&mut app);
+            let sources = [
+                "The open request contains a path that is not absolute.",
+                "This file's name cannot be represented as UTF-8.",
+                errors[0],
+                errors[1],
+                errors[2],
+                "The library changed before these photos could be imported. Open the photos again in the intended library.",
+            ];
+            assert_eq!(app.notices.len(), sources.len());
+            for (notice, source) in app.notices.iter().zip(sources) {
+                assert_ne!(notice, source, "{locale:?}: {source}");
+            }
+            assert!(app.notices[4].contains('7'), "keep the failed file's index");
+            assert_eq!(i18n::document_open_error("an unknown diagnostic"), "an unknown diagnostic");
+            if locale == i18n::Locale::Es {
+                let expected = app.notices[0].clone();
+                app.ui.language = locale;
+                let mut h = lightcraft_ui_egui::headless::Headless::new(app, [1100.0, 750.0], 1.0);
+                h.step();
+                h.step();
+                assert!(h.painted_text().iter().any(|text| text.contains(&expected)), "the notice window must show the translated error");
+                if let Ok(path) = std::env::var("DOCUMENT_OPEN_SCREENSHOT") {
+                    for _ in 0..20 {
+                        h.step();
+                    }
+                    let pixels = h.paint();
+                    let image = lightcraft_raster::Rgba8 {
+                        width: pixels.size[0],
+                        height: pixels.size[1],
+                        data: pixels.pixels.iter().map(|pixel| pixel.to_array()).collect(),
+                    };
+                    let png =
+                        lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&image), &lightcraft_codecs::EncodeMeta::default())
+                            .unwrap();
+                    std::fs::write(path, png).unwrap();
+                }
+            }
+        }
+        i18n::set_language(previous);
     }
 
     #[cfg(unix)]

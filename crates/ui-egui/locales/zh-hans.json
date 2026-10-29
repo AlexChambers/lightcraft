@@ -2205,5 +2205,10 @@
   "Import dropped files without review": "不经检查直接导入拖入的文件",
   "An import is running": "正在导入",
   "An import is running. Drop photos when it has finished": "正在导入。导入完成后再拖放照片",
-  "Finish Lightroom catalog import before adding photos": "添加照片前，请先完成 Lightroom 目录的导入"
+  "Finish Lightroom catalog import before adding photos": "添加照片前，请先完成 Lightroom 目录的导入",
+  "The open request contains a path that is not absolute.": "打开请求包含非绝对路径。",
+  "This file's name cannot be represented as UTF-8.": "此文件名无法用 UTF-8 表示。",
+  "The open request contains no files.": "打开请求中没有文件。",
+  "The open request contains an invalid number of files.": "打开请求中的文件数量无效。",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "导入这些照片之前，图库已更改。请在目标图库中重新打开照片。"
 }

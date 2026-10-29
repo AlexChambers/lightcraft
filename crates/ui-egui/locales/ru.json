@@ -2354,5 +2354,10 @@
   "Import dropped files without review": "Импортировать перетащенные файлы без проверки",
   "An import is running": "Импорт уже выполняется",
   "An import is running. Drop photos when it has finished": "Импорт уже выполняется. Перетащите фото, когда он закончится",
-  "Finish Lightroom catalog import before adding photos": "Завершите импорт каталога Lightroom, прежде чем добавлять фото"
+  "Finish Lightroom catalog import before adding photos": "Завершите импорт каталога Lightroom, прежде чем добавлять фото",
+  "The open request contains a path that is not absolute.": "Запрос на открытие содержит путь, который не является абсолютным.",
+  "This file's name cannot be represented as UTF-8.": "Имя этого файла невозможно представить в UTF-8.",
+  "The open request contains no files.": "Запрос на открытие не содержит файлов.",
+  "The open request contains an invalid number of files.": "Запрос на открытие содержит недопустимое число файлов.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "Библиотека изменилась до импорта этих фотографий. Откройте фотографии снова в нужной библиотеке."
 }

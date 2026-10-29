@@ -2332,5 +2332,10 @@
   "Drop to open the face model": "Pudota avataksesi kasvomallin",
   "Dropped Files": "Pudotetut tiedostot",
   "Finish Lightroom catalog import before adding photos": "Viimeistele Lightroom-luettelon tuonti ennen kuvien lisäämistä",
-  "Import dropped files without review": "Tuo pudotetut tiedostot ilman tarkistusta"
+  "Import dropped files without review": "Tuo pudotetut tiedostot ilman tarkistusta",
+  "The open request contains a path that is not absolute.": "Avauspyyntö sisältää polun, joka ei ole absoluuttinen.",
+  "This file's name cannot be represented as UTF-8.": "Tämän tiedoston nimeä ei voi esittää UTF-8-muodossa.",
+  "The open request contains no files.": "Avauspyyntö ei sisällä tiedostoja.",
+  "The open request contains an invalid number of files.": "Avauspyyntö sisältää virheellisen määrän tiedostoja.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "Kirjasto vaihtui ennen kuin nämä kuvat voitiin tuoda. Avaa kuvat uudelleen halutussa kirjastossa."
 }

@@ -2344,5 +2344,10 @@
   "Drop to open the face model": "Jatuhkan untuk membuka model wajah",
   "Dropped Files": "File yang dijatuhkan",
   "Finish Lightroom catalog import before adding photos": "Selesaikan impor katalog Lightroom sebelum menambahkan foto",
-  "Import dropped files without review": "Impor file yang dijatuhkan tanpa tinjauan"
+  "Import dropped files without review": "Impor file yang dijatuhkan tanpa tinjauan",
+  "The open request contains a path that is not absolute.": "Permintaan untuk membuka berisi jalur yang tidak absolut.",
+  "This file's name cannot be represented as UTF-8.": "Nama berkas ini tidak dapat direpresentasikan dalam UTF-8.",
+  "The open request contains no files.": "Permintaan untuk membuka tidak berisi berkas.",
+  "The open request contains an invalid number of files.": "Permintaan untuk membuka berisi jumlah berkas yang tidak valid.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "Pustaka berubah sebelum foto-foto ini dapat diimpor. Buka kembali foto di pustaka yang diinginkan."
 }

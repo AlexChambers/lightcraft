@@ -2240,5 +2240,10 @@
   "Drop to open the face model": "Thả để mở mô hình khuôn mặt",
   "Dropped Files": "Tệp đã thả",
   "Finish Lightroom catalog import before adding photos": "Hoàn tất nhập danh mục Lightroom trước khi thêm ảnh",
-  "Import dropped files without review": "Nhập các tệp đã thả mà không xem lại"
+  "Import dropped files without review": "Nhập các tệp đã thả mà không xem lại",
+  "The open request contains a path that is not absolute.": "Yêu cầu mở chứa một đường dẫn không phải là đường dẫn tuyệt đối.",
+  "This file's name cannot be represented as UTF-8.": "Tên tệp này không thể biểu diễn bằng UTF-8.",
+  "The open request contains no files.": "Yêu cầu mở không chứa tệp nào.",
+  "The open request contains an invalid number of files.": "Yêu cầu mở chứa số lượng tệp không hợp lệ.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "Thư viện đã thay đổi trước khi có thể nhập các ảnh này. Hãy mở lại ảnh trong thư viện mong muốn."
 }

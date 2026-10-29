@@ -2366,5 +2366,10 @@
   "Import dropped files without review": "Importa i file rilasciati senza revisione",
   "An import is running": "Un'importazione è in corso",
   "An import is running. Drop photos when it has finished": "Un'importazione è in corso. Trascina le foto quando è finita",
-  "Finish Lightroom catalog import before adding photos": "Termina l'importazione del catalogo Lightroom prima di aggiungere foto"
+  "Finish Lightroom catalog import before adding photos": "Termina l'importazione del catalogo Lightroom prima di aggiungere foto",
+  "The open request contains a path that is not absolute.": "La richiesta di apertura contiene un percorso che non è assoluto.",
+  "This file's name cannot be represented as UTF-8.": "Il nome di questo file non può essere rappresentato in UTF-8.",
+  "The open request contains no files.": "La richiesta di apertura non contiene file.",
+  "The open request contains an invalid number of files.": "La richiesta di apertura contiene un numero di file non valido.",
+  "The library changed before these photos could be imported. Open the photos again in the intended library.": "La libreria è cambiata prima che fosse possibile importare queste foto. Apri di nuovo le foto nella libreria desiderata."
 }
