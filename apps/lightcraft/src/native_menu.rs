@@ -295,12 +295,20 @@ fn label_text(s: &str) -> String {
     lightcraft_ui_egui::i18n::tr(s).replace('&', "&&")
 }
 
-/// Drop a trailing separator (left behind when an item moved to the app menu).
-fn tidy_separators(mut nodes: Vec<MenuNode>) -> Vec<MenuNode> {
-    while matches!(nodes.last(), Some(MenuNode::Separator)) {
-        nodes.pop();
+/// Drop the separators left behind when an item moved to the app menu: a leading one, a trailing
+/// one and the second of two in a row.
+fn tidy_separators(nodes: Vec<MenuNode>) -> Vec<MenuNode> {
+    let mut out: Vec<MenuNode> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        if node == MenuNode::Separator && out.last().is_none_or(|last| *last == MenuNode::Separator) {
+            continue;
+        }
+        out.push(node);
     }
-    nodes
+    while out.last() == Some(&MenuNode::Separator) {
+        out.pop();
+    }
+    out
 }
 
 impl NativeMenu {
@@ -489,9 +497,7 @@ impl NativeMenu {
             // events never reach `shortcuts::handle`, so this is the one guard for AppKit's
             // accelerators and clicks: while the blocking library window or a quit/settings notice
             // owns input, a queued command is dropped (Quit stays for the existing confirmation).
-            let (cmd, params) = if key == QUIT {
-                (key, serde_json::json!({}))
-            } else if key == "app.about" || key == SETTINGS {
+            let (cmd, params) = if key == QUIT || key == "app.about" || key == SETTINGS {
                 (key, serde_json::json!({}))
             } else if let Some(it) = self.items.get(&key) {
                 (it.cmd.clone(), it.params.clone())
@@ -569,6 +575,24 @@ impl NativeMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An item that moves to the app menu (Settings…) can sit between two separators, or open or
+    /// close the menu's list: the rows left behind keep at most one separator between them.
+    #[test]
+    fn rows_left_after_a_move_keep_single_separators() {
+        let item = |id: &str| MenuNode::Item {
+            id: id.to_string(),
+            label: id.to_string(),
+            shortcut: None,
+            enabled: true,
+            checked: None,
+            params: Value::Null,
+        };
+        let sep = || MenuNode::Separator;
+        let tidy = tidy_separators(vec![sep(), item("a"), sep(), sep(), item("b"), sep(), sep()]);
+        assert_eq!(tidy, vec![item("a"), sep(), item("b")]);
+        assert_eq!(tidy_separators(vec![sep(), sep()]), Vec::<MenuNode>::new());
+    }
 
     /// The menu model's titles stay English, so only the language can tell the native menu to
     /// rebuild its titles (and the macOS app menu): every language switch — also between two CJK
