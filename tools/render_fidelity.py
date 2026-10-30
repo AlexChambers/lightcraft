@@ -902,8 +902,10 @@ Full instructions and why each step matters: {doc}
 1. Use a new catalog (File > New Catalog), so nothing touches your own. Preferences > Presets > Raw Defaults:
    Adobe Default. Import the raws with Add and Develop Settings: None.
 2. Develop module > Presets panel > + > Import Presets..., and pick the .xmp files in {presets}/.
-3. For each photo, in the Develop module: click "{first}". Then for each other preset: Photo > Create Virtual
-   Copy (Cmd/Ctrl+'), and click the preset (it sets every Basic slider, so it doesn't matter what the copy had).
+3. For each photo, in the Develop module: click "{first}" for zero-based measurements. Then for each other preset:
+   Photo > Create Virtual Copy (Cmd/Ctrl+'), and click the preset (it sets every Basic slider, so it doesn't matter
+   what the copy had). Without a matching Neutral, two exports at different amounts of the same slider are scored
+   as an interval. Exports with no usable reference are exploratory.
    Leave the profile at Lightroom's default (Adobe Color) and don't crop or retouch.
 4. In the Library grid select every photo and virtual copy, and export them in ONE export operation:
    - Export To: a new, empty folder (one folder per export session; never add a second export to it)
