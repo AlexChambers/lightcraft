@@ -240,7 +240,7 @@ pub(super) fn fit_pairs_ordered(
         reference,
         colour,
         order,
-        &HighlightCheck { pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: false },
+        &HighlightCheck { jpeg_space: None, pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: false },
     )
     .map(|(look, _)| look)
 }
@@ -471,18 +471,24 @@ pub(super) fn fit_partial(sensor: &Rgb32f, reference: &Rgb32f, highlights: &High
 /// and up, not clipped in the JPEG ([`jpeg_clipped`]: a clipped JPEG pixel only bounds the curve),
 /// from `bright`, which has no clipped sensor pixels when the clipped ones were left out of the
 /// proxy.
-fn bright_tone_pairs(bright: &[Pair]) -> Vec<Pair> {
-    bright.iter().filter(|(_, y)| luma(*y) >= 0.85 && !jpeg_clipped(*y)).copied().collect()
+pub(super) fn bright_tone_pairs(bright: &[Pair], jpeg_space: Option<lightcraft_codecs::NamedSpace>) -> Vec<Pair> {
+    bright.iter().filter(|(_, y)| luma(*y) >= 0.85 && !jpeg_clipped(*y, jpeg_space)).copied().collect()
 }
 
 /// Whether a camera JPEG pixel (linear Rec.2020, as the reference proxy holds it) has a channel at
 /// or near its maximum in the JPEG's own encoding, sRGB or Adobe RGB (camera JPEGs are one or the
 /// other). Such a channel no longer shows the scene's level, while in Rec.2020 it can read as
 /// little as 0.96 (a red channel clipped in sRGB, Codex review of #631's bird).
-pub(super) fn jpeg_clipped(y: [f64; 3]) -> bool {
+/// Check known effective primaries only. If they are unknown, keep the conservative check of both.
+pub(super) fn jpeg_clipped(y: [f64; 3], jpeg_space: Option<lightcraft_codecs::NamedSpace>) -> bool {
     static SPACES: std::sync::OnceLock<[Mat3; 2]> = std::sync::OnceLock::new();
     let spaces = SPACES.get_or_init(|| [SRGB.from_xyz().mul(&REC2020.to_xyz()), ADOBE_RGB.from_xyz().mul(&REC2020.to_xyz())]);
-    spaces.iter().any(|m| m.apply(y).iter().any(|v| *v >= 0.98))
+    let clipped = |m: &Mat3| m.apply(y).iter().any(|v| *v >= 0.98);
+    match jpeg_space {
+        Some(lightcraft_codecs::NamedSpace::Srgb) => spaces.first().is_some_and(clipped),
+        Some(lightcraft_codecs::NamedSpace::AdobeRgb) => spaces.get(1).is_some_and(clipped),
+        _ => spaces.iter().any(clipped),
+    }
 }
 
 pub(super) fn fit_partial_on(
@@ -494,7 +500,7 @@ pub(super) fn fit_partial_on(
 ) -> Option<CameraLook> {
     // as for a known colour model: enough signal for the tone, but no monochrome reference
     let (pairs, bright) = collect_pairs(sensor, reference, 0.005, edge_limit, false)?;
-    let extra = if bright_tone { bright_tone_pairs(&bright) } else { Vec::new() };
+    let extra = if bright_tone { bright_tone_pairs(&bright, highlights.jpeg_space) } else { Vec::new() };
     if bright_tone && extra.is_empty() {
         return None;
     }

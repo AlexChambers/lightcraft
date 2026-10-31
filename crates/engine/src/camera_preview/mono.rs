@@ -44,15 +44,20 @@ pub(super) fn monochrome_look(
     if !file_local_look(raw.format) {
         return None;
     }
-    let (sensor, reference, clipped) = look_proxies(raw, bytes, transform, lens, embedded)?;
+    let (sensor, reference, clipped, jpeg_space) = look_proxies(raw, bytes, transform, lens, embedded)?;
     if !monochrome(&reference) {
         return None;
     }
     // Sony's Dynamic Range Optimizer brightens a B/W JPEG as much as a colour one
     let dro = lightcraft_raw::embedded_preview_dynamic_range_optimized(bytes) == Some(true);
     let unclipped = without_clipped(&sensor, &clipped);
-    let bright =
-        HighlightCheck { pairs: highlights(&sensor, &reference), clipped: clipped_highlights(&sensor, &reference, &clipped), dro, grey: true };
+    let bright = HighlightCheck {
+        jpeg_space,
+        pairs: highlights(&sensor, &reference),
+        clipped: clipped_highlights(&sensor, &reference, &clipped),
+        dro,
+        grey: true,
+    };
     let look = fit_tone_only_with(unclipped.as_ref().unwrap_or(&sensor), &reference, None, &bright)?;
     let look = if dro { with_dro_off_tone(look) } else { look };
     if lightcraft_pipeline::profiling() {
@@ -88,7 +93,7 @@ pub(super) fn fit_tone_only(sensor: &Rgb32f, reference: &Rgb32f, colour: Option<
         sensor,
         reference,
         colour,
-        &HighlightCheck { pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: true },
+        &HighlightCheck { jpeg_space: None, pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: true },
     )
 }
 
@@ -123,7 +128,7 @@ pub(super) fn fit_dark_tone(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool
         return None;
     }
     // no JPEG pixel reaches 0.85 here, so the bright-area check has nothing to hold
-    let bright = HighlightCheck { pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: true };
+    let bright = HighlightCheck { jpeg_space: None, pairs: highlights(sensor, reference), clipped: Vec::new(), dro: false, grey: true };
     [None, Some(EDGE_CONTRAST)].into_iter().find_map(|edge_limit| {
         let pairs: Pairs = sensor
             .data

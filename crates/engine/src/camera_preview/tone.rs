@@ -75,6 +75,8 @@ const NARROW_TONE_RANGE: f32 = 1.5;
 
 /// What a narrow tone curve is checked against ([`highlights_hold`]).
 pub(super) struct HighlightCheck {
+    /// Effective decoded JPEG primaries. Unknown or unsupported encodings use a conservative check.
+    pub(super) jpeg_space: Option<lightcraft_codecs::NamedSpace>,
     /// The frame's [`highlights`].
     pub(super) pairs: Pairs,
     /// The highlights whose sensor pixel is clipped. The bright-pair retry checks them separately.
