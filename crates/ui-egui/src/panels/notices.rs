@@ -75,9 +75,13 @@ pub fn may_close(app: &mut LightcraftApp) -> bool {
             crate::i18n::tr_format!("{n} files you opened haven't been imported yet. Quitting discards these requests.", n = queued)
         });
     }
-    if !running.is_empty() {
-        let names = running.iter().map(|t| crate::i18n::tr(&t.label)).collect::<Vec<_>>().join(", ");
-        warnings.push(tasks_message(running.len(), &names));
+    let mut names = running.iter().map(|t| crate::i18n::tr(&t.label)).collect::<Vec<_>>();
+    let unlisted = app.import.as_ref().is_some_and(|t| !t.listed()) || !app.waiting_import.files.is_empty();
+    if unlisted && !running.iter().any(|t| t.kind == "import") {
+        names.push(crate::i18n::tr("Importing"));
+    }
+    if !names.is_empty() {
+        warnings.push(tasks_message(names.len(), &names.join(", ")));
     }
     if !warnings.is_empty() {
         app.quit_prompt = Some(QuitPrompt::Tasks(warnings.join("\n\n")));
@@ -525,6 +529,8 @@ fn window(ctx: &egui::Context, id: &str, title: &str, text: &str, buttons: &[(&s
         });
     // A backdrop press can raise its area; keep the prompt buttons above it.
     if let Some(window) = shown {
+        crate::widgets::announce_dialog(ctx, &window.response, crate::widgets::Modal::Alert);
+        crate::widgets::describe_dialog(ctx, &window.response, text);
         ctx.move_to_top(window.response.layer_id);
     }
     input.button_ids = seen;
@@ -549,6 +555,12 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
         app.quit_prompt = None;
         if buttons.get(i).is_some_and(|(_, _, choice)| *choice == Choice::QuitAnyway) {
             app.session.activity.cancel_all();
+            // files waiting for an import, and one handed its files but not started, are given up
+            // too, or `may_close` would ask about them again
+            app.waiting_import = Default::default();
+            if app.import.as_ref().is_some_and(|t| !t.listed()) {
+                app.import = None;
+            }
             // unsaved changes still get their own question
             if may_close(app) {
                 app.ui.quit = true;

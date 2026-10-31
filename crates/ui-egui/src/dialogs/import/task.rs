@@ -55,6 +55,11 @@ pub struct ImportTask {
 }
 
 impl ImportTask {
+    /// Whether it has its row in the activity list yet (it gets one on its first tick).
+    pub fn listed(&self) -> bool {
+        self.guard.is_some()
+    }
+
     /// An import of `paths` (files or folders) with `library.import` params (without `paths`).
     pub fn new(paths: Vec<String>, params: Value, undo0: usize, browse: bool, session: &lightcraft_engine::Session) -> Self {
         ImportTask { library: session.library_generation(), total: paths.len(), queue: paths, params, undo0, browse, ..Default::default() }
