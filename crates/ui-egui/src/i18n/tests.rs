@@ -1298,3 +1298,21 @@ fn polish_switches_formats_dates_and_reads_every_count() {
     assert_polish_glyphs(&ctx);
     set_language(Locale::En);
 }
+
+#[test]
+fn polish_and_czech_whole_counts_use_the_cardinal_forms() {
+    for count in [2, 3, 4, 22, 23, 24, 102, 104] {
+        assert_eq!(integer_plural_form(Locale::Pl, count), "few", "Polish {count}");
+    }
+    for count in [0, 5, 11, 12, 13, 14, 21, 25, 101, 112, 1_000_000] {
+        assert_eq!(integer_plural_form(Locale::Pl, count), "many", "Polish {count}");
+    }
+    assert_eq!(integer_plural_form(Locale::Pl, 1), "one");
+    for count in [2, 3, 4] {
+        assert_eq!(integer_plural_form(Locale::Cs, count), "few", "Czech {count}");
+    }
+    for count in [0, 5, 11, 12, 14, 21, 22, 25, 101, 1_000_000] {
+        assert_eq!(integer_plural_form(Locale::Cs, count), "other", "Czech {count}");
+    }
+    assert_eq!(integer_plural_form(Locale::Cs, 1), "one");
+}

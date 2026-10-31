@@ -580,6 +580,16 @@ pub(crate) fn integer_plural_form(locale: Locale, count: u64) -> &'static str {
         },
         Locale::Fr | Locale::PtBr if count <= 1 => "one",
         Locale::Fr | Locale::PtBr | Locale::Es if count != 0 && count.is_multiple_of(1_000_000) => "many",
+        Locale::Pl => match (count % 10, count % 100) {
+            _ if count == 1 => "one",
+            (2..=4, n) if !(12..=14).contains(&n) => "few",
+            _ => "many",
+        },
+        Locale::Cs => match count {
+            1 => "one",
+            2..=4 => "few",
+            _ => "other",
+        },
         _ if count == 1 => "one",
         _ => "other",
     }

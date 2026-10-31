@@ -568,7 +568,7 @@ fn photographed_dng(w: usize, h: usize, level: impl Fn(f32, f32) -> f32) -> Vec<
 
 /// Issue #1328: full-size decodes (exports, 1:1) of neutral specular points of 1 to 3 px on a dark neutral
 /// surface, bright enough to clip green (the brightest every channel). The pixels around them must come out
-/// nearly neutral: no channel below 0.4 of the pixel's mean. Demosaiced before white balance, red beside a point
+/// nearly neutral: every channel within 0.4 to 1.6 of the pixel's mean. Demosaiced before white balance, red beside a point
 /// fell to zero (green and cyan rims: 153 of these 549 pixels had a channel below half the mean, most at zero).
 /// Now the lowest is one channel at 0.498, a pixel the clip mask has rebuilt beside a 3 px point.
 #[test]
@@ -592,6 +592,11 @@ fn full_size_specular_points_have_no_coloured_rims() {
         let near = points.iter().any(|&(px, py, s, _)| fx + 3.0 > px && fx < px + s + 2.0 && fy + 3.0 > py && fy < py + s + 2.0);
         near && (-1..=1).all(|d| lit(fx + 0.5 + d as f32, fy + 0.5).is_none() && lit(fx + 0.5, fy + 0.5 + d as f32).is_none())
     };
+    let coloured = |p: [f32; 3]| {
+        let mean = (p[0] + p[1] + p[2]) / 3.0;
+        p.iter().any(|&v| v < 0.4 * mean || v > 1.6 * mean)
+    };
+    assert!(coloured([1.0, 3.0, 1.0]), "a strongly green rim must fail the neutrality check");
     let (mut n, mut bad) = (0, Vec::new());
     for y in 0..h {
         for x in 0..w {
@@ -600,8 +605,7 @@ fn full_size_specular_points_have_no_coloured_rims() {
             }
             n += 1;
             let p = img.get(x, y);
-            let mean = (p[0] + p[1] + p[2]) / 3.0;
-            if p.iter().any(|&v| v < 0.4 * mean) {
+            if coloured(p) {
                 bad.push((x, y, p));
             }
         }
