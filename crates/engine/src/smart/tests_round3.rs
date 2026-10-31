@@ -366,3 +366,67 @@ fn closing_the_last_cache_owner_retires_pending_disk_writers() {
     late_writer.put_at(generation, key, Arc::new(Rgba8::new(4, 3)));
     assert!(late_writer.get(key).is_none());
 }
+
+#[test]
+fn failed_library_open_keeps_the_active_migration_and_its_result() {
+    let (root, mut s, from, to) = fixture("migration-failed-library-open");
+    let (entered, waiting) = mpsc::channel();
+    let (release, blocked) = mpsc::channel();
+    let blocked = Mutex::new(blocked);
+    hook(&from, move |index| {
+        if index == 0 {
+            entered.send(()).unwrap();
+            blocked.lock().unwrap().recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    });
+    s.execute("library.smartPreviewsLocation", &json!({"path": to, "existing": "move", "background": true})).unwrap();
+    waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+    let broken = root.join("broken-library");
+    std::fs::create_dir_all(broken.join(lightcraft_catalog::journal::SNAPSHOT)).unwrap();
+    let error = s.open_library(&broken, false).err().map(|e| e.to_string());
+    let kept_migration = s.smart_migration.is_some();
+    let kept_folder = s.media.smart_dir.as_ref() == Some(&from);
+    let kept_activity = s.activity.list().iter().any(|t| t.kind == "smartMigration" && !t.cancelling);
+    release.send(()).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while s.smart_migration.is_some() || !s.activity.list().is_empty() {
+        s.persist_if_dirty();
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(error.is_some(), "the replacement catalog must fail to open");
+    assert!(kept_migration, "a failed library open discarded the current migration");
+    assert!(kept_folder, "a failed library open changed the current preview folder");
+    assert!(kept_activity, "a failed library open cancelled the current migration");
+    assert_eq!(s.media.smart_dir.as_ref(), Some(&to));
+    assert!(all_sources(&to));
+    let result = s.smart_migration_result.clone();
+    assert!(result.as_ref().is_some_and(|r| r.is_ok()), "{result:?}");
+    assert!(s.open_library(&broken, false).is_err());
+    assert_eq!(s.smart_migration_result, result, "a failed library open discarded the completed result");
+    drop(s);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_markers_are_found_through_thumbnail_path_aliases() {
+    let root = super::tests::temp("marker-path-aliases");
+    let library = root.join("library");
+    let thumbs = library.join("thumbs");
+    std::fs::create_dir_all(&thumbs).unwrap();
+    let marker = thumbs.join("smart-previews-changing-interrupted-alias-test");
+    std::fs::write(&marker, b"").unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(&library, &alias).unwrap();
+    for path in [alias.join("thumbs"), library.join("..").join("library/thumbs")] {
+        let resolved = media::thumbnail_folder(&path);
+        assert_ne!(path, resolved, "the fixture must change the path spelling");
+        let raw = media::interrupted_runs(&path);
+        let canonical = media::interrupted_runs(&resolved);
+        assert_eq!(raw.len(), 1, "the unresolved path must discover the marker");
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(std::fs::canonicalize(&raw[0]).unwrap(), std::fs::canonicalize(&canonical[0]).unwrap());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

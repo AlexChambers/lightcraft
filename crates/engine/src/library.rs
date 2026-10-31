@@ -502,13 +502,7 @@ impl Session {
 
     /// Open `stores`; the new library takes `lock` once nothing can fail any more.
     fn open_stores(&mut self, stores: LibraryStores, seed_demo: bool, lock: &mut Option<LibraryLock>) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.smart_migration = None;
-            self.smart_migration_result = None;
-        }
         let LibraryStores { dir, catalog, mut files, on_disk } = stores;
-        self.media.smart_dir = on_disk.then(|| crate::smart::dir(&dir));
         // the current library may be these same files: let its background snapshot land first
         if let Some(old) = self.library.as_mut()
             && let Err(e) = old.journal.wait()
@@ -522,6 +516,12 @@ impl Session {
         #[cfg(not(target_arch = "wasm32"))]
         self.faces.library_changed();
         let (mut journal, mut catalog, report) = Journal::open(catalog)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.smart_migration = None;
+            self.smart_migration_result = None;
+        }
+        self.media.smart_dir = on_disk.then(|| crate::smart::dir(&dir));
         // A loaded catalog counts revisions from 0, like every other one. Caches (sidebar counts,
         // keyword tree, the grid's list…) are keyed on the revision, so give each library loaded
         // in this process its own range: otherwise an empty library opened after one that was

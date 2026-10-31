@@ -629,7 +629,9 @@ fn smart_migration_settings_stays_responsive_and_cancel_keeps_old_folder() {
     let writer = std::thread::spawn(move || {
         // Bounded even if Settings regresses to synchronous migration.
         let _ = wait.recv_timeout(Duration::from_secs(5));
-        std::fs::OpenOptions::new().write(true).open(fifo).unwrap().write_all(b"invalid destination").unwrap();
+        // Opening both ends cannot wait for a reader when cancellation already stopped it.
+        let Ok(mut file) = std::fs::OpenOptions::new().read(true).write(true).open(fifo) else { return };
+        let _ = file.write_all(b"invalid destination");
     });
     let start = std::time::Instant::now();
     click(&mut h, "button:settingsSmartChoose");
