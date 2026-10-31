@@ -586,6 +586,9 @@ pub(crate) fn integer_plural_form(locale: Locale, count: u64) -> &'static str {
 }
 
 #[cfg(test)]
+mod gaps;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
