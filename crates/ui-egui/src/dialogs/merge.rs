@@ -368,7 +368,7 @@ fn added_message(what: &str, info: &Value) -> String {
         ),
         _ => crate::i18n::tr_format!("{what} merge added", what = what),
     };
-    if info["omitted"].as_array().is_some_and(|v| !v.is_empty()) { format!("{message}\n{}", inclusion_summary(info)) } else { message }
+    if info["used"].is_array() && info["omitted"].is_array() { format!("{message}\n{}", inclusion_summary(info)) } else { message }
 }
 
 fn inclusion_summary(info: &Value) -> String {
@@ -633,7 +633,7 @@ mod tests {
         // All exposures are individual photos in the HDR panorama result.
         let hdr = json!({"used": [71, 9, 401, 3], "omitted": [{"id": 6}, {"id": 12}]});
         assert_eq!(added_message("HDR panorama", &hdr), "HDR panorama merge added\n4 of 6 photos included");
-        assert_eq!(added_message("Panorama", &json!({"used": [1, 2], "omitted": []})), "Panorama merge added");
+        assert_eq!(added_message("Panorama", &json!({"used": [1, 2], "omitted": []})), "Panorama merge added\n2 of 2 photos included");
     }
 
     /// Issue #1455: a panorama held to the computer's memory, or to the largest size, says so.
