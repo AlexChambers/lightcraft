@@ -71,8 +71,14 @@ grouped by **band** of Lightroom's reference luminance: black (Y < 0.0005), < 0.
 
 For zero-based measurements, include a Neutral per photo and one export per recipe. Without a matching Neutral,
 the tool can pair a slider export with another amount of the same slider and score the interval. Only exports with
-no usable reference are exploratory. Make all exports in **one export operation** into **one new folder**. The tool
-reads each export's recipe and raw file name from the XMP Lightroom embeds, so file names don't matter.
+no usable reference are exploratory.
+
+Make all exports in **one export operation** into **one new folder**. The tool reads each export's recipe and
+`crs:RawFileName` from the XMP Lightroom embeds. Exported TIFF filenames may differ, but the supplied raw files must
+keep the recorded filename or stem.
+
+`pair` skips exports with no matching raw, or with several matching raws whose contents differ. Byte-identical
+copies are accepted.
 
 1. `python tools/render_fidelity.py plan OUT` writes one develop preset per recipe into `OUT/presets/` (group
    "LightCraft fidelity"), `OUT/recipes.json` and `OUT/INSTRUCTIONS.txt`. By default: the Neutral and every Basic

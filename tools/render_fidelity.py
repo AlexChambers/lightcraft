@@ -2635,15 +2635,15 @@ def _linear_dng(path, xmp, pixels=None):
 def _importer_cross_check(cli, check):
     """The prefilter and the importer check against LightCraft's own XMP reader: every packet the real importer
     applies must be refused by both; clean files accepted by both. Foreign namespace bindings are ignored by
-    the importer and still refused by the conservative prefilter."""
+    the importer and still refused by the conservative prefilter, as are signed numeric references."""
     lc_s = b'settings="{&quot;grain&quot;: {&quot;amount&quot;: 40.0}}"'
 
     def packet(body):
         return (b"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='" + NS_RDF.encode() + b"'>" + body
                 + b"</rdf:RDF></x:xmpmeta>")
     applied = {
-        "&#+46;": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#+46;app/lc/1.0/" q:' + lc_s + b"/>"),
-        "&#x+2e;": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#x+2e;app/lc/1.0/" q:' + lc_s + b"/>"),
+        "&#46;": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#46;app/lc/1.0/" q:' + lc_s + b"/>"),
+        "&#x2e;": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#x2e;app/lc/1.0/" q:' + lc_s + b"/>"),
         "4,100 zeros": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#' + b"0" * 4100 + b'46;app/lc/1.0/" q:'
                               + lc_s + b"/>"),
         "undeclared crs": packet(b'<rdf:Description crs:Exposure2012="+1.00"/>'),
@@ -2653,12 +2653,16 @@ def _importer_cross_check(cli, check):
                         + lc_s + b">",
         "plain lc": packet(b'<rdf:Description xmlns:lc="http://ns.lightcraft.app/lc/1.0/" lc:' + lc_s + b"/>"),
     }
-    foreign = {"rebound crs": packet(b'<rdf:Description xmlns:crs="http://example.org/x/" crs:Exposure2012="+1.00"/>')}
+    ignored = {
+        "rebound crs": packet(b'<rdf:Description xmlns:crs="http://example.org/x/" crs:Exposure2012="+1.00"/>'),
+        "&#+46;": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#+46;app/lc/1.0/" q:' + lc_s + b"/>"),
+        "&#x+2e;": packet(b'<rdf:Description xmlns:q="http://ns.lightcraft&#x+2e;app/lc/1.0/" q:' + lc_s + b"/>"),
+    }
     clean = {"no XMP": None,
              "dc only": packet(b'<rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" dc:format="x"/>')}
     with tempfile.TemporaryDirectory(prefix="render-fidelity-importer-") as tmp:
         renderer = CliRenderer(cli, tmp)
-        for i, (name, x) in enumerate({**applied, **foreign, **clean}.items()):
+        for i, (name, x) in enumerate({**applied, **ignored, **clean}.items()):
             f = Path(tmp) / f"case{i}.dng"
             _linear_dng(f, x)
             try:
@@ -2669,8 +2673,8 @@ def _importer_cross_check(cli, check):
             if name in applied:
                 check(f"importer check: LightCraft applies {name}, and the importer check refuses it", bool(changed))
                 check(f"prefilter: refuses {name} too", bool(hash_raw(f)[1]), hash_raw(f)[1])
-            elif name in foreign:
-                check(f"importer check: ignores foreign namespace ({name})", changed == [], changed)
+            elif name in ignored:
+                check(f"importer check: ignores foreign or malformed namespace ({name})", changed == [], changed)
                 check(f"prefilter: conservatively refuses {name}", bool(hash_raw(f)[1]), hash_raw(f)[1])
             else:
                 check(f"importer check: accepts a clean raw ({name})", changed == [], changed)
