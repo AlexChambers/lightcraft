@@ -229,7 +229,7 @@ const CANON_UUID: [u8; 16] = [0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x
 /// The `uuid` of the top-level box holding the XMP packet.
 pub const XMP_UUID: [u8; 16] = [0xbe, 0x7a, 0xcf, 0xcb, 0x97, 0xa9, 0x42, 0xe8, 0x9c, 0x71, 0x99, 0x94, 0x91, 0xe3, 0xaf, 0xac];
 const MAX_DEPTH: usize = 12;
-const MAX_BOXES: usize = 4096;
+pub(crate) const MAX_BOXES: usize = 4096;
 /// A `VisualSampleEntry` (78 bytes after the box header) plus 4 bytes Canon adds before the child boxes.
 const CRAW_CHILDREN_AT: usize = 82;
 
@@ -256,7 +256,6 @@ pub fn parse_cr3(bytes: &[u8]) -> Option<Cr3<'_>> {
     Some(out)
 }
 
-/// One box: its type and where its payload is (also used by [`crate::heif`]).
 pub(crate) struct BoxRef {
     pub(crate) kind: [u8; 4],
     /// Start of the payload (after the header and, for `uuid`, the 16-byte uuid).
@@ -408,12 +407,15 @@ fn sample_entry(bytes: &[u8], e: &BoxRef, budget: &mut usize) -> Cr3TrackKind {
     Cr3TrackKind::Raw { width, height, cmp1, iad1 }
 }
 
+/// A big-endian `u16` at `at`, or `None` when the buffer is shorter than that.
 pub(crate) fn be16(b: &[u8], at: usize) -> Option<u16> {
     b.get(at..at.checked_add(2)?).map(|s| u16::from_be_bytes([s[0], s[1]]))
 }
+/// A big-endian `u32` at `at`, or `None` when the buffer is shorter than that.
 pub(crate) fn be32(b: &[u8], at: usize) -> Option<u32> {
     b.get(at..at.checked_add(4)?).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
+/// A big-endian `u64` at `at`, or `None` when the buffer is shorter than that.
 pub(crate) fn be64(b: &[u8], at: usize) -> Option<u64> {
     let s = b.get(at..at.checked_add(8)?)?;
     let mut a = [0u8; 8];

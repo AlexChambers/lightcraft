@@ -1,4 +1,4 @@
-//! Photo metadata for LightCraft: EXIF (TIFF/raw files, JPEG APP1, PNG `eXIf`, WebP `EXIF`, HEIF `Exif` items), XMP packets
+//! Photo metadata for LightCraft: EXIF (TIFF/raw files, JPEG APP1, PNG `eXIf`, WebP `EXIF`, HEIF items), XMP packets
 //! (read + write, standard namespaces plus our own `lc:` namespace) and basic IPTC-IIM.
 //!
 //! Entry points:
@@ -7,8 +7,10 @@
 //! - [`parse_xmp`] / [`write_xmp`] — XMP packets (interchange fields + the opaque `lc:settings` JSON).
 //! - [`parse_iptc`] — IPTC-IIM record 2 datasets.
 //! - [`parse_gpx`] — GPS track logs (GPX) for geotagging by capture time.
-//! - [`extract`] — all of the above for a whole file (JPEG, PNG, WebP, TIFF/DNG/raw, PSD/PSB, Canon CR3, HEIF/HEIC/AVIF).
+//! - [`extract`] — all of the above for a whole file (JPEG, PNG, WebP, TIFF/DNG/raw, PSD/PSB, Canon CR3,
+//!   HEIF/HEIC/AVIF).
 //! - [`cr3`] — the Canon CR3 container (metadata blocks, XMP, the JPEG and raw tracks).
+//! - [`heif`] — the HEIF/HEIC/AVIF container's Exif and XMP items (no HEVC decoder needed).
 #![forbid(unsafe_code)]
 
 mod container;
@@ -18,7 +20,7 @@ mod exif;
 pub mod focus;
 mod focus_read;
 mod gpx;
-mod heif;
+pub mod heif;
 mod iptc;
 pub mod mrw;
 mod psd;
@@ -356,12 +358,21 @@ pub fn lens_spec_name(spec: [f64; 4]) -> Option<String> {
     Some(format!("{focal} mm f/{aperture}"))
 }
 
-/// Does the file embed a GPS position anywhere it can be read from? Export's "remove location"
+/// Does the file embed GPS or a place name anywhere it can be read from? Export's "remove location"
 /// asks before copying an original byte for byte. For HEIF, HEIC and AVIF that is any EXIF or XMP
 /// item, whichever image it describes (a thumbnail's too), and an item that can't be read counts
 /// as a location; for other files, what [`extract`] reads.
 pub fn embeds_location(bytes: &[u8]) -> bool {
-    heif::embeds_location(bytes).unwrap_or_else(|| extract(bytes).gps.is_some())
+    heif::embeds_location(bytes).unwrap_or_else(|| has_location(&extract(bytes)))
+}
+
+/// Location includes the place names removed by export, as well as GPS coordinates.
+fn has_location(metadata: &Metadata) -> bool {
+    metadata.gps.is_some()
+        || [metadata.sublocation.as_deref(), metadata.city.as_deref(), metadata.state.as_deref(), metadata.country.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.trim().is_empty())
 }
 
 /// Lenient number parsing used by XMP/IPTC: `"28/10"`, `"2.8"`, `"+0.7"`.
